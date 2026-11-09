@@ -583,7 +583,7 @@ Then configure it in the **admin page**. Open `GROKBOT_PUBLIC_URL` in a browser 
 
    Finally, select it under "Image generation" in "Default model", and click "Save".
 
-No other settings are needed: the aspect ratio the Bot asks for is converted to a standard size automatically, and editing with a reference image works too. If you want more exact ratios or more parameters, you can write a parameter definition. This is advanced usage; see [Technical notes · Web access and image generation](TECHNICAL.en.md#web-access-and-image-generation).
+No other settings are needed: the aspect ratio the Bot asks for is converted to a standard size automatically, and editing with a reference image works too. If you want more exact ratios or more parameters, you can write a parameter definition. This is advanced usage; see [Technical documentation · Web access and image generation](ARCHITECTURE.en.md#web-access-and-image-generation).
 
 **You should see:**
 
@@ -688,7 +688,7 @@ This repository does not provide any original or modified IPA.
 python3 ios/release/patch-ios.py --input <decrypted.ipa> --output ./ios-output --bundle-id <your bundle ID>
 ```
 
-For how to sign it, see [ios/docs/SIGNING.en.md](../ios/docs/SIGNING.en.md). The user confirms whether the install worked. When you hand over, report the actual progress honestly.
+For how to sign it, see [ios/README.en.md](../ios/README.en.md#signing). The user confirms whether the install worked. When you hand over, report the actual progress honestly.
 
 ### 9.4 Pairing
 

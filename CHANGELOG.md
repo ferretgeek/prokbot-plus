@@ -4,6 +4,16 @@
 
 Versions start at ProkBot Plus 1.0.0. Upstream ProkBot releases are listed at the end for reference.
 
+## 未发布 / Unreleased
+
+- **文档精简**：
+  - 技术说明、功能细节、待办和手动安装说明合并为[技术文档](docs/ARCHITECTURE.md)；
+  - Host 的离线构建、备份、分开部署和应用开发并入 `host/README.md`，iOS 签名说明并入 `ios/README.md`；
+  - 删除没有用到的截图。
+- **新增 `AGENTS.md`**：给接手本仓库的 AI 看的项目概览，`CLAUDE.md` 引用它。
+
+English: the technical notes, feature details, to-do list and manual install notes are merged into the [technical documentation](docs/ARCHITECTURE.en.md); the Host deployment, backup and app notes are merged into `host/README.en.md` and the iOS signing notes into `ios/README.en.md`; unused screenshots are removed; `AGENTS.md` adds a project overview for AI agents.
+
 ## 1.0.0（2026-11-10）
 
 基于 ProkBot v2026.11.05（提交 `3e9fe8c`）。

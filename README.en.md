@@ -109,7 +109,7 @@ Upstream already connected the original web and image tools, but they had quite 
 - **Command-line management.** New `host/tools/host-admin.mjs` lets you set up the Host, configure models and create pairing codes without opening the web page. This makes things easier for scripts and AI.
 - **Docs.** A new [AI deployment guide](docs/AI-INSTALL.en.md) that even an average model can follow.
 
-See the [CHANGELOG](CHANGELOG.md) and the [technical notes](docs/TECHNICAL.en.md) for all changes.
+See the [CHANGELOG](CHANGELOG.md) and the [technical documentation](docs/ARCHITECTURE.en.md) for all changes.
 
 ## Compared with the official Grok Bot
 
@@ -168,7 +168,7 @@ Before you start, tell me what I need to prepare.
 
 The AI first lists what you need to prepare. Then it deploys the server, configures the model, builds the clients step by step, and checks the result at the end.
 
-If you'd rather do it yourself, see the [installation guide](docs/INSTALL.en.md). The AI deployment guide is written for AI, but a person can follow it just as well.
+If you'd rather do it yourself, follow the [AI deployment guide](docs/AI-INSTALL.en.md). It is written for AI, but every step lists the commands and how to check them, so a person can follow it just as well.
 
 [Releases](https://github.com/ferretgeek/prokbot-plus/releases) has the patch tools split into packages (server, Windows, Mac, iOS), so you can download only the part you need. Releases do **not** include patched clients: they contain the official Grok Bot program, so you have to generate them with the tools on your own machine.
 
@@ -177,11 +177,9 @@ If you'd rather do it yourself, see the [installation guide](docs/INSTALL.en.md)
 | Document | Contents |
 | --- | --- |
 | [AI deployment guide](docs/AI-INSTALL.en.md) | Full steps for deploying from scratch. Every step says what you should see and what to do if it fails |
-| [Installation guide](docs/INSTALL.en.md) | A shorter version for people |
-| [Features and architecture](docs/ARCHITECTURE.en.md) | How each original feature is implemented here |
-| [Technical notes](docs/TECHNICAL.en.md) | What Plus changed and why, and where to start if you want to build on it |
+| [Technical documentation](docs/ARCHITECTURE.en.md) | How it works, how each feature is implemented, what Plus changed, the layout, tests, extension points and known limitations |
 | [Windows client](windows/README.en.md) · [Mac client](mac/README.en.md) · [iOS client](ios/README.en.md) | How to use the patches for each platform |
-| [Split deployment and backups](host/docs/DEPLOYMENT.en.md) · [App development](host/PLUGINS.en.md) | Advanced usage |
+| [Split deployment, backups and app development](host/README.en.md) | Advanced usage |
 
 ## Friends
 

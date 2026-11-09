@@ -66,8 +66,10 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-10)
 8. Tests: host/tests/ (new), windows/tests/ (new),
    mac/tests/desktop-external-links.test.mjs (locale-independent assertion).
 
-9. Documentation: README, docs/AI-INSTALL, docs/TECHNICAL (new), docs/INSTALL,
-   docs/ARCHITECTURE, module READMEs, CHANGELOG, CONTRIBUTING, SECURITY.
+9. Documentation: README, docs/AI-INSTALL, docs/ARCHITECTURE (now also covering
+   the upstream DETAILS.md, TODO.md and install notes), module READMEs (host and
+   ios now also cover the upstream DEPLOYMENT, PLUGINS and SIGNING notes),
+   AGENTS.md, CHANGELOG, CONTRIBUTING, SECURITY.
 
 Third-party components
 ----------------------

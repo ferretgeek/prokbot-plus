@@ -108,7 +108,7 @@ Plus 在此基础上补了三件事：**Windows 客户端**；**Anthropic Messag
 - **命令行管理。** 新增 `host/tools/host-admin.mjs`，不打开网页也能初始化、配模型、生成配对码，方便脚本和 AI 操作。
 - **文档。** 新增一份能力一般的模型也能照着做的 [AI 部署手册](docs/AI-INSTALL.md)。
 
-完整改动见 [CHANGELOG](CHANGELOG.md) 和 [技术说明](docs/TECHNICAL.md)。
+完整改动见 [CHANGELOG](CHANGELOG.md) 和 [技术文档](docs/ARCHITECTURE.md)。
 
 ## 和官方 Grok Bot 比
 
@@ -167,7 +167,7 @@ Plus 在此基础上补了三件事：**Windows 客户端**；**Anthropic Messag
 
 AI 会先列出你要准备的东西，然后一步步部署服务端、配置模型、生成客户端，最后验收。
 
-想自己动手的话，看 [安装说明](docs/INSTALL.md)。手册是写给 AI 的，但人照着做也完全没问题。
+想自己动手的话，照着 [AI 部署手册](docs/AI-INSTALL.md) 做就行。它是写给 AI 的，但每一步都写了命令和检查方法，人照着做也完全没问题。
 
 [Releases](https://github.com/ferretgeek/prokbot-plus/releases) 里有按部分打好的补丁工具包：服务端、Windows、Mac、iOS，不想下载整个仓库时可以只下需要的那个。Releases 里**不提供**打好补丁的客户端，因为它包含官方 Grok Bot 程序，只能用工具在你自己的电脑上生成。
 
@@ -176,11 +176,9 @@ AI 会先列出你要准备的东西，然后一步步部署服务端、配置�
 | 文档 | 内容 |
 | --- | --- |
 | [AI 部署手册](docs/AI-INSTALL.md) | 从零部署的完整步骤，每一步都写了「应该看到什么」和「失败了怎么办」 |
-| [安装说明](docs/INSTALL.md) | 给人看的精简版 |
-| [功能与原理](docs/ARCHITECTURE.md) | 原版每个功能在这里是怎么实现的 |
-| [技术说明](docs/TECHNICAL.md) | Plus 改了什么、为什么这样改，以及二次开发入口 |
+| [技术文档](docs/ARCHITECTURE.md) | 原理、每个功能怎么实现、Plus 改了什么、目录、测试、二次开发入口和已知限制 |
 | [Windows 客户端](windows/README.md) · [Mac 客户端](mac/README.md) · [iOS 客户端](ios/README.md) | 各平台补丁的用法 |
-| [分开部署与备份](host/docs/DEPLOYMENT.md) · [应用开发](host/PLUGINS.md) | 进阶用法 |
+| [分开部署、备份与应用开发](host/README.md) | 进阶用法 |
 
 ## 友情链接
 
