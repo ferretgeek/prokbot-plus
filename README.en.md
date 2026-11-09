@@ -169,6 +169,8 @@ The AI first lists what you need to prepare. Then it deploys the server, configu
 
 If you'd rather do it yourself, see the [installation guide](docs/INSTALL.en.md). The AI deployment guide is written for AI, but a person can follow it just as well.
 
+[Releases](https://github.com/ferretgeek/prokbot-plus/releases) has the patch tools split into packages (server, Windows, Mac, iOS), so you can download only the part you need. Releases do **not** include patched clients: they contain the official Grok Bot program, so you have to generate them with the tools on your own machine.
+
 ## Documentation
 
 | Document | Contents |

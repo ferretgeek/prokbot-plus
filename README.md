@@ -168,6 +168,8 @@ AI 会先列出你要准备的东西，然后一步步部署服务端、配置�
 
 想自己动手的话，看 [安装说明](docs/INSTALL.md)。手册是写给 AI 的，但人照着做也完全没问题。
 
+[Releases](https://github.com/ferretgeek/prokbot-plus/releases) 里有按部分打好的补丁工具包：服务端、Windows、Mac、iOS，不想下载整个仓库时可以只下需要的那个。Releases 里**不提供**打好补丁的客户端，因为它包含官方 Grok Bot 程序，只能用工具在你自己的电脑上生成。
+
 ## 文档
 
 | 文档 | 内容 |
