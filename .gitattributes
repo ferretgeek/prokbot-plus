@@ -1,0 +1,12 @@
+# Scripts, recipes manifests and Docker inputs are used on Linux and macOS; keep LF on
+# every checkout, including Windows clones with core.autocrlf enabled.
+* text=auto eol=lf
+
+*.gz binary
+*.exe binary
+*.dll binary
+*.dylib binary
+*.a binary
+*.png binary
+host/bin/grokbot-tailcat binary
+mac/dist/network/grokbot-tailcat binary

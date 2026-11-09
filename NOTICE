@@ -1,0 +1,84 @@
+ProkBot Plus
+Copyright (c) 2026 ProkBot Plus contributors
+
+ProkBot Plus is a modified version of ProkBot.
+
+  Upstream project : ProkBot
+  Upstream source  : https://gitee.com/ahaduoduoduo/ProkBot
+  Based on         : release v2026.11.05, commit 3e9fe8c
+  Upstream license : ProkBot Noncommercial License 1.0 (see LICENSE)
+  Upstream notice  : Copyright (c) 2026 ProkBot contributors
+
+As the upstream license requires, ProkBot Plus keeps that license unchanged,
+is distributed for noncommercial purposes only, and identifies its
+modifications below. The noncommercial conditions also apply to everything
+ProkBot Plus adds; none of it is offered under terms that allow commercial use.
+
+Modifications made in ProkBot Plus (2026-11-07 to 2026-11-10)
+--------------------------------------------------------------
+
+1. Windows x64 client (new)
+   - windows/: patcher, Windows recipes ported from the macOS recipes,
+     per-user installer source, prebuilt grokbot-tailcat.exe and installer
+     stub, tests.
+   - mac/clients/desktop/: cross-platform changes shared by the macOS and
+     Windows clients (platform.mjs, main.mjs, connection.mjs, settings.mjs,
+     sounds.mjs, connect.css, native-provider.mjs, codex-bridge.mjs,
+     codex-process.mjs). Windows command output uses the original daemon's
+     UTF-8 console option (local-exec.mjs). Host image paths are parsed with
+     POSIX rules on Windows (attachments.mjs).
+   - host/runtime/host-computers.mjs, native-desktop.mjs, codex-prompt.mjs,
+     host/server/desktop-capabilities.mjs: the Host recognizes Windows
+     computers.
+
+2. Model API formats
+   - New Anthropic Messages and OpenAI Responses adapters next to OpenAI Chat:
+     host/runtime/anthropic-messages.mjs, openai-responses.mjs,
+     openai-chat.mjs, model-common.mjs (new); model-session.mjs,
+     model-policy.mjs, model-router.mjs, model-errors.mjs,
+     model-observation.mjs, config.mjs, host/server/models.mjs, index.mjs,
+     public/model.js, public/locales-en.js (changed).
+   - "minimal" reasoning effort, reasoning provenance tags, optional-parameter
+     fallback, connection test and auto review for all three formats.
+
+3. Auto review: retry once on a malformed classification and log failures
+   (host/runtime/host-auto-review.mjs).
+
+4. Web and image tools
+   - Native web tools fall back to automatic tool choice when a model rejects a
+     forced tool call; parallel searches succeed when one call succeeds
+     (host/runtime/web-services.mjs).
+   - Aspect ratios are mapped to image sizes, and reference images use the
+     image edits endpoint (host/server/media-providers.mjs, media-http.mjs,
+     media-settings.mjs, host/runtime/media-services.mjs).
+
+5. Message order: messages from one model response are delivered in the order
+   the model wrote them (host/runtime/reliability/tool-order.mjs (new),
+   tool-journal.mjs, host/runtime/model-common.mjs).
+
+6. Linux deployment: host/release/build-docker.py accepts the image identity
+   reported by Docker 29's containerd image store; host/network/build-tailcat.py
+   builds the Windows target; Dockerfile.base and Dockerfile.execution set the
+   executable bit on the Tailcat binary.
+
+7. Admin command-line tool (new): host/tools/host-admin.mjs.
+
+8. Tests: host/tests/ (new), windows/tests/ (new),
+   mac/tests/desktop-external-links.test.mjs (locale-independent assertion).
+
+9. Documentation: README, docs/AI-INSTALL, docs/TECHNICAL (new), docs/INSTALL,
+   docs/ARCHITECTURE, module READMEs, CHANGELOG, CONTRIBUTING, SECURITY.
+
+Third-party components
+----------------------
+
+Third-party components keep their own licenses. See host/THIRD_PARTY,
+mac/THIRD_PARTY, ios/THIRD_PARTY and mac/patchers/desktop/node_modules.
+
+Original Grok Bot programs
+--------------------------
+
+This repository contains no Grok Bot program files. The patch tools download
+the official programs on the user's own machine, verify their hashes and patch
+them there. Grok, Grok Bot and related names and marks belong to their
+respective owners. ProkBot Plus is not affiliated with or endorsed by them.

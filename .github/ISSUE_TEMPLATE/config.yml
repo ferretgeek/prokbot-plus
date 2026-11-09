@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 部署手册与故障排查 / Install guide and troubleshooting
+    url: https://github.com/ferretgeek/prokbot-plus/blob/main/docs/AI-INSTALL.md
+    about: 很多常见问题都能在这里找到答案 / Most common problems are answered here
