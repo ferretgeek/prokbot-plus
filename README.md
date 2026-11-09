@@ -12,6 +12,7 @@ Windows · macOS · iOS 客户端 ｜ Linux 服务端 ｜ OpenAI Chat / OpenAI R
   <img alt="iOS 1.16.0" src="https://img.shields.io/badge/iOS-1.16.0-111111?logo=apple&logoColor=white">
   <img alt="Host d0a4baa" src="https://img.shields.io/badge/Host-d0a4baa-2496ED?logo=docker&logoColor=white">
   <img alt="Noncommercial License" src="https://img.shields.io/badge/License-Noncommercial-6B7280">
+  <a href="https://linux.do"><img alt="LINUX DO" src="https://img.shields.io/badge/Community-LINUX%20DO-F5A623"></a>
 </p>
 
 **简体中文** · [English](README.en.md)
@@ -180,6 +181,10 @@ AI 会先列出你要准备的东西，然后一步步部署服务端、配置�
 | [技术说明](docs/TECHNICAL.md) | Plus 改了什么、为什么这样改，以及二次开发入口 |
 | [Windows 客户端](windows/README.md) · [Mac 客户端](mac/README.md) · [iOS 客户端](ios/README.md) | 各平台补丁的用法 |
 | [分开部署与备份](host/docs/DEPLOYMENT.md) · [应用开发](host/PLUGINS.md) | 进阶用法 |
+
+## 友情链接
+
+- [LINUX DO](https://linux.do)：新的理想型社区。ProkBot Plus 的交流和发布都在这里，有问题、有想法欢迎来社区聊。
 
 ## 许可与声明
 

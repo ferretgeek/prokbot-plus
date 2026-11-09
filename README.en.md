@@ -12,6 +12,7 @@ Windows · macOS · iOS clients | Linux server | OpenAI Chat / OpenAI Responses 
   <img alt="iOS 1.16.0" src="https://img.shields.io/badge/iOS-1.16.0-111111?logo=apple&logoColor=white">
   <img alt="Host d0a4baa" src="https://img.shields.io/badge/Host-d0a4baa-2496ED?logo=docker&logoColor=white">
   <img alt="Noncommercial License" src="https://img.shields.io/badge/License-Noncommercial-6B7280">
+  <a href="https://linux.do"><img alt="LINUX DO" src="https://img.shields.io/badge/Community-LINUX%20DO-F5A623"></a>
 </p>
 
 [简体中文](README.md) · **English**
@@ -181,6 +182,10 @@ If you'd rather do it yourself, see the [installation guide](docs/INSTALL.en.md)
 | [Technical notes](docs/TECHNICAL.en.md) | What Plus changed and why, and where to start if you want to build on it |
 | [Windows client](windows/README.en.md) · [Mac client](mac/README.en.md) · [iOS client](ios/README.en.md) | How to use the patches for each platform |
 | [Split deployment and backups](host/docs/DEPLOYMENT.en.md) · [App development](host/PLUGINS.en.md) | Advanced usage |
+
+## Friends
+
+- [LINUX DO](https://linux.do): a Chinese tech community where ProkBot Plus is discussed and released. Questions and ideas are welcome there.
 
 ## License and notices
 
