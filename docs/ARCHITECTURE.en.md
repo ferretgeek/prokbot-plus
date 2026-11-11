@@ -19,6 +19,7 @@ flowchart LR
   Win[Windows client] --> Admin
   Mac[Mac client] --> Admin
   iOS[iOS client] --> Admin
+  And[Android client] --> Admin
   subgraph Host container
     Admin[Admin service :8000<br/>login / pairing / config / proxy] --> Core[Original Host 127.0.0.1:1340<br/>Agent / tools / context]
     Core --> Adapter[Model adapter layer]
@@ -39,6 +40,7 @@ The patches only work on pinned versions. Original files are checked by SHA-256,
 | Windows client | 0.71.2 x64 (`Grok_Bot_0.71.2_Setup.exe`) |
 | Mac client | 0.71.2 Apple Silicon |
 | iOS client | 1.16.0 (23152) arm64 decrypted IPA |
+| Android client | Interface taken from the Windows 0.71.2 x64 installer; the shell is this project's code |
 
 ## Feature comparison
 
@@ -65,7 +67,7 @@ The patches only work on pinned versions. Original files are checked by SHA-256,
 | 🔁 Live calls | Official realtime voice model | Recognition and synthesis each use a service you choose (experimental) | Recognition and synthesis services |
 | 🔁 Image and video generation | Official service | OpenAI-compatible image APIs (with set aspect ratios and editing from reference images), WaveSpeed and others | Provider keys |
 | 🔁 Web search | Official search | The built-in web access of Claude or OpenAI Responses models, or a separately configured DeepSeek or HTTP JSON search service | Optional |
-| 🔁 Push notifications | Official push | APNs when the app is signed with the push entitlement, otherwise Bark | The Bark app, or an Apple Developer account and an APNs key (.p8) |
+| 🔁 Push notifications | Official push | iOS: APNs when the app is signed with the push entitlement, otherwise Bark. Android: the app keeps its own connection to the Host | For iOS, the Bark app, or an Apple Developer account and an APNs key (.p8) |
 | 🔁 Access from outside your network | Connects directly to the official cloud | IP address, Tailscale, an HTTPS reverse proxy, or the built-in Tailcat | A domain, depending on the setup |
 | ⛔ Telemetry and error reports | Sent to the vendor | Turned off | Nothing |
 | ⛔ Automatic updates | Official updates | Turned off; patches are pinned to the supported versions | Nothing |
@@ -248,6 +250,54 @@ The official Windows client of the same version uses the same Electron interface
 - To rebuild the stub, run this in `windows/installer/`: `go build -trimpath -ldflags="-H=windowsgui -s -w" -o ../dist/installer/grokbot-setup-stub.exe .`.
 - To rebuild Tailcat for Windows, run this from the repository root: `python host/network/build-tailcat.py --target windows-amd64 --output windows/dist/network` (needs Go).
 
+### Android client
+
+The official Android app (`ai.x.grok.bot` 1.16.0) is a React Native app with Google Play tamper protection; once modified it stops working, and circumventing that protection is out of scope for this project. So the Android client does not modify the official Android app. It runs the official **desktop** interface on the phone (the same one as the Windows and Mac clients), with an Android shell written for this project in place of Electron.
+
+**The shell** (`android/shell/`, Kotlin, no third-party libraries; `android/dist/grokbot-android-shell.apk` is its prebuilt release build) is a full-screen WebView plus:
+
+- **A local gateway** (`LocalGateway.kt`) that listens only on `127.0.0.1`:
+  - The interface port (from 39710) serves the interface files and the `/__native/*` native endpoints, and forwards `/api`, `/events`, `/local`, `/connect` and `/notifications` to the Host, adding the device token.
+  - The computer view port (from 39720) forwards only the noVNC pages and WebSockets under `/vnc/desktop/` and `/vnc/fork/`.
+  - Both ports check an HttpOnly, SameSite=Strict cookie generated at random on every start; the interface port also checks Host, Origin and Sec-Fetch-Site.
+  - The device token stays in the native layer; the web page never sees it. When the Host fails, the gateway answers 502 instead of leaving the page an empty response.
+- **The credential** (`Storage.kt`): the device token is encrypted with an AES-GCM key in the Android Keystore; settings and the interface's persisted data are kept in the app's private storage.
+- **Notifications** (`Notifications.kt`): a foreground service follows the Host's `/notifications/events` (the same stream the iOS client reads), removes duplicates by creation time and stays quiet for the Bot being viewed. Tapping a notification opens that Bot through `grokbot-local://agent/<id>`. It resumes after a reboot or an update, and asks to pair again when the device is revoked. Notification texts follow the language chosen in the app.
+- **System features**: file picking, the system save dialog, microphone permission, the back gesture, dark mode and system bar colors, screen insets.
+
+**The bridge** (`android/client/`) replaces Electron's main process and preloads inside the WebView:
+
+- `bridge.js` emulates `ipcRenderer`, `contextBridge` and `process` and runs the original `preload.cjs` unchanged.
+- `services.js` and `gateway.js` port the local methods of the desktop client's main process (`mac/clients/desktop/`): chunked attachment uploads, saving files, profile, voice, settings, connected apps and more.
+- `webview.js` replaces Electron's `<webview>` with an iframe:
+  - The gateway forwards the computer view page from the Host and injects `vnc-bridge.js` and the original `preload-vnc.cjs` from the noVNC page's own folder (code that the original preload passes to `executeJavaScript` imports noVNC modules by page-relative paths).
+  - `executeJavaScript`, `send`, `insertCSS` and `ipc-message` work over postMessage and accept only the app's own interface.
+  - The iframe follows the `pointer-events` set by the interface, so the Bot's computer takes touch and on-screen keyboard input only after "Take control".
+  - The desktop clients use a reduced VNC preload; the original one used here also gives the phone an input method field, the clipboard and adaptive quality.
+- `layout.js` and `android.css` lay the interface out after the official phone app, with colors, sizes and the typeface taken from its design values:
+  - Below a window width of 600 px, the Bot list and a conversation are two full-screen pages. `layout.js` picks the page from taps on a Bot, search, creating or deleting a Bot, new group chats and notifications, adds a back button to the conversation, and the back gesture in a conversation returns to the list. After "Create" it waits for the Host to make the Bot, then opens its conversation.
+  - Back, the account, search, new Bot and add are round floating buttons, and the conversation shows the Bot's name in a pill at the top; bubbles, the message field, list rows and sheets have the official app's sizes and colors; the typeface is XVF, which the desktop interface ships.
+  - The list has no marketplace button; `layout.js` adds a marketplace entry to the account menu. It also formats the last-active time on each row (the time today, then "Yesterday", the weekday and the date).
+  - Conversation details, settings, the marketplace and search fill the screen; other dialogs, menus and choices slide up from the bottom; images and the large computer view are full screen on black.
+  - From 600 px up the desktop layout stays; below 792 px conversation details are a full-screen layer that steps aside for the large computer view.
+  - Settings that mean nothing on Android (hardware acceleration, local access, Tailcat) are hidden; wide images are scaled to the column.
+- `anchor-fallback.js`: WebView builds before Chromium 125 lack CSS anchor positioning, and the computer view collapses to nothing. The fallback records anchor names and position expressions and turns them into pixels after layout.
+
+**The builder** (`android/patchers/patch.mjs`):
+
+1. Downloads and verifies the official `Grok_Bot_0.71.2_Setup.exe` (the same file as for the Windows client), extracts `app.asar` and applies the Windows recipes.
+2. Verifies the SHA-256 of the interface entry, `preload.cjs` and `preload-vnc.cjs`, then applies the interface changes in `renderer-patches.mjs`; each file is verified by hash first and every anchor must be unique:
+   - The window width check for conversation details is relaxed (a phone cannot widen its window).
+   - The "Teach a task" and "Get the mobile app" entries are removed.
+   - The computer view's anchor styles get custom properties that the fallback reads.
+   - Each row of the Bot list shows when the Bot was last active.
+3. Puts the interface, the bridge, the original preloads (wrapped as an ES module and a plain script) and the official icon into `assets/web/` of the shell APK.
+4. Aligns the entries as zipalign does and signs the APK with signature scheme v2 (`apk.mjs`, plain Node.js). The signing key is created on the first build and kept in `~/.grokbot-local/android-signing.json`.
+
+**Pairing**: Android sends `platform: desktop` with `clientKind: android`. Updated Hosts store new pairings as Android devices without desktop execution privileges; older Hosts ignore the extra field and remain compatible. Full-width characters typed by Chinese input methods are converted first.
+
+**Differences from the desktop clients**: no Tailcat; the Bot cannot run commands on or operate the phone (`getLocalToolPermission` answers `never`); no "Teach a task".
+
 ### iOS client
 
 The original iOS client is built with React Native. Here an injected dynamic library (Objective-C, source in `ios/clients/ios/`, compiled with `build.py`) sends the requests meant for the official service to your Host, and a few fixed changes are made to the Hermes bytecode. The three extensions (widgets, share and notifications) are kept, each with its own bundle ID. The patch outputs an unsigned IPA, and you sign the main app and all three extensions yourself (see [ios/README.en.md](../ios/README.en.md#signing)).
@@ -279,10 +329,13 @@ In the original, the skill catalog, the app marketplace, Bot template publishing
 | `host/tools/host-admin.mjs` | Command-line admin tool |
 | `host/network/` | Go source and build script for Tailcat; `host/bin/` holds the prebuilt Linux version |
 | `host/tests/` | Server unit tests |
-| `mac/clients/desktop/` | Desktop client main process, shared by Mac and Windows: connection, pairing, notifications, attachments (`attachments.mjs`, `attachment-uploads.mjs`), external links and previews, local commands (`local-exec.mjs`), Codex delegation. Platform differences are kept in `platform.mjs` |
+| `mac/clients/desktop/` | Desktop client main process, shared by Mac and Windows: connection, pairing, notifications, attachments (`attachments.mjs`, `attachment-uploads.mjs`), external links and previews, local commands (`local-exec.mjs`), Codex delegation. Platform differences are kept in `platform.mjs`. The `*-settings-extension.js` files are the source of the code the recipes add to the original settings pages; changes to them take effect only after the recipes are made again. The Android client also copies `i18n.mjs`, `external-url.mjs` and `connectors.mjs` from here |
 | `mac/patchers/desktop/` | Mac patcher, recipe applier and original-app downloader (`download-original.mjs`). The Windows patcher uses it too |
-| `windows/patchers/desktop/` | Windows patcher: `patch.mjs`, `pe.mjs` (icon, ASAR integrity, signature table), `zip.mjs`, `recipes/` |
+| `windows/patchers/desktop/` | Windows patcher: `patch.mjs`, `original.mjs` (extracting the official installer, also used by Android), `pe.mjs` (icon, ASAR integrity, signature table), `zip.mjs`, `recipes/` |
 | `windows/tools/`, `windows/installer/`, `windows/dist/` | Recipe porting tool, installer source, prebuilt Tailcat and installer stub |
+| `android/shell/` | Android shell (Kotlin): local gateway, credential, pairing, notifications, files and the back gesture; `release-shell.mjs` builds `android/dist/grokbot-android-shell.apk` |
+| `android/client/` | Bridge in the WebView: replaces Electron's main process and preloads, computer view, layout adjustments, anchor fallback, connection page |
+| `android/patchers/` | Android builder: `patch.mjs`, `apk.mjs` (ZIP and APK signing), `renderer-patches.mjs`, `supported.json` |
 | `ios/release/` | iOS patch entry point `patch-ios.py`: verifies the user's IPA and outputs an unsigned file |
 | `ios/clients/ios/` | Source of the injected library, native UI and feature adaptations (for example tunnel management in `GBNetwork.m` and voice transport in `GBVoiceSocket.m`); `audio-processing/` is the echo processing library |
 | `*/recipes/` | Patch data that copies bytes from the original files and adds this project's changes |
@@ -298,10 +351,13 @@ In the original, the skill catalog, the app marketplace, Bot template publishing
 ## Tests
 
 ```sh
-node --test "host/tests/*.test.mjs"      # server, 35 tests
-node --test "windows/tests/*.test.mjs"   # Windows client, 8 tests
-node --test mac/tests/*.test.mjs         # Mac / shared client, 15 tests
+node --test "host/tests/*.test.mjs"      # server
+node --test "windows/tests/*.test.mjs"   # Windows client
+node --test "mac/tests/*.test.mjs"       # Mac / shared client
+node --test "android/tests/*.test.mjs"   # Android client
 ```
+
+The network layer of the iOS injected library has one more test, which runs on a Mac with the Xcode command line tools: `python3 ios/tests/ios-network.test.py`.
 
 Coverage:
 
@@ -312,6 +368,8 @@ Coverage:
   - message order.
 - **Windows client**: window style, installer layout, finding Codex, Host image paths, command output encoding.
 - **Mac client**: attachments, external links, previews, sidebar and more.
+- **iOS network layer**: starting the Tailcat tunnel (concurrent requests start it once), restoring it, rebuilding it after connection errors, and shutting it down.
+- **Android client**: APK alignment, signing and tamper detection, the signing key, the interface entry and interface patches, wrapping the original preloads, Host attachment paths, computer view addresses, event stream parsing, anchor position arithmetic, image scaling, switching between the list and conversation pages on phones, the format of the last-active time.
 
 After changing code, it's a good idea to also check it for real:
 
@@ -326,8 +384,9 @@ After changing code, it's a good idea to also check it for real:
 | Add a new model API format | Create an adapter file in `host/runtime/` that implements a generator with the same shape as `openai-chat.mjs`, then register it in these places: `model-session.mjs`, `CLASSIFIERS` in `host-auto-review.mjs`, `host/server/models.mjs`, and the admin page `host/server/public/model.js` |
 | Adjust the thinking levels of a model | `effortLevels` in `host/runtime/model-policy.mjs`. Claude model features are in `anthropic-messages.mjs` |
 | Change the admin page | `host/server/public/`. English strings are in `locales-en.js` |
-| Change the desktop client | `mac/clients/desktop/` (shared by Mac and Windows) |
-| Support a new official client version | Update the hashes in `supported.json`. Mac recipes have to be made again; Windows recipes are ported with `windows/tools/port-desktop-recipes.mjs` |
+| Change the desktop client | `mac/clients/desktop/` (shared by Mac and Windows; Android uses three of its files) |
+| Change the Android client | The bridge is in `android/client/`; the shell is in `android/shell/`. After changing the shell, run `node android/shell/release-shell.mjs` to update the prebuilt shell and its digest (needs JDK 17+ and the Android SDK) |
+| Support a new official client version | Update the hashes in `supported.json`. Mac recipes have to be made again; Windows recipes are ported with `windows/tools/port-desktop-recipes.mjs`; for Android also update `android/patchers/supported.json` and `renderer-patches.mjs` |
 | App (plugin) development | [host/README.en.md](../host/README.en.md#app-development) |
 
 ## Known limitations and to-do
@@ -338,5 +397,11 @@ After changing code, it's a good idea to also check it for real:
   - Not code-signed, so SmartScreen shows a warning on first launch;
   - x64 only;
   - Tailcat and live voice have not been tested against a real Host yet.
+- Android client:
+  - No Tailcat.
+  - The layout follows the official phone app, but the pages are the desktop ones: settings are tabs such as General, Computer and Updates, the marketplace has the desktop categories and content, and the conversation has no computer button at the top right as in the official phone app (the Bot's computer opens from the conversation details).
+  - Background notifications rely on a foreground service; some vendor systems require allowing the app to run in the background.
+  - Voice input and live calls are verified only up to the request reaching the Host; they have not been tested against a real voice service.
+  - Fully tested on an Android 15 emulator (WebView 124); pairing, the notification permission and the layout were verified on an Android 16 emulator (WebView 134). Not yet tested on a physical phone.
 - The server supports only x86_64 Linux, and the original desktop image is amd64 only.
 - iOS needs your own decrypted IPA and signing certificate. Headphones, Bluetooth and network switching have not been fully tested on real devices.

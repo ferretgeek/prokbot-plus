@@ -10,3 +10,8 @@
 *.png binary
 host/bin/grokbot-tailcat binary
 mac/dist/network/grokbot-tailcat binary
+
+# Windows batch files need CRLF; Gradle wrapper and Android packages are binary.
+*.bat text eol=crlf
+*.jar binary
+*.apk binary

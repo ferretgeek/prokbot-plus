@@ -1,9 +1,7 @@
 // Minimal deflate zip writer (no zip64): one archive serves as the portable download
 // and as the installer payload.
-import { createWriteStream } from 'node:fs';
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { open, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { crc32, deflateRawSync } from 'node:zlib';
-import { once } from 'node:events';
 import path from 'node:path';
 
 const LIMIT = 0xffffffff;
@@ -29,11 +27,11 @@ async function files(root, relative = '') {
 
 /** Write every file below `directory` under `prefix/`; returns { bytes, entries }. */
 export async function writeZip(directory, destination, { prefix, comment = '' }) {
-  const output = createWriteStream(destination, { flags: 'wx' });
+  const output = await open(destination, 'wx');
   let offset = 0;
   const write = async buffer => {
     offset += buffer.length;
-    if (!output.write(buffer)) await once(output, 'drain');
+    await output.writeFile(buffer);
   };
   const central = [];
   try {
@@ -70,9 +68,11 @@ export async function writeZip(directory, destination, { prefix, comment = '' })
     end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(central.length, 8); end.writeUInt16LE(central.length, 10);
     end.writeUInt32LE(offset - start, 12); end.writeUInt32LE(start, 16); end.writeUInt16LE(note.length, 20);
     await write(end); await write(note);
-  } finally {
-    output.end();
-    await once(output, 'close');
+    await output.close();
+  } catch (error) {
+    await output.close();
+    await rm(destination, { force: true });
+    throw error;
   }
   return { bytes: offset, entries: central.length };
 }

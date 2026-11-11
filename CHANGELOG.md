@@ -6,13 +6,29 @@ Versions start at ProkBot Plus 1.0.0. Upstream ProkBot releases are listed at th
 
 ## 未发布 / Unreleased
 
-- **文档精简**：
+- **客户端与 Host 修复**：Windows 安装和卸载前校验目录归属；Windows、Android 对显式提供的官方 EXE 校验整包及内层摘要；仅校验时清理临时目录，Windows 构建失败不覆盖已有 ZIP。Android 正确报告保存失败、释放重连监听器、限制网关连接数和握手时间，后台通知不再漏掉同一毫秒的不同事件。新版 Host 区分 Android 和 Windows；新配对的 Android 设备没有桌面执行权限。模型请求不跟随重定向；消息排序等待不会因 Node 提前退出而丢失。
+- **验证与主页**：加入可选的三平台 CI 模板（默认未启用）、Windows 安装器测试，以及 Android 15 干净演示环境的中英文实拍截图，明确 Android App 由项目自开发、不是官方版本。
+
+English: Windows checks directory ownership before installation or removal. Both builders verify explicit EXEs and their payloads; Windows verification cleans up, and failed ZIP builds preserve existing output. Android reports save failures, releases reconnect listeners, bounds gateway connections and handshakes, and keeps distinct notifications with identical timestamps. Updated Hosts distinguish Android from Windows and withhold desktop execution privileges from newly paired Android clients. Model requests refuse redirects, and ordered messages retain their timeout even on an otherwise idle Node process. The optional three-platform CI template is inactive by default. Installer tests and clean Android 15 screenshots are included.
+
+- **新增 Android 客户端**（`android/`）：
+  - 界面用官方桌面版的界面，取自用户自己下载的官方 Windows 0.71.2 安装包，套在本项目编写的 Android 外壳里（官方 Android 版带防篡改保护，不做修改）；
+  - 生成工具 `android/patchers/patch.mjs` 在 Windows、macOS、Linux 上都能运行，用为用户单独生成的密钥签名（APK 签名方案 v2）；
+  - 功能：对话、Bot 电脑的实时画面和远程操作（触摸和软键盘）、附件上传和保存、后台通知（不依赖 Google 推送）、深色模式、返回键；Android 9 及以上；
+  - 照官方手机版的样子重新排版：Bot 列表和对话分成两屏，圆形悬浮按钮、消息气泡、配色和 XVF 字体都按官方手机版，列表每行显示 Bot 的最后活动时间，市场入口移到账户菜单；详情、设置、市场和搜索全屏打开，菜单和对话框从底部弹出，看图和电脑大画面黑底全屏；旧版 WebView 上 Bot 电脑画面也能正确定位；
+  - 配对时自动把中文输入法打出的全角字符转换为半角。
+- **Windows 补丁**：解压官方安装包的代码移到 `windows/patchers/desktop/original.mjs`，供 Android 共用。
+- **文档**：
   - 技术说明、功能细节、待办和手动安装说明合并为[技术文档](docs/ARCHITECTURE.md)；
   - Host 的离线构建、备份、分开部署和应用开发并入 `host/README.md`，iOS 签名说明并入 `ios/README.md`；
-  - 删除没有用到的截图。
-- **新增 `AGENTS.md`**：给接手本仓库的 AI 看的项目概览，`CLAUDE.md` 引用它。
+  - 删除没有用到的截图；
+  - 部署手册补充更新客户端的步骤和 Android 的故障排查；贡献说明、PR 和问题模板、安全建议加上 Android；技术文档补充 iOS 网络层测试；
+  - 新增 `AGENTS.md`：给接手本仓库的 AI 看的项目概览，`CLAUDE.md` 引用它。
+- **清理**：删除没有程序读取、内容也已过时的文件清单 `host/source-files.json`。
 
-English: the technical notes, feature details, to-do list and manual install notes are merged into the [technical documentation](docs/ARCHITECTURE.en.md); the Host deployment, backup and app notes are merged into `host/README.en.md` and the iOS signing notes into `ios/README.en.md`; unused screenshots are removed; `AGENTS.md` adds a project overview for AI agents.
+English: **new Android client** (`android/`). It runs the official desktop interface, taken from the user's own download of the official Windows 0.71.2 installer, inside an Android shell written for this project (the official Android app carries tamper protection and is not modified). The builder `android/patchers/patch.mjs` runs on Windows, macOS and Linux and signs the APK (scheme v2) with a key created for the user. It supports conversations, the live view and remote control of the Bot's computer (touch and on-screen keyboard), uploading and saving attachments, background notifications without Google push, dark mode and the back gesture, on Android 9 and later; the interface is rearranged after the official phone app (the Bot list and a conversation are separate screens with its round floating buttons, message bubbles, colors and XVF typeface; each Bot row shows when the Bot was last active; the marketplace moves into the account menu; details, settings, the marketplace and search open full screen; menus and dialogs slide up from the bottom), the computer view is positioned correctly on older WebView builds, and pairing converts full-width characters typed by Chinese input methods. The Windows patcher's installer extraction moved to `windows/patchers/desktop/original.mjs` for sharing.
+
+English: the technical notes, feature details, to-do list and manual install notes are merged into the [technical documentation](docs/ARCHITECTURE.en.md); the Host deployment, backup and app notes are merged into `host/README.en.md` and the iOS signing notes into `ios/README.en.md`; unused screenshots are removed; the deployment guide adds steps for updating the clients and Android troubleshooting; the contributing guide, pull request and issue templates and security advice cover Android; the technical documentation lists the iOS network test; `AGENTS.md` adds a project overview for AI agents. The unused and outdated file list `host/source-files.json` is removed.
 
 ## 1.0.0（2026-11-10）
 

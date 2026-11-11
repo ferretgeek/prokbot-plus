@@ -9,6 +9,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -167,6 +168,45 @@ func defaultDirectory() string {
 
 func startMenuShortcut() string {
 	return filepath.Join(os.Getenv("APPDATA"), `Microsoft\Windows\Start Menu\Programs`, appName+".lnk")
+}
+
+// A portable or official client is not an installation owned by this uninstaller.
+func checkDirectory(directory string, installing bool) error {
+	directory = filepath.Clean(directory)
+	if !filepath.IsAbs(directory) || filepath.Dir(directory) == directory {
+		return fmt.Errorf("invalid installation directory: %s", directory)
+	}
+	info, err := os.Lstat(directory)
+	if installing && errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("not an installation directory: %s", directory)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		return err
+	}
+	if installing && len(entries) == 0 {
+		return nil
+	}
+	for _, name := range []string{exeName, uninstaller} {
+		f, err := os.Lstat(filepath.Join(directory, name))
+		if err != nil || !f.Mode().IsRegular() {
+			return fmt.Errorf("not a Grok Bot Local installation: %s", directory)
+		}
+	}
+	var marker struct {
+		AppUserModelID string `json:"appUserModelId"`
+	}
+	data, err := os.ReadFile(filepath.Join(directory, "resources", "grokbot-local.patch.json"))
+	if err != nil || json.Unmarshal(data, &marker) != nil || marker.AppUserModelID != "dev.grokbot.local" {
+		return fmt.Errorf("unrecognized Grok Bot Local installation: %s", directory)
+	}
+	return nil
 }
 
 // inUse reports whether the installed client is running: Windows refuses to rename a
@@ -335,6 +375,9 @@ if ($command -and $command.IndexOf($root, [StringComparison]::OrdinalIgnoreCase)
 }
 
 func install(self string, directory string, version string) error {
+	if err := checkDirectory(directory, true); err != nil {
+		return err
+	}
 	data, err := readPayload(self)
 	if err != nil {
 		return err
@@ -347,11 +390,14 @@ func install(self string, directory string, version string) error {
 	if !waitUntilClosed(directory) {
 		return nil
 	}
-	stamp := time.Now().Format("20060102150405")
-	staging, previous := directory+".new-"+stamp, directory+".old-"+stamp
 	if err := os.MkdirAll(filepath.Dir(directory), 0o755); err != nil {
 		return err
 	}
+	staging, err := os.MkdirTemp(filepath.Dir(directory), filepath.Base(directory)+".new-*")
+	if err != nil {
+		return err
+	}
+	previous := staging + ".previous"
 	window := showProgress(text("正在安装 Grok Bot Local…", "Installing Grok Bot Local…"))
 	defer window.close()
 	size, err := extract(data, staging, func(done, total int) {
@@ -375,6 +421,10 @@ func install(self string, directory string, version string) error {
 	_, statErr := os.Stat(directory)
 	existed := statErr == nil
 	if existed {
+		if err := checkDirectory(directory, true); err != nil {
+			os.RemoveAll(staging)
+			return err
+		}
 		if err := os.Rename(directory, previous); err != nil {
 			os.RemoveAll(staging)
 			return fmt.Errorf("%s: %w", text("无法替换已安装的版本", "Could not replace the installed version"), err)
@@ -437,6 +487,9 @@ func installedDirectory(self string) string {
 }
 
 func uninstall(self string, directory string) error {
+	if err := checkDirectory(directory, false); err != nil {
+		return err
+	}
 	// The uninstaller lives inside the directory it removes; continue from a temporary copy.
 	if strings.EqualFold(filepath.Dir(self), filepath.Clean(directory)) {
 		copyPath := filepath.Join(os.TempDir(), fmt.Sprintf("grokbot-uninstall-%d.exe", os.Getpid()))
@@ -460,8 +513,8 @@ func uninstall(self string, directory string) error {
 		return nil
 	}
 	// Never remove a folder that is not this application's installation.
-	if _, err := os.Stat(filepath.Join(directory, exeName)); err != nil {
-		return fmt.Errorf("%s: %s", text("找不到安装目录", "Installation not found"), directory)
+	if err := checkDirectory(directory, false); err != nil {
+		return err
 	}
 	if err := os.RemoveAll(directory); err != nil {
 		return err
@@ -469,7 +522,11 @@ func uninstall(self string, directory string) error {
 	if err := removeIntegration(directory); err != nil {
 		return err
 	}
-	run("reg.exe", "delete", registryKey, "/f")
+	if strings.EqualFold(filepath.Clean(registryString(strings.TrimPrefix(registryKey, `HKCU\`), "InstallLocation")), directory) {
+		if err := run("reg.exe", "delete", registryKey, "/f"); err != nil {
+			return err
+		}
+	}
 	if !silent && ask(text("同时删除本机的配对凭据、设置和缓存吗？\n选择“否”可在重新安装后继续使用。",
 		"Also remove this computer's pairing credentials, settings and caches?\nChoose No to keep them for a later installation."), mbIconWarning|mbDefButton2) {
 		os.RemoveAll(filepath.Join(os.Getenv("APPDATA"), appName))
@@ -479,10 +536,10 @@ func uninstall(self string, directory string) error {
 	if !strings.HasPrefix(filepath.Base(self), "grokbot-uninstall-") {
 		return nil
 	}
-	// cmd.exe parses its own command line, so it is passed verbatim rather than escaped.
-	cleanup := exec.Command("cmd.exe")
-	cleanup.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000,
-		CmdLine: `cmd.exe /d /c ping -n 3 127.0.0.1 >nul & del /f /q "` + self + `"`}
+	cleanup := exec.Command("powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+		`Wait-Process -Id $env:GB_PARENT -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $env:GB_TEMP_UNINSTALLER -Force`)
+	cleanup.Env = append(os.Environ(), "GB_TEMP_UNINSTALLER="+self, fmt.Sprintf("GB_PARENT=%d", os.Getpid()))
+	cleanup.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
 	cleanup.Start()
 	return nil
 }

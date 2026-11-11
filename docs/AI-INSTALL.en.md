@@ -23,7 +23,7 @@ This guide is written for an AI that deploys ProkBot Plus for a user. People can
 | Task | Who |
 | --- | --- |
 | Run commands on the server | You (the AI) |
-| Build the Windows or Mac client | You, if you are running on that computer. Otherwise give the commands to the user |
+| Build the Windows, Mac or Android client | You, if you are running on that computer. Otherwise give the commands to the user |
 | Type SSH passwords and sudo passwords | The user. You can't type into a password prompt |
 | Double-click to install the client, enter the address and pairing code in the client, click through the admin page, send messages to check the result | The user. These are graphical interface tasks. Tell them what to do, one item at a time |
 
@@ -101,6 +101,10 @@ To deploy ProkBot Plus, you need to prepare the following. Every required item i
      - Does it have Node.js 22.12+ and git installed?
      - Does it have the official Grok Bot installed?
    - An iPhone: harder. You need to provide your own decrypted Grok Bot 1.16.0 IPA and a signing certificate.
+   - An Android phone (Android 9 or later):
+     - The app is built on a computer (Windows, Mac or Linux, with Node.js 22.12+). Is it the one I'm running on now?
+     - Can the phone reach that computer (a USB cable, or copying the APK file to the phone)?
+     - The Android client does not support Tailcat. To use it outside your network you need a VPN, a tunnel or an HTTPS domain.
 
 [Your choice]
 4. Where you'll use it:
@@ -127,6 +131,7 @@ After the user replies, check each item:
 | The server is ARM | The images are amd64 only and won't work. Use an x86_64 machine |
 | Windows has "Smart App Control" turned on | The built client is not code-signed and will be blocked outright. The user can turn it off in Windows Security (**once turned off, it can't be turned back on without reinstalling Windows**; tell the user this first), or use another computer |
 | The user doesn't know the API format | See "How to choose the API format" in step 6 |
+| The user wants an Android phone but chose B (Tailcat) | The Android client does not support Tailcat. Ask whether a VPN, a tunnel or an HTTPS domain (option C) is possible; otherwise the Android phone works only on the local network |
 
 **Set up an SSH key** (when the user can only log in with a password):
 
@@ -690,7 +695,32 @@ python3 ios/release/patch-ios.py --input <decrypted.ipa> --output ./ios-output -
 
 For how to sign it, see [ios/README.en.md](../ios/README.en.md#signing). The user confirms whether the install worked. When you hand over, report the actual progress honestly.
 
-### 9.4 Pairing
+### 9.4 Android phone
+
+The Android client does not modify the official Android app (it carries tamper protection). Instead it builds an APK from the desktop interface in the official Windows installer and this project's Android shell. The build runs on a computer with Windows, macOS or Linux (if you are running on that computer, run it yourself; otherwise hand it to the user):
+
+1. `node --version` should show v22.12 or newer. Extracting the official installer needs: the `tar` that comes with Windows 11 (Windows 10 needs 7-Zip); the `tar` that comes with macOS; on Linux, `bsdtar` or 7-Zip, for example `sudo apt-get install -y libarchive-tools < /dev/null` on Ubuntu/Debian.
+2. In the repository root, run:
+
+   ```sh
+   node android/patchers/patch.mjs
+   ```
+
+3. **You should see:** `"verified": true` in the output, and `GrokBotLocal-0.71.2-android.apk` in `android/output/`. The first run also prints "已生成新的签名密钥" (a new signing key was created) at `~/.grokbot-local/android-signing.json`. **Tell the user where this file is and ask them to back it up**: later updates of the app must use the same key; without it the app has to be uninstalled and paired again.
+4. Install the APK on the phone, one of:
+   - If the phone is connected to this computer by USB with "USB debugging" on: `adb install -r android/output/GrokBotLocal-0.71.2-android.apk`; you should see `Success`.
+   - Otherwise send the APK file to the phone (cable, cloud drive or chat app) and ask the user to open it on the phone. If Android blocks installing unknown apps, allow it for that source as prompted.
+5. Ask the user to open "Grok Bot Local" and leave it on the screen where the Host address is entered. When the workspace opens for the first time, Android asks whether to allow notifications; ask the user to choose "Allow".
+
+**If it fails:**
+
+- **Downloading the original fails**: as in 9.1, download it in a browser and run `node android/patchers/patch.mjs --source <path to downloaded file>`.
+- **"无法解压原版程序包" (cannot extract the original package)**: install `bsdtar` or 7-Zip as in item 1. If 7-Zip is not in its default place, point the environment variable `GROKBOT_7Z` to `7z` (`7z.exe` on Windows).
+- **"输出已存在，不会覆盖" (output already exists, will not overwrite)**: rename or delete the old `android/output`, or add `--force`.
+- **The phone says "App not installed" or reports a signature conflict**: a version signed with another key is installed. Uninstall it first (this removes the pairing), then install.
+- **It says `@electron/asar` is missing**: run `npm install --prefix mac/patchers/desktop` in the repository root.
+
+### 9.5 Pairing
 
 Only after the user says the client on a device is open and waiting on the screen where the address is entered, run:
 
@@ -706,7 +736,7 @@ Ask the user to fill in, in the client:
 - **Pairing code**: `pairingKey` from the output. It has 6 characters, made of uppercase letters and digits, for example `K7MPQ2`.
 - **Host address**:
   - LAN or HTTPS: enter `hostUrl` from the output;
-  - Tailcat: turn on the "Tailcat" switch and paste the connection link copied in step 8.
+  - Tailcat: turn on the "Tailcat" switch and paste the connection link copied in step 8 (the Android client has no such switch; enter the address).
 
 **Create a new pairing code for each device.** If a code isn't used within 5 minutes, run the command again.
 
@@ -728,6 +758,7 @@ Check each item. The deployment is done only when all of them pass. You run the 
 | Web access (if configured) | The user sends "Search today's news and give the sources" | The answer has source links |
 | Image generation (if configured) | The user sends "Draw a 16:9 landscape" | The image shows in the client |
 | Access from outside your network (if Tailcat is configured) | The user connects the device to a phone hotspot and sends another message | A reply comes back |
+| Android background notifications (if there is an Android phone) | The user sends "run sleep 20 first, then reply done" and immediately goes to the phone's home screen | A system notification arrives within about half a minute, and tapping it opens this Bot |
 
 If the "tool calls" item fails and the log shows `native_thinking_replay_mismatch`: this is a problem with some gateways when they forward Claude in the Responses format. Go back to step 6 and use the `anthropic` format for Claude.
 
@@ -747,6 +778,7 @@ Deployment complete.
 - Web access / image generation: <configured or not configured>
 - Deployment directory on the server: ~/grokbot (config in .env, passwords and keys in secrets/, data in the Docker volumes grokbot_host-data, grokbot_box-home, grokbot_box-workspace)
 - Pairing a new device: create a pairing code in the admin page under "Devices & notifications"
+- Android signing key: <path on the computer> (back it up; updates of the Android client must use the same key)
 - Maintenance commands: see appendix A (already filled in with the actual paths)
 ```
 
@@ -809,6 +841,9 @@ Once you have confirmed that the restored data is correct, manage it with `-p gr
    ```
 
 5. Check the build the same way as in step 3. When it has finished, run `$DC up -d`.
+6. **Update the clients** (only when the CHANGELOG of the new version lists client changes): on the computer that builds the clients, go to the repository and run `git pull --ff-only`, then build and install the clients again as in step 9. Quit the running client before installing (on Windows, right-click the tray icon and quit).
+   - Windows and Mac: rename or delete the old `windows\output` or `mac/output.noindex` first, then build.
+   - Android: add `--force` to replace the old output, and use the same signing key as the first build. Install over the old app with `adb install -r` or by opening the new APK on the phone; the pairing is kept.
 
 **Remove the temporary build image** (frees about 0.8 GB): `docker image rm grokbot-patch-base:local`. Do not remove `node:22-bookworm-slim`. `hostadmin` needs it.
 
@@ -835,6 +870,8 @@ Once you have confirmed that the restored data is correct, manage it with `-p gr
 | "Remote access" in the admin page never shows "Ready" | Look for Tailcat errors with `$DC logs --tail 100 host`. The server needs internet access |
 | Extracting the original fails on Windows 10 | Install 7-Zip, or set the environment variable `GROKBOT_7Z` to the path of `7z.exe` |
 | Commands the Bot runs on Windows hang or get wrong arguments | The client was started from Git Bash. Right-click the tray icon to quit, then open it again from the Start menu |
+| The Android app gets no background notifications | "Notifications in the background" on the pairing page must be on. In the phone's system settings, allow Grok Bot Local to send notifications and run in the background, and turn off battery optimization for it |
+| The Android app is back on the page that asks for the Host address, or notifies "Connection expired. Open Grok Bot and pair again." | The device was revoked in the admin page, or the Host's data was reset. Run `hostadmin pair` for a new pairing code and enter it on that page |
 
 ## Appendix C: Admin API (for writing your own scripts)
 

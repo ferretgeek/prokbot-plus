@@ -14,7 +14,7 @@ is distributed for noncommercial purposes only, and identifies its
 modifications below. The noncommercial conditions also apply to everything
 ProkBot Plus adds; none of it is offered under terms that allow commercial use.
 
-Modifications made in ProkBot Plus (2026-11-07 to 2026-11-10)
+Modifications made in ProkBot Plus (2026-11-07 to 2026-11-12)
 --------------------------------------------------------------
 
 1. Windows x64 client (new)
@@ -69,13 +69,43 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-10)
 9. Documentation: README, docs/AI-INSTALL, docs/ARCHITECTURE (now also covering
    the upstream DETAILS.md, TODO.md and install notes), module READMEs (host and
    ios now also cover the upstream DEPLOYMENT, PLUGINS and SIGNING notes),
-   AGENTS.md, CHANGELOG, CONTRIBUTING, SECURITY.
+   AGENTS.md, CHANGELOG, CONTRIBUTING, SECURITY, GitHub issue and pull request
+   templates. The unused file list host/source-files.json was removed.
+
+10. Android client (new)
+   - android/shell/: Android shell app (Kotlin, no third-party libraries):
+     loopback gateway to the paired Host, Keystore-encrypted credential,
+     pairing, background notifications, file picking and saving, back gesture.
+     android/dist/grokbot-android-shell.apk is its prebuilt release build.
+   - android/client/: bridge that runs the original desktop interface in the
+     Android WebView in place of Electron's main process and preloads, the
+     computer view frame, a phone layout after the official phone app (the
+     Bot list and conversations as separate screens, round floating buttons,
+     message bubbles, full-screen pages and bottom sheets), an anchor
+     positioning fallback and the connection page.
+   - android/patchers/: builds the APK from the user's own official Windows
+     installer (ZIP writing, APK Signature Scheme v2 signing with a key created
+     for the user) and applies a few verified changes to the original
+     interface (renderer-patches.mjs).
+   - windows/patchers/desktop/original.mjs: extraction of the official
+     installer moved out of patch.mjs so the Android patcher can share it.
+   - android/tests/ (new).
+
+11. Client reliability and validation: installer ownership checks, verified
+    Windows installer inputs and cleanup, Android gateway limits, attachment
+    save and notification fixes, distinct mobile and Windows device labels,
+    model redirect protection and reliable ordered-message timeouts. Added
+    regression tests, an optional cross-platform CI template and Android
+    emulator screenshots.
 
 Third-party components
 ----------------------
 
 Third-party components keep their own licenses. See host/THIRD_PARTY,
 mac/THIRD_PARTY, ios/THIRD_PARTY and mac/patchers/desktop/node_modules.
+android/shell/gradle/wrapper/ contains the Gradle Wrapper, and the prebuilt
+Android shell includes parts of the Kotlin standard library; both are
+licensed under the Apache License 2.0.
 
 Original Grok Bot programs
 --------------------------

@@ -24,7 +24,7 @@ export class PushService {
     const { provider = 'none', capable = false, authorization = 'notDetermined', environment = null,
       enabled = true, lastAttemptAt = null, lastDeliveredAt = null, lastError = null, registrationError = null } = value;
     return { ...device, deviceId: device.id, name: value.displayName || value.name || device.name,
-      kind: value.kind ?? (device.platform === 'ios' ? 'iphone' : 'mac'),
+      kind: device.platform === 'android' ? 'android' : value.kind ?? (device.platform === 'ios' ? 'iphone' : 'mac'),
       bundleId: value.bundleId ?? null, appVersion: value.appVersion ?? null,
       push: { provider, capable, authorization, environment, foreground: this.isForeground(device.id), enabled: enabled && !device.revokedAt,
         barkHost: value.bark?.host ?? null,
@@ -71,7 +71,8 @@ export class PushService {
         next.name = input.name.trim();
       }
       if (input.kind !== undefined) {
-        check(['iphone', 'ipad', 'mac', 'desktop'].includes(input.kind), 400, '设备类型无效'); next.kind = input.kind;
+        check(['iphone', 'ipad', 'mac', 'desktop'].includes(input.kind), 400, '设备类型无效');
+        next.kind = input.kind === 'desktop' && ['windows', 'android'].includes(input.clientKind) ? input.clientKind : input.kind;
       }
       if (input.bundleId !== undefined) {
         check(validTopic(input.bundleId), 400, '设备 Bundle ID 无效'); next.bundleId = input.bundleId;

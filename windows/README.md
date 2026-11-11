@@ -1,6 +1,8 @@
 # ProkBot Plus Windows Patch
 
-为 Grok Bot 0.71.2 Windows x64 客户端连接自己的 Host。需要 Windows 10/11 x64、Node.js 22.12+，以及完整的仓库（共用 `mac/clients` 中的客户端代码）。
+为 Grok Bot 0.71.2 Windows x64 客户端连接自己的 Host。需要 Windows 10/11 x64、Node.js 22.12+，以及完整的仓库（共用 `mac/` 中的客户端代码和补丁工具）。
+
+完整的部署步骤见 [AI 部署手册](../docs/AI-INSTALL.md#91-windows-1011-x64)，实现原理见[技术文档](../docs/ARCHITECTURE.md#windows-客户端本版本新增)。
 
 [English](README.en.md)
 
@@ -24,6 +26,8 @@ node windows/patchers/desktop/patch.mjs
 
 安装包支持 `/S`（静默）和 `/D=目录`（放在最后）。卸载可在「设置 → 应用」中进行，或运行安装目录中的 `Uninstall Grok Bot Local.exe`；配对和设置保存在 `%APPDATA%\Grok Bot Local`，卸载时可选择保留。
 
+自定义目录请使用绝对路径，选择新目录、空目录或已有的 ProkBot Plus 安装目录。安装器不会替换其他非空目录，也不会把官方客户端或便携版当作已安装版本卸载。
+
 ## 说明
 
 - 解压原版程序包使用 Windows 11 自带的 `tar.exe`；Windows 10 请安装 7-Zip（或设置 `GROKBOT_7Z` 指向 `7z.exe`）。
@@ -34,6 +38,7 @@ node windows/patchers/desktop/patch.mjs
 
 ## 维护
 
+- `patchers/desktop/original.mjs`：从官方安装包中切出 `app-64.7z` 并解压，Android 补丁也用它。
 - `tools/port-desktop-recipes.mjs`：由 Mac recipe 和两个平台的原版生成 Windows recipe，并校验每段复制内容的结构一致。
 - `installer/`：安装器源码（仅 Go 标准库），`go build -trimpath -ldflags="-H=windowsgui -s -w" -o ../dist/installer/grokbot-setup-stub.exe .`
 - `dist/network/grokbot-tailcat.exe`：`python host/network/build-tailcat.py --target windows-amd64 --output windows/dist/network`

@@ -203,7 +203,7 @@ export async function postWithFallback({ fetchImpl, url, headers, build, signal,
     const body = build();
     for (const name of state.dropped) deletePath(body, name);
     const http = await fetchImpl(url, { method: 'POST', headers: typeof headers === 'function' ? headers(body) : headers,
-      body: JSON.stringify(body), signal });
+      body: JSON.stringify(body), signal, redirect: 'error' });
     if (http.ok) return { http, body };
     const error = await errorFromResponse(http, apiKey);
     if (attempt < 6) {

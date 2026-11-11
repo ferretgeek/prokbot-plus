@@ -52,7 +52,7 @@ export async function acquireDesktopSource({ source, cacheDirectory, supported,
     await rename(partial, destination);
     return destination;
   } catch (error) {
-    throw new Error(`${error.message}\n请自行准备 Grok Bot ${supported.version} 原版 .app 或 .dmg，使用 --source 指定。\n原版地址：${archive.url}`, { cause: error });
+    throw new Error(`${error.message}\n请自行准备 Grok Bot ${supported.version} 原版文件，使用 --source 指定。\n原版地址：${archive.url}`, { cause: error });
   } finally {
     if (temporary) await rm(temporary, { recursive: true, force: true });
   }

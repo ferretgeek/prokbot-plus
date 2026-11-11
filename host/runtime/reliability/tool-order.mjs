@@ -35,7 +35,7 @@ export async function awaitToolCallTurn(toolCallId, signal, { maxWaitMs = MAX_WA
   if (previous && !signal?.aborted) {
     let timer, onAbort;
     await Promise.race([previous.done,
-      new Promise(settle => { timer = setTimeout(settle, maxWaitMs); timer.unref?.(); }),
+      new Promise(settle => { timer = setTimeout(settle, maxWaitMs); }),
       new Promise(settle => { onAbort = settle; signal?.addEventListener('abort', settle, { once: true }); })]);
     clearTimeout(timer);
     signal?.removeEventListener('abort', onAbort);

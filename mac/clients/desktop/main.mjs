@@ -151,7 +151,7 @@ async function showWorkspace() {
   };
   gateway = createGateway(activeConfig, unauthorized, reportFocus, reportConnection);
   // The Host lists unnamed desktop clients as Macs; Windows reports itself once per session.
-  if (isWindows) void gateway.request('/local/device', { kind: 'desktop', appVersion: app.getVersion() },
+  if (isWindows) void gateway.request('/local/device', { kind: 'desktop', clientKind: 'windows', appVersion: app.getVersion() },
     AbortSignal.timeout(15000), 'PUT').catch(() => {});
   const background = nativeTheme.shouldUseDarkColors ? '#111111' : '#ffffff';
   const win = new BrowserWindow({ width: 1200, height: 850, minWidth: 720, minHeight: 500,

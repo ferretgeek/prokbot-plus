@@ -4,12 +4,13 @@
 
 **Move the Grok Bot server side onto your own server, and connect your own models.**
 
-Windows · macOS · iOS clients | Linux server | OpenAI Chat / OpenAI Responses / Anthropic Messages
+Windows, macOS and iOS patches | [Independently developed Android app (unofficial)](#android-client) | Linux server | OpenAI Chat / OpenAI Responses / Anthropic Messages
 
 <p>
   <img alt="Windows 0.71.2" src="https://img.shields.io/badge/Windows-0.71.2_x64-0078D4?logo=windows&logoColor=white">
   <img alt="macOS 0.71.2" src="https://img.shields.io/badge/macOS-0.71.2-111111?logo=apple&logoColor=white">
   <img alt="iOS 1.16.0" src="https://img.shields.io/badge/iOS-1.16.0-111111?logo=apple&logoColor=white">
+  <img alt="Android 9+" src="https://img.shields.io/badge/Android-9%2B-3DDC84?logo=android&logoColor=white">
   <img alt="Host d0a4baa" src="https://img.shields.io/badge/Host-d0a4baa-2496ED?logo=docker&logoColor=white">
   <img alt="Noncommercial License" src="https://img.shields.io/badge/License-Noncommercial-6B7280">
   <a href="https://linux.do"><img alt="LINUX DO" src="https://img.shields.io/badge/Community-LINUX%20DO-F5A623"></a>
@@ -27,7 +28,7 @@ Windows · macOS · iOS clients | Linux server | OpenAI Chat / OpenAI Responses 
 
 ProkBot Plus is a modified version of the open-source project [ProkBot](https://gitee.com/ahaduoduoduo/ProkBot). The idea behind ProkBot: the original Grok Bot apps and Agent work well, but they can only connect to the official cloud. ProkBot runs the server side (the Host and the Linux desktop used for execution) in Docker on your own machine, then patches the original apps so they connect to your server.
 
-Plus adds three things on top of that: a **Windows client**; **two more model APIs, Anthropic Messages and OpenAI Responses** (upstream supports only OpenAI Chat); and a set of fixes that make web search, image generation and local commands work smoothly in real use.
+Plus adds on top of that: **Windows and Android clients**; **two more model APIs, Anthropic Messages and OpenAI Responses** (upstream supports only OpenAI Chat); and a set of fixes that make web search, image generation and local commands work smoothly in real use.
 
 > This is an unofficial project. It has no connection to xAI or the official Grok Bot. Noncommercial use only. See [License and notices](#license-and-notices).
 
@@ -39,6 +40,7 @@ Plus adds three things on top of that: a **Windows client**; **two more model AP
 - **Let the Bot operate your computer.** On Mac it can run commands and control the graphical interface. On Windows it can run local commands, and it asks you in a pop-up before each one.
 - **Web access and image generation.** Search and read web pages with the model's built-in web tools. Generate images with an OpenAI-compatible image API, with support for set aspect ratios and editing from a reference image.
 - **Your data stays on your machine.** Chats, files, memory and Bot data are all stored on your server. Telemetry and automatic updates are turned off.
+- **Use it on your phone.** iOS and Android clients: get notified when a Bot replies, watch the Bot's computer live and take over.
 - **Use it when you're out.** Direct LAN connection, built-in Tailcat networking (no public IP needed), or your own HTTPS domain.
 
 ## Supported systems
@@ -49,7 +51,8 @@ Plus adds three things on top of that: a **Windows client**; **two more model AP
 | Windows client | Windows 10 / 11, x64 | **New in this version.** Portable version and installer, no administrator rights needed |
 | Mac client | Apple Silicon, Grok Bot 0.71.2 | From upstream |
 | iOS client | Grok Bot 1.16.0 (23152) | From upstream. You need your own decrypted IPA and signing certificate |
-| Android, Linux desktop | Not supported | There is no official client for them |
+| Android client | Android 9 or later | **New in this version.** An APK built from the official desktop interface and this project's shell, on a Windows, Mac or Linux computer |
+| Linux desktop | Not supported | There is no official client for it |
 
 ## What's new in this version
 
@@ -74,6 +77,26 @@ Upstream has only Mac and iOS. The Windows version is built by patching the offi
 - Builds both a portable version and an installer.
 
 The patches are ported from the Mac version, and the structure of every segment is checked.
+
+### Android client
+
+**ProkBot Plus develops this Android app independently. It is neither the official xAI Android app nor a patch to the official Android APK.**
+
+<p align="center">
+  <img src="docs/images/android-connect-en.png" alt="The unofficial Android client asking for a Host address and pairing code" width="240">
+  <img src="docs/images/android-bots.png" alt="Atlas and Nova in the paired Android workspace" width="240">
+</p>
+<p align="center"><sub>Captured on an Android 15 emulator: first-time pairing, then the workspace after reopening the app. Bot names are isolated demo data.</sub></p>
+
+The official Android app carries tamper protection and cannot be modified. Plus takes another route: it puts the official **desktop** interface (the same one as the Windows and Mac clients, taken from your own download of the official Windows installer) into an Android shell written for this project, and builds an APK:
+
+- Conversations, Bot management, skills, the library, routines and settings are the original interface, rearranged after the official phone app: the Bot list and a conversation are separate screens with the same round floating buttons, message bubbles, colors and typeface, details, settings and search open full screen, and menus and dialogs slide up from the bottom; with the back gesture and dark mode;
+- Watch the Bot's computer live on the phone, and operate it with touch and the on-screen keyboard after "Take control";
+- Upload files from the phone, and save files the Bot sends to the phone;
+- Background notifications without Google's push service; tapping one opens that Bot;
+- The device credential is encrypted with the Android Keystore and never reaches the web page.
+
+The APK is signed with a key that belongs only to you. Tailcat is not supported; for access from outside, use a VPN, a tunnel or an HTTPS domain. See [Android client](android/README.en.md).
 
 ### Three model APIs
 
@@ -136,8 +159,9 @@ See the [CHANGELOG](CHANGELOG.md) and the [technical documentation](docs/ARCHITE
   - Turned off: virtual cards, external message drafts, product feedback, passkey forwarding;
   - Replaced: voice, push notifications, image and video generation and others, which need providers you set up yourself;
   - Real-time calls are experimental for now.
-- The clients are not code-signed: Windows shows a SmartScreen warning on first launch; on iOS you sign and install the app yourself.
+- The clients are not code-signed: Windows shows a SmartScreen warning on first launch; on iOS you sign and install the app yourself; on Android you allow installing apps from unknown sources.
 - The Windows version can't yet let the Bot control the mouse and keyboard. The original component for this only exists for macOS.
+- The Android version does not support Tailcat. Background notifications rely on a connection that stays open; some phones need the app allowed to run in the background in the system settings.
 - Modifying the official client may break the official terms of use. Use at your own risk.
 
 ## What you need to deploy
@@ -146,13 +170,13 @@ See the [CHANGELOG](CHANGELOG.md) and the [technical documentation](docs/ARCHITE
 | --- | --- |
 | Server | x86_64 Linux with 8 GB+ of memory and 30 GB+ of free disk, with Docker, Docker Compose and Python 3.10+ installed. The first build downloads about 8 GB |
 | Model API | Any one of: Anthropic Messages, OpenAI Responses, OpenAI Chat Completions. It must support tool calls. For the Bot to operate a computer, it also needs image input |
-| Computer to build the clients | Build the Windows client on Windows 10/11 x64 and the Mac client on an Apple Silicon Mac. Both need Node.js 22.12+. iOS needs a decrypted IPA and a signing certificate |
+| Computer to build the clients | Build the Windows client on Windows 10/11 x64 and the Mac client on an Apple Silicon Mac; the Android client builds on Windows, Mac or Linux. All need Node.js 22.12+. iOS needs a decrypted IPA and a signing certificate |
 
 | Optional | Used for |
 | --- | --- |
 | A model with native web access | The Bot searches and reads web pages (for example Claude's `web_search`) |
 | An OpenAI-compatible image API | The Bot generates and edits images |
-| Bark or an Apple push certificate | Push notifications on phones |
+| Bark or an Apple push certificate | Push notifications on iPhone (not needed for Android) |
 | Speech recognition and synthesis services | Voice input, real-time calls |
 | A domain and HTTPS | Access from outside without Tailcat |
 
@@ -170,7 +194,7 @@ The AI first lists what you need to prepare. Then it deploys the server, configu
 
 If you'd rather do it yourself, follow the [AI deployment guide](docs/AI-INSTALL.en.md). It is written for AI, but every step lists the commands and how to check them, so a person can follow it just as well.
 
-[Releases](https://github.com/ferretgeek/prokbot-plus/releases) has the patch tools split into packages (server, Windows, Mac, iOS), so you can download only the part you need. Releases do **not** include patched clients: they contain the official Grok Bot program, so you have to generate them with the tools on your own machine.
+[Releases](https://github.com/ferretgeek/prokbot-plus/releases) distributes platform-specific patch tools. `v1.0.0` predates the Android tools; build Android from this repository using the [Android guide](android/README.en.md). Releases do **not** distribute finished clients containing official program files.
 
 ## Documentation
 
@@ -178,7 +202,7 @@ If you'd rather do it yourself, follow the [AI deployment guide](docs/AI-INSTALL
 | --- | --- |
 | [AI deployment guide](docs/AI-INSTALL.en.md) | Full steps for deploying from scratch. Every step says what you should see and what to do if it fails |
 | [Technical documentation](docs/ARCHITECTURE.en.md) | How it works, how each feature is implemented, what Plus changed, the layout, tests, extension points and known limitations |
-| [Windows client](windows/README.en.md) · [Mac client](mac/README.en.md) · [iOS client](ios/README.en.md) | How to use the patches for each platform |
+| [Windows client](windows/README.en.md) · [Mac client](mac/README.en.md) · [iOS client](ios/README.en.md) · [Android client](android/README.en.md) | How to use the patches for each platform |
 | [Split deployment, backups and app development](host/README.en.md) | Advanced usage |
 
 ## Friends
@@ -191,7 +215,7 @@ If you'd rather do it yourself, follow the [AI deployment guide](docs/AI-INSTALL
   - You may use, study, modify and distribute it for personal and noncommercial purposes;
   - You may not use it for any commercial purpose, including paid deployments, paid services and internal use in a company.
   - See [NOTICE](NOTICE) for the source and the list of changes.
-- The repository contains no official Grok Bot programs. The patch tools download the official version on your own computer, verify it, and then patch it. The repository does not provide any original or modified IPA.
+- The repository contains no official Grok Bot programs or finished client APKs or IPAs. `android/dist/` contains only the independently developed empty shell. The desktop interface comes from your own verified Windows installer.
 - Grok, Grok Bot and related trademarks belong to their respective owners. This project is not affiliated with or endorsed by them.
 - Most of the code in this project was written with AI assistance. It is provided as is, without any warranty.
 - To report a security issue, see [SECURITY.md](SECURITY.md). To contribute, see [CONTRIBUTING.md](CONTRIBUTING.md).

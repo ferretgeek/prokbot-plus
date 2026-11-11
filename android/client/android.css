@@ -1,0 +1,930 @@
+/* Android adjustments for the original desktop interface. */
+html.grokbot-android {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+  /* XVF is the official phone app's typeface; the desktop interface ships it as well. */
+  --cursor-font-family-sans: 'XVF', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* Minimize, maximize and close belong to desktop windows; Android has its own navigation. */
+html.grokbot-android .sand-window-controls {
+  display: none !important;
+}
+
+/* Hardware acceleration is an Electron switch; the WebView always draws with the GPU. */
+html.grokbot-android :is(#sand-setting-hardware-acceleration, #sand-setting-hardware-acceleration-restart) {
+  display: none !important;
+}
+/* The Android client has no Tailcat; the connection form asks only for the Host address. */
+html.grokbot-android .grok-host-dialog .grok-host-fields > .grok-host-detail:first-child {
+  display: none !important;
+}
+/* The Bot cannot run commands on the phone, so there is nothing to allow under "This computer". */
+html.grokbot-android .sand-settings-panel section:has(#sand-setting-local-execution) {
+  display: none !important;
+}
+
+/* Settings: on a phone the section list becomes a row of tabs above the content. */
+@media (max-width: 700px) {
+  html.grokbot-android .sand-settings-layout {
+    flex-direction: column !important;
+  }
+  html.grokbot-android .sand-settings-nav {
+    flex-direction: row !important;
+    flex: 0 0 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    overflow-x: auto;
+    gap: 4px;
+    padding: 12px 52px 8px 12px !important;
+    border-right: 0 !important;
+    border-bottom: 1px solid color-mix(in srgb, currentColor 14%, transparent);
+  }
+  html.grokbot-android .sand-settings-nav__item {
+    flex: 0 0 auto !important;
+    width: auto !important;
+    white-space: nowrap;
+  }
+  html.grokbot-android .sand-settings-panel {
+    flex: 1 1 auto !important;
+    width: auto !important;
+    min-width: 0 !important;
+    min-height: 0 !important;
+  }
+}
+
+/* Conversation details (Bot settings, computer, files): a side column on wide screens,
+   a full-screen layer on phones (the width check is relaxed in renderer-patches.mjs). */
+html.grokbot-android .sand-info-pane__window-controls-divider {
+  display: none !important;
+}
+html.grokbot-android .sand-info-pane__top {
+  padding-right: 12px !important;
+}
+@media (max-width: 791px) {
+  html.grokbot-android .sand-info-pane[data-open="true"] {
+    --sand-info-pane-width: 100vw !important;
+    position: fixed !important;
+    inset: 0 !important;
+    width: auto !important;
+    max-width: none !important;
+    z-index: 60;
+    background: var(--cursor-bg-elevated, #1f1f1f);
+  }
+  html.grokbot-android .sand-info-pane[data-open="true"] > .sand-info-pane__inner {
+    position: relative !important;
+    inset: auto !important;
+    width: 100% !important;
+    max-width: none !important;
+  }
+  /* The computer view is a sibling of the pane, laid over the pane's preview frame; it has to
+     stay above the pane once the pane is a layer. It passes taps through unless it is opened. */
+  html.grokbot-android .sand-info-pane[data-open="true"] ~ div:has(> * > .sand-box-vnc-pool) {
+    z-index: 61;
+  }
+  /* "Open computer" shows the large view (stage) over the conversation; the pane layer
+     steps aside until the stage is closed. */
+  html.grokbot-android.grokbot-computer-stage .sand-info-pane[data-open="true"] {
+    visibility: hidden !important;
+  }
+}
+
+/* Electron <webview> stand-in for the Bot computer view (see client/webview.js). */
+webview {
+  display: flex;
+  position: relative;
+  overflow: hidden;
+}
+webview > iframe.grokbot-webview-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  display: block;
+  background: transparent;
+  /* Taps reach the view only while the interface lets the user control it (it switches
+     the webview's pointer-events, which the frame inherits). */
+}
+
+/* ---- Phones (html.grokbot-phone, set by layout.js below 600 px) -----------------------------
+   Laid out like the official Grok Bot phone app: the Bot list and a conversation are two
+   screens that slide over each other, with round floating buttons on top and message bubbles.
+   Colours and sizes follow the official app's palette (paper, floating buttons, bubbles).
+   Details and settings open as full screens, other dialogs and menus as sheets from the bottom. */
+
+html.grokbot-phone {
+  --grokbot-paper: rgb(20, 20, 20);
+  --grokbot-chrome: rgb(30, 30, 30);
+  --grokbot-glass: #2c2c2e;
+  --grokbot-glass-stroke: rgba(252, 252, 252, 0.15);
+  --grokbot-glass-shadow: 0 4px 22px rgba(0, 0, 0, 0.07), 0 0 0 0.5px var(--grokbot-glass-stroke);
+  --grokbot-label: #fff;
+  --grokbot-label-2: rgba(235, 235, 245, 0.6);
+  --grokbot-label-3: rgba(235, 235, 245, 0.3);
+  --grokbot-fill: rgba(120, 120, 128, 0.32);
+  --grokbot-fill-3: rgba(118, 118, 128, 0.24);
+  --grokbot-bubble-user: #5c5c5c;
+  --grokbot-bubble-bot: rgba(247, 234, 234, 0.055);
+  --grokbot-scrim: rgba(0, 0, 0, 0.28);
+  --grokbot-back-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M15 5l-7 7 7 7'/%3E%3C/svg%3E");
+  --grokbot-close-icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6L6 18'/%3E%3C/svg%3E");
+  /* Bubbles of the original interface, in the official phone app's colours and sizes. */
+  --sand-transcript-bubble-user-fill: var(--grokbot-bubble-user);
+  --sand-transcript-bubble-user-text: #fff;
+  --sand-transcript-bubble-agent-fill: var(--grokbot-bubble-bot);
+  --sand-transcript-prose-bubble-radius: 20px;
+  --sand-transcript-prose-block-padding: 9px;
+  --sand-transcript-prose-one-line-height: 40px;
+}
+html.grokbot-phone[data-theme*="light"] {
+  --grokbot-paper: rgb(252, 252, 252);
+  --grokbot-chrome: rgb(247, 247, 247);
+  --grokbot-glass: #fff;
+  --grokbot-glass-stroke: rgba(20, 20, 20, 0.086);
+  --grokbot-label: #000;
+  --grokbot-label-2: rgba(60, 60, 67, 0.6);
+  --grokbot-label-3: rgba(60, 60, 67, 0.3);
+  --grokbot-fill: rgba(120, 120, 128, 0.16);
+  --grokbot-fill-3: rgba(118, 118, 128, 0.12);
+  --grokbot-bubble-user: #0b0b0b;
+  --grokbot-bubble-bot: rgba(16, 16, 0, 0.043);
+  --grokbot-scrim: rgba(0, 0, 0, 0.19);
+}
+html.grokbot-phone,
+html.grokbot-phone body {
+  overscroll-behavior: none;
+}
+html.grokbot-phone .sand-agents-sidebar,
+html.grokbot-phone .sand-toolbar,
+html.grokbot-phone .sand-info-pane__top,
+html.grokbot-phone .ui-menu,
+html.grokbot-phone button {
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* The system bars take their colour from here (bridge.js). */
+html.grokbot-phone #root > * {
+  background: var(--grokbot-paper) !important;
+}
+
+/* Round floating buttons: back, the account, search, new Bot and add (to a message). */
+html.grokbot-phone :is(.grokbot-nav-back, .sand-agents-sidebar__new-actions .sand-kit-icon-button,
+  .sand-agents-sidebar__footer button[aria-haspopup="menu"], .sand-prompt-attach) {
+  width: 44px !important;
+  height: 44px !important;
+  min-width: 44px !important;
+  border: 0 !important;
+  border-radius: 22px !important;
+  padding: 0 !important;
+  background: var(--grokbot-glass) !important;
+  box-shadow: var(--grokbot-glass-shadow) !important;
+  color: var(--grokbot-label) !important;
+}
+html.grokbot-phone :is(.grokbot-nav-back, .sand-agents-sidebar__new-actions .sand-kit-icon-button,
+  .sand-agents-sidebar__footer button[aria-haspopup="menu"], .sand-prompt-attach):active {
+  opacity: 0.7;
+}
+
+html.grokbot-phone .sand-agents-sidebar,
+html.grokbot-phone .sand-chat {
+  position: fixed !important;
+  top: 0 !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  flex: none !important;
+  background: var(--grokbot-paper) !important;
+  transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s;
+}
+html.grokbot-phone .sand-agents-sidebar {
+  z-index: 1;
+  border: 0 !important;
+}
+html.grokbot-phone .sand-chat {
+  z-index: 2;
+}
+html.grokbot-phone.grokbot-view-list .sand-chat {
+  transform: translateX(100%);
+  visibility: hidden;
+  transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 260ms;
+}
+html.grokbot-phone.grokbot-view-chat .sand-agents-sidebar {
+  transform: translateX(-30%);
+  visibility: hidden;
+  transition: transform 260ms cubic-bezier(0.2, 0.8, 0.2, 1), visibility 0s 260ms;
+}
+html.grokbot-phone .sand-sidebar-resize-handle,
+html.grokbot-phone .sand-info-pane__resize-handle {
+  display: none !important;
+}
+
+/* Bot list: the account on the left, search and new Bot on the right and no title; rows with
+   large avatars, the name above the latest message. */
+html.grokbot-phone .sand-agents-sidebar__header {
+  height: 56px !important;
+  min-height: 56px !important;
+  padding: 0 16px !important;
+  border: 0 !important;
+}
+html.grokbot-phone .sand-agents-sidebar__new-actions {
+  gap: 8px !important;
+}
+html.grokbot-phone .sand-agents-sidebar__new-actions .sand-kit-icon {
+  transform: scale(1.15);
+}
+html.grokbot-phone .sand-agents-sidebar__footer {
+  position: absolute !important;
+  z-index: 2;
+  top: 6px;
+  left: 16px;
+  padding: 0 !important;
+  border: 0 !important;
+  background: none !important;
+}
+html.grokbot-phone .sand-agents-sidebar__footer > * {
+  width: auto !important;
+  padding: 0 !important;
+}
+/* The marketplace moves into the account menu (layout.js), as in the official app. */
+html.grokbot-phone .sand-agents-sidebar__footer button:not([aria-haspopup="menu"]) {
+  display: none !important;
+}
+html.grokbot-phone .sand-agents-sidebar__footer button[aria-haspopup="menu"] .sand-kit-base-avatar {
+  width: 44px !important;
+  height: 44px !important;
+  font-size: 17px !important;
+}
+html.grokbot-phone .sand-agents-sidebar__footer button[aria-haspopup="menu"] .sand-kit-base-avatar > * {
+  width: 100% !important;
+  height: 100% !important;
+}
+html.grokbot-phone .sand-agents-list__rows {
+  padding: 4px 12px 24px !important;
+}
+html.grokbot-phone .sand-agent-item {
+  min-height: 0 !important;
+  padding: 16px 10px 16px 8px !important;
+  gap: 14px !important;
+  border-radius: 10px !important;
+}
+html.grokbot-phone .sand-agent-item[data-active="true"]:not([aria-pressed="true"], [aria-selected="true"]) {
+  background: transparent !important;
+}
+html.grokbot-phone .sand-agent-item:active {
+  background: var(--grokbot-fill) !important;
+}
+html.grokbot-phone .sand-agent-item__avatar,
+html.grokbot-phone .sand-agent-item__avatar-disc,
+html.grokbot-phone .sand-agent-item__avatar .sand-grok-bot-mark,
+html.grokbot-phone .sand-agent-item__avatar .sand-grok-bot-mark > span {
+  width: 48px !important;
+  height: 48px !important;
+}
+html.grokbot-phone .sand-agent-item__body {
+  gap: 4px !important;
+}
+html.grokbot-phone .sand-agent-item__name {
+  font-size: 17px !important;
+  line-height: 22px !important;
+  font-weight: 500 !important;
+  color: var(--grokbot-label) !important;
+}
+html.grokbot-phone .sand-agent-item__preview {
+  font-size: 15px !important;
+  line-height: 19px !important;
+  color: var(--grokbot-label-2) !important;
+}
+/* When the Bot was last active (added by renderer-patches.mjs). */
+html.grokbot-phone .sand-agent-item__time {
+  flex: none;
+  margin-left: auto !important;
+  padding-left: 8px;
+  font-size: 15px !important;
+  line-height: 19px !important;
+  color: var(--grokbot-label-2) !important;
+}
+/* Pinned Bots: large avatars with the name below, three to a row. */
+html.grokbot-phone .sand-pinned-grid__tiles {
+  display: flex !important;
+  flex-wrap: wrap !important;
+  justify-content: center !important;
+  padding: 4px 0 12px !important;
+}
+html.grokbot-phone .sand-pinned-grid__tile {
+  flex: 0 0 33.333% !important;
+  width: 33.333% !important;
+  min-width: 0 !important;
+}
+html.grokbot-phone .sand-pinned-grid .sand-agent-item {
+  padding: 8px !important;
+  gap: 6px !important;
+}
+html.grokbot-phone .sand-pinned-grid :is(.sand-agent-item__avatar, .sand-agent-item__avatar-disc,
+  .sand-agent-item__avatar .sand-grok-bot-mark, .sand-agent-item__avatar .sand-grok-bot-mark > span) {
+  width: 80px !important;
+  height: 80px !important;
+}
+html.grokbot-phone .sand-pinned-grid .sand-agent-item__caption {
+  font-size: 15px !important;
+  line-height: 19px !important;
+  color: var(--grokbot-label-2) !important;
+}
+
+/* Conversation: a round back button (added by layout.js) and the Bot's name in a pill float
+   over the messages; the composer is a round add button next to a pill-shaped field. */
+html.grokbot-phone .sand-toolbar {
+  height: 64px !important;
+  border: 0 !important;
+  background: linear-gradient(var(--grokbot-paper) 70%, color-mix(in srgb, var(--grokbot-paper) 0%, transparent)) !important;
+  pointer-events: none;
+}
+html.grokbot-phone .sand-toolbar :is(button, [role="button"], a) {
+  pointer-events: auto;
+}
+html.grokbot-phone .sand-toolbar > div {
+  height: 56px !important;
+  padding: 0 16px 0 68px !important;
+  border: 0 !important;
+}
+html.grokbot-phone .sand-chat-header {
+  height: 56px !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+}
+html.grokbot-phone .sand-chat-header__identity-row {
+  grid-column: 1 !important;
+  justify-content: flex-start !important;
+  min-width: 0;
+}
+html.grokbot-phone .sand-chat-header__controls {
+  grid-column: 2 !important;
+}
+html.grokbot-phone .sand-chat-header__identity {
+  height: 44px !important;
+  gap: 8px !important;
+  padding: 0 16px 0 6px !important;
+  border: 0 !important;
+  border-radius: 22px !important;
+  background: var(--grokbot-glass) !important;
+  box-shadow: var(--grokbot-glass-shadow) !important;
+}
+html.grokbot-phone .sand-chat-header__identity::before {
+  background: transparent !important;
+}
+html.grokbot-phone .sand-chat-header__identity:active {
+  opacity: 0.7;
+}
+html.grokbot-phone .sand-chat-header__identity > :not(.sand-chat-header__avatar, .sand-chat-header__title) {
+  display: none !important;
+}
+html.grokbot-phone .sand-chat-header__avatar,
+html.grokbot-phone .sand-chat-header__avatar > * {
+  width: 32px !important;
+  height: 32px !important;
+}
+html.grokbot-phone .sand-chat-header__title {
+  font-size: 17px !important;
+  line-height: 22px !important;
+  font-weight: 500 !important;
+  color: var(--grokbot-label) !important;
+}
+.grokbot-nav-back {
+  display: none;
+}
+html.grokbot-phone .grokbot-nav-back {
+  position: absolute;
+  z-index: 4;
+  top: 6px;
+  left: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+html.grokbot-phone .sand-message-action-anchor[data-role] {
+  max-width: calc(100% - 44px) !important;
+  padding-inline: 14px !important;
+}
+html.grokbot-phone .sand-message-prose {
+  font-size: 17px !important;
+  line-height: 22px !important;
+}
+html.grokbot-phone .sand-transcript-time-separator {
+  font-size: 13px !important;
+  line-height: 16px !important;
+  color: var(--grokbot-label-2) !important;
+}
+html.grokbot-phone .sand-prompt-form {
+  padding-left: 52px !important;
+}
+html.grokbot-phone .sand-prompt-shell {
+  min-height: 44px;
+  overflow: visible !important;
+  border: 0 !important;
+  border-radius: 22px !important;
+  background: var(--grokbot-glass) !important;
+  box-shadow: var(--grokbot-glass-shadow) !important;
+}
+html.grokbot-phone .sand-prompt-pad {
+  padding-left: 18px !important;
+  padding-right: 82px !important;
+}
+html.grokbot-phone .sand-prompt-shell:has(.sand-prompt-field > p.is-editor-empty:only-child) .sand-prompt-pad {
+  padding-right: 46px !important;
+}
+html.grokbot-phone .sand-prompt-form textarea,
+html.grokbot-phone .sand-prompt-form [contenteditable="true"] {
+  font-size: 17px !important;
+  line-height: 22px !important;
+}
+html.grokbot-phone .sand-prompt-field p.is-editor-empty::before {
+  color: var(--grokbot-label-3) !important;
+}
+/* The add button sits outside the field, at its bottom left. */
+html.grokbot-phone .sand-prompt-actions-row > :first-child {
+  position: absolute !important;
+  left: -60px;
+  bottom: 0;
+  width: 44px !important;
+  height: 44px !important;
+}
+html.grokbot-phone .sand-prompt-actions-trailing {
+  margin-left: auto !important;
+}
+html.grokbot-phone .sand-prompt-attach .ui-icon {
+  transform: scale(1.3);
+  color: var(--grokbot-label) !important;
+}
+html.grokbot-phone :is(.sand-prompt-send, .sand-prompt-mic) {
+  width: 32px !important;
+  height: 32px !important;
+  min-width: 32px !important;
+}
+/* With nothing typed the round button records a voice message: grey, as in the official app. */
+html.grokbot-phone .sand-prompt-shell:has(.sand-prompt-field > p.is-editor-empty:only-child) .sand-prompt-send {
+  background: var(--grokbot-fill-3) !important;
+}
+html.grokbot-phone .sand-prompt-shell:has(.sand-prompt-field > p.is-editor-empty:only-child) .sand-prompt-send .ui-icon {
+  color: var(--grokbot-label) !important;
+}
+
+/* Details: a round back button on the left and the Bot's name as the title (layout.js copies it). */
+html.grokbot-phone .sand-info-pane[data-open="true"] {
+  background: var(--grokbot-paper) !important;
+}
+html.grokbot-phone .sand-info-pane__top {
+  height: 56px !important;
+  min-height: 56px !important;
+  padding: 0 16px !important;
+  border: 0 !important;
+}
+html.grokbot-phone .sand-info-pane__top[data-grokbot-title]::before {
+  content: attr(data-grokbot-title);
+  position: absolute;
+  left: 72px;
+  right: 104px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--cursor-text-primary);
+}
+html.grokbot-phone .sand-info-pane__subpage-title {
+  position: static !important;
+  transform: none !important;
+  translate: none !important;
+  margin: 0 auto 0 12px !important;
+  font-size: 17px !important;
+  font-weight: 600 !important;
+}
+html.grokbot-phone .sand-info-pane__actions,
+html.grokbot-phone .sand-info-pane__back {
+  gap: 8px !important;
+}
+html.grokbot-phone .sand-info-pane__actions .sand-kit-icon-button,
+html.grokbot-phone .sand-info-pane__back .sand-kit-icon-button {
+  width: 44px !important;
+  height: 44px !important;
+  border: 0 !important;
+  border-radius: 22px !important;
+  background: var(--grokbot-glass) !important;
+  box-shadow: var(--grokbot-glass-shadow) !important;
+  color: var(--grokbot-label) !important;
+}
+html.grokbot-phone .sand-info-pane__top:not(:has(.sand-info-pane__back)) .sand-info-pane__actions > .sand-kit-icon-button:last-child {
+  position: absolute !important;
+  left: 16px;
+  top: 6px;
+}
+html.grokbot-phone .sand-info-pane__top:not(:has(.sand-info-pane__back)) .sand-info-pane__actions > .sand-kit-icon-button:last-child,
+html.grokbot-phone .sand-info-pane__back .sand-kit-icon-button,
+html.grokbot-phone .sand-settings-panel__close {
+  border-radius: 22px !important;
+  background: var(--grokbot-glass) !important;
+  box-shadow: var(--grokbot-glass-shadow) !important;
+  color: var(--grokbot-label) !important;
+}
+html.grokbot-phone .sand-info-pane__top:has(.sand-info-pane__back) .sand-info-pane__actions > .sand-kit-icon-button:last-child {
+  display: none !important;
+}
+html.grokbot-phone .sand-info-pane__top:not(:has(.sand-info-pane__back)) .sand-info-pane__actions > .sand-kit-icon-button:last-child > *,
+html.grokbot-phone .sand-info-pane__back .sand-kit-icon-button > * {
+  display: none !important;
+}
+html.grokbot-phone .sand-info-pane__top:not(:has(.sand-info-pane__back)) .sand-info-pane__actions > .sand-kit-icon-button:last-child::after,
+html.grokbot-phone .sand-info-pane__back .sand-kit-icon-button::after {
+  content: "";
+  width: 24px;
+  height: 24px;
+  background: currentColor;
+  -webkit-mask: var(--grokbot-back-icon) center / 24px no-repeat;
+  mask: var(--grokbot-back-icon) center / 24px no-repeat;
+}
+
+/* Settings, connected apps and search fill the screen. */
+html.grokbot-phone .ui-dialog:is(.sand-command-palette, :has(.sand-settings-layout), :has(.sand-plugins-layout)) {
+  top: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none !important;
+  max-height: none !important;
+  transform: none !important;
+  translate: none !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: var(--grokbot-paper) !important;
+}
+html.grokbot-phone .ui-dialog:is(:has(.sand-settings-layout), :has(.sand-plugins-layout)) > *,
+html.grokbot-phone .ui-dialog.sand-command-palette > .ui-scroll-area {
+  flex: 1 1 auto;
+  min-height: 0;
+  max-height: none !important;
+  height: auto !important;
+}
+/* The search field is a round floating field, like the official app's search bars. */
+html.grokbot-phone .ui-dialog.sand-command-palette > :first-child {
+  flex: none !important;
+  box-sizing: border-box;
+  height: 44px;
+  margin: 6px 16px 8px;
+  padding: 0 16px !important;
+  gap: 4px;
+  align-items: center !important;
+  border: 0 !important;
+  border-radius: 22px;
+  background: var(--grokbot-glass);
+  box-shadow: var(--grokbot-glass-shadow);
+}
+html.grokbot-phone .ui-dialog.sand-command-palette > :first-child input {
+  font-size: 17px !important;
+}
+html.grokbot-phone .sand-settings-layout {
+  width: 100% !important;
+  height: 100% !important;
+  max-height: none !important;
+}
+html.grokbot-phone .sand-settings-nav {
+  min-height: 56px;
+  align-items: center !important;
+  padding: 6px 12px 6px 72px !important;
+  border: 0 !important;
+}
+html.grokbot-phone .sand-settings-nav__item {
+  min-height: 40px !important;
+  padding: 0 14px !important;
+  font-size: 15px !important;
+}
+/* The selected tab already names the section. */
+html.grokbot-phone .sand-settings-pane-header > h2 {
+  display: none !important;
+}
+html.grokbot-phone .sand-settings-pane-header:not(:has(> :not(h2) > *)) {
+  display: none !important;
+}
+html.grokbot-phone .sand-settings-pane-header {
+  padding: 8px 4px 0 !important;
+  min-height: 0 !important;
+}
+/* The close button becomes a back arrow at the start of the tab row. */
+html.grokbot-phone .sand-settings-panel {
+  position: static !important;
+}
+html.grokbot-phone .sand-settings-panel__close {
+  position: absolute !important;
+  top: 6px !important;
+  left: 16px !important;
+  right: auto !important;
+  width: 44px !important;
+  height: 44px !important;
+}
+html.grokbot-phone .sand-settings-panel__close > * {
+  display: none !important;
+}
+html.grokbot-phone .sand-settings-panel__close::after {
+  content: "";
+  width: 24px;
+  height: 24px;
+  background: currentColor;
+  -webkit-mask: var(--grokbot-back-icon) center / 24px no-repeat;
+  mask: var(--grokbot-back-icon) center / 24px no-repeat;
+}
+html.grokbot-phone .sand-settings-panel__body {
+  padding-left: 16px !important;
+  padding-right: 16px !important;
+}
+html.grokbot-phone .sand-settings-panel__body .sand-settings-pane {
+  padding: 8px 0 28px !important;
+}
+/* Connected apps: a round back button at the top left, the page on the paper colour. */
+html.grokbot-phone .sand-plugins > :first-child > * > * {
+  padding-left: 20px !important;
+  padding-right: 20px !important;
+}
+html.grokbot-phone .sand-plugins .sand-settings-pane {
+  padding-left: 20px !important;
+  padding-right: 20px !important;
+}
+html.grokbot-phone .sand-plugins-layout > div > div {
+  background: transparent !important;
+}
+html.grokbot-phone .sand-plugins-layout > div > div:first-child {
+  height: 56px !important;
+  min-height: 56px !important;
+  flex: none !important;
+}
+html.grokbot-phone .sand-plugins-layout > div > div > div {
+  background: transparent !important;
+}
+html.grokbot-phone .sand-plugins-layout > .sand-kit-icon-button {
+  top: 6px !important;
+  left: 16px !important;
+  right: auto !important;
+  width: 44px !important;
+  height: 44px !important;
+  border-radius: 22px !important;
+  background: var(--grokbot-glass) !important;
+  box-shadow: var(--grokbot-glass-shadow) !important;
+  color: var(--grokbot-label) !important;
+}
+html.grokbot-phone .sand-plugins-layout > .sand-kit-icon-button > * {
+  display: none !important;
+}
+html.grokbot-phone .sand-plugins-layout > .sand-kit-icon-button::after {
+  content: "";
+  width: 24px;
+  height: 24px;
+  background: currentColor;
+  -webkit-mask: var(--grokbot-back-icon) center / 24px no-repeat;
+  mask: var(--grokbot-back-icon) center / 24px no-repeat;
+}
+
+/* Large computer view: a black screen of its own; as in the official app, a round close button
+   at the top left leaves it. */
+html.grokbot-phone .sand-computer-fullscreen {
+  background: #000 !important;
+}
+html.grokbot-phone .sand-computer-stage > :not(.sand-computer-stage__frame) {
+  background: transparent !important;
+}
+html.grokbot-phone .sand-computer-top-bar {
+  height: 56px !important;
+  min-height: 56px !important;
+  justify-content: flex-start !important;
+  padding: 0 16px !important;
+  background: transparent !important;
+}
+html.grokbot-phone .sand-computer-top-bar__actions {
+  order: -1;
+}
+html.grokbot-phone .sand-computer-top-bar__actions .sand-kit-icon-button {
+  width: 44px !important;
+  height: 44px !important;
+  border: 0 !important;
+  border-radius: 22px !important;
+  background: rgba(255, 255, 255, 0.14) !important;
+  color: #fff !important;
+}
+html.grokbot-phone .sand-computer-top-bar__actions .sand-kit-icon-button:last-child > * {
+  display: none !important;
+}
+html.grokbot-phone .sand-computer-top-bar__actions .sand-kit-icon-button:last-child::after {
+  content: "";
+  width: 22px;
+  height: 22px;
+  background: currentColor;
+  -webkit-mask: var(--grokbot-close-icon) center / 22px no-repeat;
+  mask: var(--grokbot-close-icon) center / 22px no-repeat;
+}
+
+/* Image viewer: black, the picture as wide as the screen, close on the left and save on the right. */
+html.grokbot-phone .sand-media-viewer {
+  background: #000 !important;
+}
+html.grokbot-phone .sand-media-viewer__media-cell {
+  align-self: stretch !important;
+  flex: 1 1 auto;
+  box-sizing: border-box;
+  width: 100% !important;
+  min-height: 0;
+  padding: 0 !important;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+html.grokbot-phone .sand-media-viewer__image {
+  max-width: 100% !important;
+  max-height: 100% !important;
+  margin: 0 !important;
+}
+html.grokbot-phone .sand-media-viewer__top-bar {
+  left: 16px !important;
+  right: 16px !important;
+  top: 6px !important;
+  transform: none !important;
+  display: flex !important;
+  justify-content: space-between !important;
+}
+html.grokbot-phone .sand-media-viewer__top-bar > .sand-kit-icon-button {
+  width: 44px !important;
+  height: 44px !important;
+  border: 0 !important;
+  border-radius: 22px !important;
+  color: #fff !important;
+  background: rgba(255, 255, 255, 0.14) !important;
+}
+html.grokbot-phone .sand-media-viewer__top-bar > .sand-kit-icon-button:last-child {
+  order: -1;
+}
+
+/* Other dialogs are sheets from the bottom, as in the official app: a round close button on the
+   left with the title next to it, and wide round buttons at the bottom. */
+html.grokbot-phone .ui-dialog:not(.sand-command-palette, :has(.sand-settings-layout), :has(.sand-plugins-layout)) {
+  top: auto !important;
+  bottom: 0 !important;
+  left: 0 !important;
+  right: 0 !important;
+  width: 100% !important;
+  max-width: none !important;
+  max-height: calc(100% - 40px) !important;
+  transform: none !important;
+  border: 0 !important;
+  border-radius: 28px 28px 0 0 !important;
+  background: var(--grokbot-chrome) !important;
+  animation: grokbot-sheet-in 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+html.grokbot-phone .ui-dialog:not(.sand-command-palette, :has(.sand-settings-layout), :has(.sand-plugins-layout)) > .ui-dialog-close {
+  top: 14px !important;
+  left: 16px !important;
+  right: auto !important;
+  width: 44px !important;
+  height: 44px !important;
+  border-radius: 22px !important;
+  background: var(--grokbot-fill-3) !important;
+  color: var(--grokbot-label) !important;
+}
+html.grokbot-phone .ui-dialog:not(.sand-command-palette, :has(.sand-settings-layout), :has(.sand-plugins-layout)) > .ui-dialog-close .ui-icon {
+  transform: scale(1.3);
+}
+html.grokbot-phone .ui-dialog:not(.sand-command-palette, :has(.sand-settings-layout), :has(.sand-plugins-layout)):has(> .ui-dialog-close) > div:has(> h2) {
+  height: auto !important;
+  min-height: 72px !important;
+  display: flex !important;
+  flex-direction: row !important;
+  justify-content: flex-start !important;
+  align-items: center !important;
+  padding: 0 16px 0 72px !important;
+  border: 0 !important;
+}
+html.grokbot-phone .ui-dialog:not(.sand-command-palette, :has(.sand-settings-layout), :has(.sand-plugins-layout)) > div:has(> h2) > h2 {
+  font-size: 17px !important;
+  line-height: 22px !important;
+  font-weight: 500 !important;
+}
+html.grokbot-phone .ui-dialog:not(.sand-command-palette, :has(.sand-settings-layout), :has(.sand-plugins-layout)) > div:last-child:has(> button) {
+  gap: 8px !important;
+  padding: 12px 16px 16px !important;
+  border: 0 !important;
+}
+html.grokbot-phone .ui-dialog:not(.sand-command-palette, :has(.sand-settings-layout), :has(.sand-plugins-layout)) > div:last-child:has(> button) > button {
+  flex: 1 1 0;
+  min-height: 50px !important;
+  border-radius: 25px !important;
+  font-size: 17px !important;
+}
+html.grokbot-phone .ui-dialog > div:last-child:has(> button) > button[data-variant="primary"] {
+  border: 0 !important;
+  background: var(--grokbot-label) !important;
+  color: var(--grokbot-paper) !important;
+}
+html.grokbot-phone .ui-dialog > div:last-child:has(> button) > button[data-variant="primary"]:disabled {
+  opacity: 0.35;
+}
+/* Confirmations: the question on top, two wide round buttons below. */
+html.grokbot-phone .sand-alert-dialog > div:first-child {
+  gap: 6px !important;
+  padding: 24px 20px 4px !important;
+}
+html.grokbot-phone .sand-alert-dialog .sand-dialog__title {
+  font-size: 17px !important;
+  line-height: 22px !important;
+  font-weight: 600 !important;
+}
+html.grokbot-phone .sand-alert-dialog .sand-dialog__description {
+  font-size: 15px !important;
+  line-height: 20px !important;
+}
+html.grokbot-phone .sand-alert-dialog > div:last-child {
+  padding: 16px !important;
+}
+html.grokbot-phone .sand-alert-dialog > div:last-child > div {
+  gap: 8px !important;
+}
+html.grokbot-phone .sand-alert-dialog > div:last-child button {
+  flex: 1 1 0;
+  min-height: 50px !important;
+  border-radius: 25px !important;
+  font-size: 17px !important;
+}
+/* New Bot: a large name field in a grey box and a single "Create" button. */
+html.grokbot-phone .sand-create-bot-dialog > div:last-child > button[data-variant="secondary"] {
+  display: none !important;
+}
+html.grokbot-phone .sand-create-bot-dialog .ui-dialog-content input {
+  height: 56px !important;
+  border: 0 !important;
+  border-radius: 14px !important;
+  background: var(--grokbot-fill-3) !important;
+  box-shadow: none !important;
+  outline: 0 !important;
+  font-size: 20px !important;
+  font-weight: 600 !important;
+  text-align: center;
+  color: var(--grokbot-label) !important;
+}
+
+/* Menus (account, Bot actions, choices) are sheets from the bottom as well. */
+html.grokbot-phone .ui-menu:not(.ui-menu--virtualized) {
+  position: fixed !important;
+  top: auto !important;
+  bottom: 8px !important;
+  left: 8px !important;
+  right: 8px !important;
+  width: auto !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  max-height: 70% !important;
+  transform: none !important;
+  animation: grokbot-sheet-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+/* Context menus and choice lists of the base components (the Bot actions on a long press,
+   the theme in settings). */
+html.grokbot-phone :is([data-component="menu-positioner"], [data-component="select-positioner"]) {
+  top: auto !important;
+  bottom: 8px !important;
+  left: 8px !important;
+  right: 8px !important;
+  width: auto !important;
+  transform: none !important;
+  box-shadow: 0 0 0 100vmax var(--grokbot-scrim);
+  border-radius: 18px;
+}
+html.grokbot-phone :is([data-component="menu-popup"], [data-component="select-popup"]) {
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: none !important;
+  max-height: 70vh;
+  overflow: auto;
+  border-radius: 18px !important;
+  padding: 6px !important;
+  animation: grokbot-sheet-in 200ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+html.grokbot-phone :is([data-component="menu-popup"] [role^="menuitem"], [data-component="select-popup"] [role="option"]) {
+  min-height: 48px !important;
+  font-size: 16px !important;
+}
+html.grokbot-phone [data-component="menu-popup"] .ui-icon {
+  transform: scale(1.25);
+}
+html.grokbot-phone .ui-menu .ui-icon {
+  transform: scale(1.25);
+}
+html.grokbot-phone .ui-menu__backdrop {
+  background: var(--grokbot-scrim) !important;
+}
+html.grokbot-phone .ui-menu__row,
+html.grokbot-phone .ui-menu__submenu-trigger,
+html.grokbot-phone .ui-menu__toggle-row {
+  min-height: 48px !important;
+  align-items: center !important;
+  gap: 12px !important;
+  padding: 6px 12px !important;
+  font-size: 16px !important;
+}
+@keyframes grokbot-sheet-in {
+  from { translate: 0 24px; opacity: 0; }
+  to { translate: 0 0; opacity: 1; }
+}

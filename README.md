@@ -4,12 +4,13 @@
 
 **把 Grok Bot 的服务端搬到你自己的服务器上，接你自己的模型。**
 
-Windows · macOS · iOS 客户端 ｜ Linux 服务端 ｜ OpenAI Chat / OpenAI Responses / Anthropic Messages
+Windows · macOS · iOS 客户端补丁 ｜ [自开发 Android App（非官方）](#android-客户端) ｜ Linux 服务端 ｜ OpenAI Chat / OpenAI Responses / Anthropic Messages
 
 <p>
   <img alt="Windows 0.71.2" src="https://img.shields.io/badge/Windows-0.71.2_x64-0078D4?logo=windows&logoColor=white">
   <img alt="macOS 0.71.2" src="https://img.shields.io/badge/macOS-0.71.2-111111?logo=apple&logoColor=white">
   <img alt="iOS 1.16.0" src="https://img.shields.io/badge/iOS-1.16.0-111111?logo=apple&logoColor=white">
+  <img alt="Android 9+" src="https://img.shields.io/badge/Android-9%2B-3DDC84?logo=android&logoColor=white">
   <img alt="Host d0a4baa" src="https://img.shields.io/badge/Host-d0a4baa-2496ED?logo=docker&logoColor=white">
   <img alt="Noncommercial License" src="https://img.shields.io/badge/License-Noncommercial-6B7280">
   <a href="https://linux.do"><img alt="LINUX DO" src="https://img.shields.io/badge/Community-LINUX%20DO-F5A623"></a>
@@ -26,7 +27,7 @@ Windows · macOS · iOS 客户端 ｜ Linux 服务端 ｜ OpenAI Chat / OpenAI R
 
 ProkBot Plus 基于开源项目 [ProkBot](https://gitee.com/ahaduoduoduo/ProkBot) 修改。ProkBot 的思路是：原版 Grok Bot 的客户端和 Agent 都很好用，但它只能连官方云端。它把服务端（Host 和执行用的 Linux 桌面）用 Docker 跑在你自己的机器上，再给原版客户端打补丁，让客户端连到你的服务器。
 
-Plus 在此基础上补了三件事：**Windows 客户端**；**Anthropic Messages 和 OpenAI Responses 两种模型接口**（上游只支持 OpenAI Chat）；以及让联网搜索、生图、本机命令在实际使用中跑顺的一批修复。
+Plus 在此基础上补了这些：**Windows 和 Android 客户端**；**Anthropic Messages 和 OpenAI Responses 两种模型接口**（上游只支持 OpenAI Chat）；以及让联网搜索、生图、本机命令在实际使用中跑顺的一批修复。
 
 > 这是非官方项目，与 xAI 及 Grok Bot 官方没有任何关系。仅限非商业使用，详见[许可与声明](#许可与声明)。
 
@@ -38,6 +39,7 @@ Plus 在此基础上补了三件事：**Windows 客户端**；**Anthropic Messag
 - **让 Bot 操作你的电脑。** Mac 支持命令和图形界面控制；Windows 支持本机命令，每次执行前会弹窗问你。
 - **联网和生图。** 用模型自带的联网能力搜索、读网页；用 OpenAI 兼容的图片接口生图，支持按比例出图和拿参考图修改。
 - **数据留在自己的机器上。** 对话、文件、记忆、Bot 资料都存在你的服务器上，遥测和自动更新已关闭。
+- **在手机上用。** iOS 和 Android 客户端：Bot 回复时收到通知，还能看 Bot 电脑的实时画面、接手操作。
 - **在外面也能用。** 局域网直连、内置的 Tailcat 组网（不需要公网 IP），或者你自己的 HTTPS 域名。
 
 ## 支持的系统
@@ -48,7 +50,8 @@ Plus 在此基础上补了三件事：**Windows 客户端**；**Anthropic Messag
 | Windows 客户端 | Windows 10 / 11，x64 | **本版本新增。** 便携版和安装包，不需要管理员权限 |
 | Mac 客户端 | Apple Silicon，Grok Bot 0.71.2 | 来自上游 |
 | iOS 客户端 | Grok Bot 1.16.0（23152） | 来自上游。需要自备砸壳 IPA 和签名证书 |
-| Android、Linux 桌面 | 不支持 | 官方没有对应的客户端 |
+| Android 客户端 | Android 9 及以上 | **本版本新增。** 用官方桌面版的界面加本项目的外壳生成 APK，在 Windows、Mac 或 Linux 电脑上生成 |
+| Linux 桌面 | 不支持 | 官方没有对应的客户端 |
 
 ## 这个版本新增了什么
 
@@ -73,6 +76,26 @@ Plus 在此基础上补了三件事：**Windows 客户端**；**Anthropic Messag
 - 生成便携版和安装包两种形式。
 
 补丁由 Mac 版移植而来，每一段都校验过结构。
+
+### Android 客户端
+
+**这是 ProkBot Plus 自开发的 Android App，不是 xAI 官方 Android 版，也不是对官方 Android APK 打补丁。**
+
+<p align="center">
+  <img src="docs/images/android-connect-zh.png" alt="自开发 Android 客户端：首次连接时填写 Host 地址和配对码" width="240">
+  <img src="docs/images/android-bots.png" alt="自开发 Android 客户端：配对后的 Atlas 和 Nova 演示 Bot 列表" width="240">
+</p>
+<p align="center"><sub>Android 15 模拟器实拍：左为首次配对，右为配对后重新打开的工作区。Bot 名称来自隔离演示环境。</sub></p>
+
+官方 Android 版带有防篡改保护，不能修改。Plus 换了一种做法：把官方**桌面版**的界面（和 Windows、Mac 客户端同一套，取自你自己下载的官方 Windows 安装包）装进一个本项目编写的 Android 外壳，生成 APK：
+
+- 对话、Bot 管理、技能、资料库、例行任务和设置都是原版界面，照官方手机版的样子重新排版：Bot 列表和对话分成两屏，圆形悬浮按钮、消息气泡、配色和字体都和官方手机版一致，详情、设置和搜索全屏打开，菜单和对话框从底部弹出；支持返回键和深色模式；
+- 在手机上看 Bot 电脑的实时画面，「取得控制权」后用触摸和软键盘操作；
+- 上传手机里的文件，把 Bot 发来的文件保存到手机；
+- 后台通知不依赖 Google 推送服务，点通知直接打开对应的 Bot；
+- 设备凭据用 Android Keystore 加密保存，网页里拿不到。
+
+APK 用只属于你的密钥签名。不支持 Tailcat，外网使用请用 VPN、内网穿透或 HTTPS 域名。详见 [Android 客户端](android/README.md)。
 
 ### 三种模型接口
 
@@ -135,8 +158,9 @@ Plus 在此基础上补了三件事：**Windows 客户端**；**Anthropic Messag
   - 关掉的：虚拟卡、外部消息草稿、产品反馈、通行密钥转发；
   - 换掉的：语音、推送、生图视频等，要你自己准备服务商；
   - 实时通话目前是实验功能。
-- 客户端没有代码签名：Windows 首次打开会有 SmartScreen 提示；iOS 要自己签名安装。
+- 客户端没有代码签名：Windows 首次打开会有 SmartScreen 提示；iOS 要自己签名安装；Android 要允许安装未知来源的应用。
 - Windows 版还不能让 Bot 操作鼠标键盘，原版的这部分组件只有 macOS 版本。
+- Android 版不支持 Tailcat；后台通知靠一个常驻的连接，部分手机要在系统设置里允许它后台运行。
 - 修改官方客户端可能违反官方的用户条款，风险自负。
 
 ## 部署需要什么
@@ -145,13 +169,13 @@ Plus 在此基础上补了三件事：**Windows 客户端**；**Anthropic Messag
 | --- | --- |
 | 服务器 | x86_64 Linux，内存 8 GB 以上，空闲磁盘 30 GB 以上，装好 Docker、Docker Compose 和 Python 3.10+。首次构建要下载约 8 GB |
 | 模型接口 | 任意一种：Anthropic Messages、OpenAI Responses、OpenAI Chat Completions。要支持工具调用；想让 Bot 操作电脑，还要支持图片输入 |
-| 生成客户端的电脑 | Windows 客户端在 Windows 10/11 x64 上生成，Mac 客户端在 Apple Silicon Mac 上生成，都需要 Node.js 22.12+。iOS 需要砸壳 IPA 和签名证书 |
+| 生成客户端的电脑 | Windows 客户端在 Windows 10/11 x64 上生成，Mac 客户端在 Apple Silicon Mac 上生成，Android 客户端在 Windows、Mac、Linux 上都能生成，都需要 Node.js 22.12+。iOS 需要砸壳 IPA 和签名证书 |
 
 | 可选 | 用途 |
 | --- | --- |
 | 支持原生联网的模型 | Bot 搜索、读网页（例如 Claude 的 `web_search`） |
 | OpenAI 兼容的图片接口 | Bot 生图、修图 |
-| Bark 或 Apple 推送证书 | 手机推送 |
+| Bark 或 Apple 推送证书 | iPhone 推送（Android 不需要） |
 | 语音识别和合成服务 | 语音输入、实时通话 |
 | 域名和 HTTPS | 不用 Tailcat 时的外网访问 |
 
@@ -169,7 +193,7 @@ AI 会先列出你要准备的东西，然后一步步部署服务端、配置�
 
 想自己动手的话，照着 [AI 部署手册](docs/AI-INSTALL.md) 做就行。它是写给 AI 的，但每一步都写了命令和检查方法，人照着做也完全没问题。
 
-[Releases](https://github.com/ferretgeek/prokbot-plus/releases) 里有按部分打好的补丁工具包：服务端、Windows、Mac、iOS，不想下载整个仓库时可以只下需要的那个。Releases 里**不提供**打好补丁的客户端，因为它包含官方 Grok Bot 程序，只能用工具在你自己的电脑上生成。
+[Releases](https://github.com/ferretgeek/prokbot-plus/releases) 按平台分发补丁工具。`v1.0.0` 不含 Android 工具；使用 Android 请按 [Android 客户端说明](android/README.md) 从本仓库生成。Releases **不提供**包含官方程序的成品客户端。
 
 ## 文档
 
@@ -177,7 +201,7 @@ AI 会先列出你要准备的东西，然后一步步部署服务端、配置�
 | --- | --- |
 | [AI 部署手册](docs/AI-INSTALL.md) | 从零部署的完整步骤，每一步都写了「应该看到什么」和「失败了怎么办」 |
 | [技术文档](docs/ARCHITECTURE.md) | 原理、每个功能怎么实现、Plus 改了什么、目录、测试、二次开发入口和已知限制 |
-| [Windows 客户端](windows/README.md) · [Mac 客户端](mac/README.md) · [iOS 客户端](ios/README.md) | 各平台补丁的用法 |
+| [Windows 客户端](windows/README.md) · [Mac 客户端](mac/README.md) · [iOS 客户端](ios/README.md) · [Android 客户端](android/README.md) | 各平台补丁的用法 |
 | [分开部署、备份与应用开发](host/README.md) | 进阶用法 |
 
 ## 友情链接
@@ -190,7 +214,7 @@ AI 会先列出你要准备的东西，然后一步步部署服务端、配置�
   - 可以个人使用、学习、修改和非商业分发；
   - 不能用于任何商业用途，包括收费部署、付费服务和企业内部使用。
   - 来源和修改清单见 [NOTICE](NOTICE)。
-- 仓库里没有任何 Grok Bot 官方程序。补丁工具会在你自己的电脑上下载官方版本，校验后再打补丁。仓库不提供任何原版或已修改的 IPA。
+- 仓库里没有任何 Grok Bot 官方程序，也不提供成品客户端 APK 或 IPA。`android/dist/` 只包含自开发的空外壳；桌面界面从你自己下载并校验的 Windows 安装包中提取。
 - Grok、Grok Bot 及相关商标归各自权利人所有。本项目与他们没有关联，也没有得到他们的认可。
 - 本项目大部分代码由 AI 辅助编写，按现状提供，不提供任何担保。
 - 发现安全问题请看 [SECURITY.md](SECURITY.md)，参与贡献请看 [CONTRIBUTING.md](CONTRIBUTING.md)。

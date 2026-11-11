@@ -19,6 +19,7 @@ flowchart LR
   Win[Windows 客户端] --> Admin
   Mac[Mac 客户端] --> Admin
   iOS[iOS 客户端] --> Admin
+  And[Android 客户端] --> Admin
   subgraph Host 容器
     Admin[管理服务 :8000<br/>登录 / 配对 / 配置 / 代理] --> Core[原版 Host 127.0.0.1:1340<br/>Agent / 工具 / 上下文]
     Core --> Adapter[模型适配层]
@@ -39,6 +40,7 @@ flowchart LR
 | Windows 客户端 | 0.71.2 x64（`Grok_Bot_0.71.2_Setup.exe`） |
 | Mac 客户端 | 0.71.2 Apple Silicon |
 | iOS 客户端 | 1.16.0（23152）arm64 砸壳 IPA |
+| Android 客户端 | 界面取自 Windows 0.71.2 x64 安装包，外壳为本项目代码 |
 
 ## 功能对照
 
@@ -65,7 +67,7 @@ flowchart LR
 | 🔁 实时通话 | 官方实时语音模型 | 识别和合成分别接你选的服务（实验功能） | 识别和合成服务 |
 | 🔁 图片和视频生成 | 官方服务 | OpenAI 兼容的图片接口（支持按画面比例出图和参考图修图）、WaveSpeed 等 | 供应商的 Key |
 | 🔁 联网搜索 | 官方搜索 | Claude 或 OpenAI Responses 模型自带的联网能力，或单独配置的 DeepSeek、HTTP JSON 搜索服务 | 可选 |
-| 🔁 手机推送 | 官方推送 | 安装包签名带推送权限时用 APNs，否则用 Bark | Bark App，或 Apple 开发者账号和 APNs 密钥（.p8） |
+| 🔁 手机推送 | 官方推送 | iOS：安装包签名带推送权限时用 APNs，否则用 Bark。Android：App 自己保持与 Host 的连接接收通知 | iOS 需要 Bark App，或 Apple 开发者账号和 APNs 密钥（.p8） |
 | 🔁 外网访问 | 直接连官方云端 | IP 地址、Tailscale、HTTPS 反向代理，或内置的 Tailcat | 视情况准备域名 |
 | ⛔ 遥测和错误上报 | 发给官方 | 已关闭 | — |
 | ⛔ 自动更新 | 官方更新 | 已关闭，补丁固定在支持的版本 | — |
@@ -248,6 +250,54 @@ Bot 要在执行电脑或你的电脑上做有风险的操作时，原版会先�
 - 重新生成 stub：在 `windows/installer/` 执行 `go build -trimpath -ldflags="-H=windowsgui -s -w" -o ../dist/installer/grokbot-setup-stub.exe .`。
 - 重新生成 Windows 版 Tailcat：在仓库根目录执行 `python host/network/build-tailcat.py --target windows-amd64 --output windows/dist/network`（需要 Go）。
 
+### Android 客户端
+
+官方 Android 版（`ai.x.grok.bot` 1.16.0）是 React Native 应用，带有 Google Play 的防篡改保护，改动后无法运行；绕过这种保护不在本项目的范围内。所以 Android 客户端不改官方 Android 版，而是在手机上运行官方**桌面版**的界面（和 Windows、Mac 客户端同一套），由本项目编写的 Android 外壳代替 Electron。
+
+**外壳**（`android/shell/`，Kotlin，不依赖第三方库；`android/dist/grokbot-android-shell.apk` 是它的预编译版本）是一个全屏 WebView，加上这些部分：
+
+- **本地网关**（`LocalGateway.kt`），只监听 `127.0.0.1`：
+  - 界面端口（39710 起）提供界面文件和 `/__native/*` 原生接口，并把 `/api`、`/events`、`/local`、`/connect`、`/notifications` 转发给 Host，由网关加上设备令牌；
+  - 电脑画面端口（39720 起）只转发 `/vnc/desktop/`、`/vnc/fork/` 下的 noVNC 页面和 WebSocket；
+  - 两个端口都校验每次启动随机生成的 HttpOnly、SameSite=Strict Cookie，界面端口还校验 Host、Origin 和 Sec-Fetch-Site；
+  - 设备令牌只在原生层，网页拿不到。Host 出错时返回 502，而不是让页面收到空响应。
+- **凭据**（`Storage.kt`）：设备令牌用 Android Keystore 中的 AES-GCM 密钥加密保存；设置和界面的持久化数据放在应用私有目录。
+- **通知**（`Notifications.kt`）：一个前台服务跟随 Host 的 `/notifications/events`（iOS 客户端读的同一个事件流），按创建时间去重，正在看的 Bot 不重复提醒。点击通知通过 `grokbot-local://agent/<id>` 打开对应的 Bot。开机和升级后自动恢复；设备被吊销时提示重新配对。通知文字跟随 App 内选择的语言。
+- **系统功能**：文件选择、系统保存对话框、麦克风权限、返回键、深色模式和系统栏颜色、屏幕安全区域。
+
+**桥接**（`android/client/`）在 WebView 里代替 Electron 的主进程和 preload：
+
+- `bridge.js` 模拟 `ipcRenderer`、`contextBridge` 和 `process`，原样运行官方的 `preload.cjs`；
+- `services.js`、`gateway.js` 移植了桌面客户端主进程（`mac/clients/desktop/`）里的本地方法：附件分块上传、文件保存、资料、语音、设置、连接应用等；
+- `webview.js` 用 iframe 代替 Electron 的 `<webview>`：
+  - 电脑画面页面由网关从 Host 转发，网关在 noVNC 页面的同一目录注入 `vnc-bridge.js` 和官方的 `preload-vnc.cjs`（官方 preload 交给 `executeJavaScript` 的代码按页面地址导入 noVNC 模块）；
+  - `executeJavaScript`、`send`、`insertCSS` 和 `ipc-message` 通过 postMessage 实现，只接受本应用界面的消息；
+  - iframe 跟随界面设置的 `pointer-events`，所以只有「取得控制权」后才能用触摸和软键盘操作 Bot 的电脑；
+  - 桌面客户端用的是精简版 VNC preload，这里用官方版，所以手机上也有输入法字段、剪贴板和自适应画质；
+- `layout.js`、`android.css` 照官方手机版的样子排版，颜色、尺寸和字体取自官方手机版的设计参数：
+  - 窗口宽度小于 600 px 时，Bot 列表和对话是两个全屏页面。`layout.js` 根据点按 Bot、搜索、新建或删除 Bot、新建群聊和通知决定显示哪一页，在对话页加返回按钮，返回键在对话页回到列表；按下「创建」后等 Host 建好 Bot 再进入它的对话；
+  - 返回、账户、搜索、新建和加号是圆形悬浮按钮，对话顶部是 Bot 名字的胶囊；气泡、输入框、列表行和底部面板的尺寸与配色按官方手机版；字体用桌面版界面自带的 XVF；
+  - 列表页不显示市场按钮，`layout.js` 在账户菜单里加一个市场入口；列表每行的最后活动时间由 `layout.js` 格式化（今天显示时刻，其次是「昨天」、星期和日期）；
+  - 对话详情、设置、市场和搜索全屏显示，其他对话框、菜单和选项从底部弹出；看图和大画面黑底全屏；
+  - 宽度 600 px 以上沿用桌面排版；对话详情在 792 px 以下是全屏层，打开大画面时让开；
+  - 隐藏在 Android 上没有意义的设置（硬件加速、本机访问、Tailcat）；宽图片按列宽缩放；
+- `anchor-fallback.js`：Chromium 125 以前的 WebView 不支持 CSS 锚点定位，电脑画面会缩成 0。兼容代码记录锚点名称和位置表达式，在布局后换算成像素。
+
+**生成工具**（`android/patchers/patch.mjs`）：
+
+1. 下载并校验官方 `Grok_Bot_0.71.2_Setup.exe`（和 Windows 客户端同一个文件），解出 `app.asar`，执行 Windows recipe。
+2. 校验界面入口、`preload.cjs`、`preload-vnc.cjs` 的 SHA-256，再执行 `renderer-patches.mjs` 中的界面修改，每个文件先校验哈希、每个锚点必须唯一：
+   - 放宽对话详情的窗口宽度判断（手机不能把窗口加宽）；
+   - 去掉「教 Bot 做任务」和「获取手机版」两个入口；
+   - 给电脑画面的锚点样式附加兼容代码读取的自定义属性；
+   - Bot 列表每行显示最后活动时间。
+3. 把界面、桥接代码、官方 preload（包装成 ES 模块和普通脚本）和官方图标放进外壳 APK 的 `assets/web/`。
+4. 按 zipalign 的规则对齐，用 APK 签名方案 v2 签名（`apk.mjs`，纯 Node 实现）。签名密钥在第一次生成时创建，保存在 `~/.grokbot-local/android-signing.json`。
+
+**配对**：Android 发送 `platform: desktop` 和 `clientKind: android`。新版 Host 将新配对的手机保存为 Android 设备，不授予桌面执行权限；旧 Host 忽略附加字段，仍可配对。中文输入法打出的全角字符会先转成半角。
+
+**和桌面版的差异**：不支持 Tailcat；不能在手机上执行命令或操作手机（`getLocalToolPermission` 返回 `never`）；没有「教 Bot 做任务」。
+
 ### iOS 客户端
 
 原版 iOS 客户端用 React Native 开发。这里写了一个注入的动态库（Objective-C，源码在 `ios/clients/ios/`，用 `build.py` 编译），把原本发往官方的请求转到你的 Host，再对 Hermes 字节码做少量固定修改。小组件、分享和通知三个扩展保留，使用独立的 Bundle ID。补丁输出未签名的 IPA，主应用和三个扩展都要自己签名（见 [ios/README.md](../ios/README.md#签名)）。
@@ -279,10 +329,13 @@ Host 可以直接给 Apple 推送服务（APNs）发通知，这需要有推送�
 | `host/tools/host-admin.mjs` | 命令行管理工具 |
 | `host/network/` | Tailcat 的 Go 源码与构建脚本；`host/bin/` 是预编译的 Linux 版 |
 | `host/tests/` | 服务端单元测试 |
-| `mac/clients/desktop/` | 桌面客户端主进程，Mac 与 Windows 共用：连接、配对、通知、附件（`attachments.mjs`、`attachment-uploads.mjs`）、外部链接与预览、本机命令（`local-exec.mjs`）、Codex 委派；平台差异集中在 `platform.mjs` |
+| `mac/clients/desktop/` | 桌面客户端主进程，Mac 与 Windows 共用：连接、配对、通知、附件（`attachments.mjs`、`attachment-uploads.mjs`）、外部链接与预览、本机命令（`local-exec.mjs`）、Codex 委派；平台差异集中在 `platform.mjs`。`*-settings-extension.js` 是 recipe 加进原版设置页的代码的源码，改了要重新制作 recipe 才生效。Android 客户端也复制其中的 `i18n.mjs`、`external-url.mjs`、`connectors.mjs` |
 | `mac/patchers/desktop/` | Mac 补丁、recipe 应用器、原版下载器（`download-original.mjs`），Windows 补丁也用它 |
-| `windows/patchers/desktop/` | Windows 补丁：`patch.mjs`、`pe.mjs`（图标、ASAR 完整性、签名表）、`zip.mjs`、`recipes/` |
+| `windows/patchers/desktop/` | Windows 补丁：`patch.mjs`、`original.mjs`（解压官方安装包，Android 也用）、`pe.mjs`（图标、ASAR 完整性、签名表）、`zip.mjs`、`recipes/` |
 | `windows/tools/`、`windows/installer/`、`windows/dist/` | Recipe 移植工具、安装器源码、预编译的 Tailcat 和安装器 stub |
+| `android/shell/` | Android 外壳（Kotlin）：本地网关、凭据、配对、通知、文件和返回键；`release-shell.mjs` 构建 `android/dist/grokbot-android-shell.apk` |
+| `android/client/` | WebView 里的桥接：代替 Electron 主进程和 preload、电脑画面、布局调整、锚点兼容、连接页 |
+| `android/patchers/` | Android 生成工具：`patch.mjs`、`apk.mjs`（ZIP 与 APK 签名）、`renderer-patches.mjs`、`supported.json` |
 | `ios/release/` | iOS 补丁入口 `patch-ios.py`：校验用户 IPA，输出未签名文件 |
 | `ios/clients/ios/` | 注入库源码、原生界面与功能适配（例如 `GBNetwork.m` 的隧道管理、`GBVoiceSocket.m` 的语音传输）；`audio-processing/` 是回声处理库 |
 | `*/recipes/` | 从原版文件复制字节并加入本项目修改的补丁数据 |
@@ -298,10 +351,13 @@ Host 可以直接给 Apple 推送服务（APNs）发通知，这需要有推送�
 ## 测试
 
 ```sh
-node --test "host/tests/*.test.mjs"      # 服务端 35 项
-node --test "windows/tests/*.test.mjs"   # Windows 客户端 8 项
-node --test mac/tests/*.test.mjs         # Mac / 共用客户端 15 项
+node --test "host/tests/*.test.mjs"      # 服务端
+node --test "windows/tests/*.test.mjs"   # Windows 客户端
+node --test "mac/tests/*.test.mjs"       # Mac / 共用客户端
+node --test "android/tests/*.test.mjs"   # Android 客户端
 ```
+
+iOS 注入库的网络层另有一项测试，要在装了 Xcode 命令行工具的 Mac 上运行：`python3 ios/tests/ios-network.test.py`。
 
 覆盖范围：
 
@@ -312,6 +368,8 @@ node --test mac/tests/*.test.mjs         # Mac / 共用客户端 15 项
   - 消息顺序。
 - **Windows 客户端**：窗口样式、安装包结构、Codex 查找、Host 图片路径、命令输出编码。
 - **Mac 客户端**：附件、外部链接、预览、侧栏等。
+- **iOS 网络层**：Tailcat 隧道的启动（并发请求只启动一次）、恢复、连接异常后的重建和关闭。
+- **Android 客户端**：APK 对齐、签名和防篡改校验，签名密钥，界面入口和界面补丁，官方 preload 的包装，Host 附件路径，电脑画面地址，事件流解析，锚点位置换算，图片缩放，手机上列表和对话两页的切换规则，列表时间的格式。
 
 改动代码后，建议再做一次真实验证：
 
@@ -326,8 +384,9 @@ node --test mac/tests/*.test.mjs         # Mac / 共用客户端 15 项
 | 新增模型接口格式 | 在 `host/runtime/` 新建适配文件，实现和 `openai-chat.mjs` 相同形态的生成器，再在这些地方注册：`model-session.mjs`、`host-auto-review.mjs` 的 `CLASSIFIERS`、`host/server/models.mjs`、管理页 `host/server/public/model.js` |
 | 调整模型的思考档位 | `host/runtime/model-policy.mjs` 的 `effortLevels`；Claude 型号特性在 `anthropic-messages.mjs` |
 | 修改管理页 | `host/server/public/`，英文文案在 `locales-en.js` |
-| 修改桌面客户端 | `mac/clients/desktop/`（Mac 与 Windows 共用） |
-| 支持新的官方客户端版本 | 更新 `supported.json` 的哈希；Mac recipe 要重新制作，Windows recipe 用 `windows/tools/port-desktop-recipes.mjs` 移植 |
+| 修改桌面客户端 | `mac/clients/desktop/`（Mac 与 Windows 共用，Android 用到其中三个文件） |
+| 修改 Android 客户端 | 桥接在 `android/client/`；外壳在 `android/shell/`，改完执行 `node android/shell/release-shell.mjs` 更新预编译外壳和摘要（需要 JDK 17+ 和 Android SDK） |
+| 支持新的官方客户端版本 | 更新 `supported.json` 的哈希；Mac recipe 要重新制作，Windows recipe 用 `windows/tools/port-desktop-recipes.mjs` 移植；Android 还要更新 `android/patchers/supported.json` 和 `renderer-patches.mjs` |
 | 应用（插件）开发 | [host/README.md](../host/README.md#应用开发) |
 
 ## 已知限制与待办
@@ -338,5 +397,11 @@ node --test mac/tests/*.test.mjs         # Mac / 共用客户端 15 项
   - 没有代码签名，首次打开会有 SmartScreen 提示；
   - 只支持 x64；
   - Tailcat 和实时语音还没有和真实 Host 联调过。
+- Android 客户端：
+  - 不支持 Tailcat；
+  - 排版照官方手机版，但页面内容是桌面版的：设置是「通用 / 电脑 / 更新」等标签页，市场的分类和内容与桌面版相同，对话页没有官方手机版右上角的电脑按钮（Bot 的电脑从对话详情打开）；
+  - 后台通知靠一个前台服务保持连接，部分厂商系统需要允许后台运行；
+  - 语音输入和实时通话只验证到请求送达 Host，还没有和真实的语音服务联调；
+  - 在 Android 15 模拟器（WebView 124）上做了完整测试，在 Android 16 模拟器（WebView 134）上验证了配对、通知权限和界面布局，还没有在真机上测试。
 - 服务端只支持 x86_64 Linux，原版桌面镜像只有 amd64。
 - iOS 需要自备砸壳 IPA 和签名证书；耳机、蓝牙与网络切换场景还没有在真机上充分验证。

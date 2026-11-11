@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Grok Bot Local</string>
+    <string name="channel_messages">Bot 消息</string>
+    <string name="channel_attention">需要你处理</string>
+    <string name="channel_connection">后台连接</string>
+    <string name="connection_title">已连接到你的 Host</string>
+    <string name="connection_text">保持连接以接收 Bot 通知。</string>
+    <string name="connection_lost">正在重新连接 Host…</string>
+    <string name="pairing_expired">连接已失效，请打开 Grok Bot 重新配对。</string>
+    <string name="missing_interface">这个 APK 没有界面文件，请用 android/patchers/patch.mjs 生成。</string>
+</resources>

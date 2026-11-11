@@ -2,6 +2,8 @@
 
 为 Grok Bot 0.71.2 Apple Silicon 客户端连接自己的 Host。需要 Node.js 22.12+。
 
+完整的部署步骤见 [AI 部署手册](../docs/AI-INSTALL.md#92-macapple-silicon)，实现原理见[技术文档](../docs/ARCHITECTURE.md#mac-客户端)。`clients/desktop/` 是客户端主进程，Windows 客户端和 Android 客户端也用到这里的代码。
+
 [English](README.en.md)
 
 ## 使用

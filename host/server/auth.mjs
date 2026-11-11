@@ -131,7 +131,7 @@ export class Auth {
       .filter((item) => item.expiresAt > Date.now())
       .map(({ id, expiresAt }) => ({ id, expiresAt }));
   }
-  async pair({ pairingKey, deviceName, platform }) {
+  async pair({ pairingKey, deviceName, platform, clientKind }) {
     check(
       typeof deviceName === "string" &&
         deviceName.trim().length > 0 &&
@@ -162,7 +162,7 @@ export class Auth {
       state.devices.push({
         id,
         name: deviceName.trim(),
-        platform,
+        platform: platform === "desktop" && clientKind === "android" ? "android" : platform,
         hash: hash(token),
         createdAt: new Date().toISOString(),
         revokedAt: null,

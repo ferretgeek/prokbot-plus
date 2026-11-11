@@ -23,7 +23,7 @@
 | 工作 | 谁做 |
 | --- | --- |
 | 在服务器上执行命令 | 你（AI） |
-| 生成 Windows 或 Mac 客户端 | 你运行在那台电脑上，就由你做；否则把命令交给用户执行 |
+| 生成 Windows、Mac 或 Android 客户端 | 你运行在那台电脑上，就由你做；否则把命令交给用户执行 |
 | 输入 SSH 密码、sudo 密码 | 用户。你没法在密码提示里输入 |
 | 双击安装客户端、在客户端里填写地址和配对码、在管理页里点选、发消息验收 | 用户。这些是图形界面操作，你在旁边一项一项告诉他怎么做 |
 
@@ -101,6 +101,10 @@ export GROKBOT_URL=$LOCAL_URL
      - 有没有装 Node.js 22.12+ 和 git？
      - 有没有装官方的 Grok Bot？
    - iPhone：难度较高，需要你自己准备 Grok Bot 1.16.0 的砸壳 IPA 和签名证书。
+   - Android 手机（Android 9 及以上）：
+     - 要在一台电脑上生成安装包（Windows、Mac、Linux 都可以，需要 Node.js 22.12+），这台电脑是不是我现在运行的这台？
+     - 手机能不能连到这台电脑（USB 数据线，或者把 APK 文件传到手机上）？
+     - Android 版不支持 Tailcat，出门在外要用的话需要 VPN、内网穿透或 HTTPS 域名。
 
 【需要你选择】
 4. 在哪里用：
@@ -127,6 +131,7 @@ export GROKBOT_URL=$LOCAL_URL
 | 服务器是 ARM 架构 | 镜像只有 amd64 版本，用不了，换 x86_64 机器 |
 | Windows 开着「智能应用控制」 | 生成的客户端没有代码签名，会被直接拦截。可以在 Windows 安全中心关掉它（**关掉后就不能再打开，除非重装系统**，先告诉用户），或者换一台电脑用 |
 | 不知道接口格式 | 看第 6 步的「怎么选接口格式」 |
+| 要用 Android 手机，又选了 B（Tailcat） | Android 版不支持 Tailcat。问用户能不能改用 VPN、内网穿透或 HTTPS 域名（C 方案）；不能的话，Android 手机只能在局域网里用 |
 
 **配置 SSH 密钥**（用户只能用密码登录时）：
 
@@ -690,7 +695,32 @@ python3 ios/release/patch-ios.py --input <砸壳.ipa> --output ./ios-output --bu
 
 签名方法见 [ios/README.md](../ios/README.md#签名)。安装是否成功由用户确认，交付时如实说明进度。
 
-### 9.4 配对
+### 9.4 Android 手机
+
+Android 版不改官方 Android 安装包（它带有防篡改保护），而是用官方 Windows 安装包里的桌面版界面，加上本项目的 Android 外壳生成一个 APK。生成在电脑上进行，Windows、Mac、Linux 都可以（你运行在这台电脑上就由你执行，否则交给用户）：
+
+1. `node --version` 应显示 v22.12 或更新。解压官方安装包要用到：Windows 11 自带的 `tar`（Windows 10 要装 7-Zip）；Mac 自带的 `tar`；Linux 要先装 `bsdtar` 或 7-Zip，例如 Ubuntu/Debian 上执行 `sudo apt-get install -y libarchive-tools < /dev/null`。
+2. 在仓库根目录执行：
+
+   ```sh
+   node android/patchers/patch.mjs
+   ```
+
+3. **应该看到：** 输出里有 `"verified": true`，`android/output/` 下生成 `GrokBotLocal-0.71.2-android.apk`。第一次执行还会提示「已生成新的签名密钥」，密钥在 `~/.grokbot-local/android-signing.json`。**把这个文件的位置告诉用户并请他备份**：以后升级 App 必须用同一个密钥，丢了只能卸载重装、重新配对。
+4. 把 APK 装到手机上，二选一：
+   - 手机用 USB 连着这台电脑、并已开启「USB 调试」时：`adb install -r android/output/GrokBotLocal-0.71.2-android.apk`，应该看到 `Success`；
+   - 否则把 APK 文件发到手机上（数据线、网盘、聊天软件都可以），请用户在手机上点开安装。系统提示「禁止安装未知应用」时，按提示允许这个来源。
+5. 请用户打开「Grok Bot Local」，停在填写 Host 地址的界面。第一次进入工作区时，系统会问是否允许通知，请用户选「允许」。
+
+**如果失败：**
+
+- **下载原版失败**：同 9.1，用浏览器下载后执行 `node android/patchers/patch.mjs --source <下载的文件路径>`。
+- **「无法解压原版程序包」**：按第 1 条安装 `bsdtar` 或 7-Zip；7-Zip 不在默认位置时，用环境变量 `GROKBOT_7Z` 指向 `7z`（Windows 上是 `7z.exe`）。
+- **「输出已存在，不会覆盖」**：把旧的 `android/output` 改名或删除，或者加 `--force`。
+- **手机提示「应用未安装」或签名冲突**：手机上装过用别的密钥签名的版本。先卸载旧版（会清除配对），再安装。
+- **报缺少 `@electron/asar`**：在仓库根目录执行 `npm install --prefix mac/patchers/desktop`。
+
+### 9.5 配对
 
 用户说某台设备的客户端已经打开、停在填写界面后，再执行：
 
@@ -706,7 +736,7 @@ EOF
 - **配对码**：输出里的 `pairingKey`，6 位，由大写字母和数字组成，例如 `K7MPQ2`。
 - **Host 地址**：
   - 局域网或 HTTPS：填输出里的 `hostUrl`；
-  - Tailcat：打开「Tailcat」开关，粘贴第 8 步复制的连接链接。
+  - Tailcat：打开「Tailcat」开关，粘贴第 8 步复制的连接链接（Android 版没有这个开关，只能填地址）。
 
 **每台设备生成一个新的配对码。** 超过 5 分钟没用的话，重新执行一次。
 
@@ -728,6 +758,7 @@ EOF
 | 联网（如已配置） | 用户发「搜一下今天的新闻并给出来源」 | 回答里有来源链接 |
 | 生图（如已配置） | 用户发「画一张 16:9 的风景图」 | 客户端里显示图片 |
 | 外网（如已配置 Tailcat） | 用户让设备连手机热点，再发一条消息 | 收到回复 |
+| Android 后台通知（如有 Android） | 用户发「先执行 sleep 20，再回复好了」，马上回到手机桌面 | 半分钟左右收到系统通知，点开进入这个 Bot |
 
 「工具调用」那项失败、日志里有 `native_thinking_replay_mismatch` 的话：这是一些网关用 Responses 格式转发 Claude 时的问题。回第 6 步，Claude 改用 `anthropic` 格式。
 
@@ -747,6 +778,7 @@ EOF
 - 联网 / 生图：<已配置或未配置>
 - 服务器部署目录：~/grokbot（配置 .env，密码和 Key 在 secrets/，数据在 Docker 数据卷 grokbot_host-data、grokbot_box-home、grokbot_box-workspace）
 - 新设备配对：管理页「设备与通知」生成配对码
+- Android 签名密钥：<电脑上的路径>（请备份；升级 Android 版必须用同一个密钥）
 - 日常维护命令：见附录 A（已换成实际路径）
 ```
 
@@ -809,6 +841,9 @@ cd ~/grokbot && docker compose --env-file .env -p grokbot-restored -f src/host/r
    ```
 
 5. 用第 3 步的方法检查构建，完成后执行 `$DC up -d`。
+6. **更新客户端**（新版本的 CHANGELOG 写了客户端改动时才需要）：在生成客户端的电脑上进入仓库目录，执行 `git pull --ff-only`，再按第 9 步重新生成和安装对应的客户端。安装前先退出正在运行的客户端（Windows 在托盘图标上右键退出）。
+   - Windows、Mac：先把旧的 `windows\output` 或 `mac/output.noindex` 改名或删除，再生成。
+   - Android：生成时加 `--force` 覆盖旧的输出，签名密钥必须是第一次生成时的那一个。用 `adb install -r` 或在手机上点开新的 APK 覆盖安装，配对会保留。
 
 **清理构建用的临时镜像**（可回收约 0.8 GB）：`docker image rm grokbot-patch-base:local`。不要删 `node:22-bookworm-slim`，`hostadmin` 要用它。
 
@@ -835,6 +870,8 @@ cd ~/grokbot && docker compose --env-file .env -p grokbot-restored -f src/host/r
 | 管理页「远程访问」一直不是「已就绪」 | `$DC logs --tail 100 host` 查看 Tailcat 的报错；服务器要能访问外网 |
 | Windows 10 解压原版失败 | 安装 7-Zip，或设置环境变量 `GROKBOT_7Z` 指向 `7z.exe` |
 | Windows 上 Bot 执行的命令卡住或参数异常 | 客户端是从 Git Bash 里启动的。在托盘图标上右键退出，再从开始菜单打开 |
+| Android 版收不到后台通知 | 配对页上的「后台接收通知」要打开。在手机的系统设置里允许 Grok Bot Local 发送通知和在后台运行，并关闭它的电池优化 |
+| Android 版回到了填写 Host 地址的页面，或者通知「连接已失效，请打开 Grok Bot 重新配对」 | 这台设备在管理页被撤销了，或者 Host 的数据被重置过。执行 `hostadmin pair` 生成新的配对码，在这个页面重新填写 |
 
 ## 附录 C：管理接口（自己写脚本时参考）
 

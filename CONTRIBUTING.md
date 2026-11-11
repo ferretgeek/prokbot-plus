@@ -23,11 +23,16 @@
    node --test "host/tests/*.test.mjs"
    node --test "windows/tests/*.test.mjs"
    node --test mac/tests/*.test.mjs
+   node --test "android/tests/*.test.mjs"
    ```
 
+   改了 Android 外壳（`android/shell/`）的话，还要执行 `node android/shell/release-shell.mjs` 重建预编译外壳（需要 JDK 17+ 和 Android SDK），否则补丁工具会因摘要不符拒绝运行。
+
 3. 改了 Host 代码的话，最好在真实环境里验证一次（见 [技术文档 · 测试](docs/ARCHITECTURE.md#测试)），并在 PR 里写明验证了什么。
-4. 补丁只能从用户自己下载的官方文件里复制字节，再加上本项目的修改。**不要把任何 Grok Bot 官方程序文件、解包出来的代码或 IPA 提交进仓库。**
+4. 补丁只能从用户自己下载的官方文件里复制字节，再加上本项目的修改。**不要把任何 Grok Bot 官方程序文件、解包出来的代码、IPA 或生成的 APK 提交进仓库**（`android/dist/` 里的外壳除外，它只含本项目的代码）。
 5. 文档有中英文两份的，两份都要改。
+
+可选的 [GitHub Actions 回归测试模板](ci/regression-tests.yml) 在 Linux、Windows 和 macOS 上运行，并在相应系统测试 Windows 安装器和 iOS 网络层。它默认不运行；有工作流写权限的维护者可将其放到 `.github/workflows/tests.yml` 启用。
 
 ## 许可
 
@@ -37,7 +42,7 @@
 
 Issues, bug reports and pull requests are welcome.
 
-- Check the [troubleshooting section](docs/AI-INSTALL.en.md) of the AI install guide first.
+- Check the [troubleshooting section](docs/AI-INSTALL.en.md#appendix-b-troubleshooting) of the AI install guide first.
 - In bug reports, include:
   - server OS and Docker version;
   - client platform and version;
@@ -47,7 +52,8 @@ Issues, bug reports and pull requests are welcome.
 
   **Never post API keys, admin passwords, pairing codes or public server addresses.**
 - Report security issues privately, see [SECURITY.md](SECURITY.md).
-- Keep pull requests small, and run the three test suites above before submitting.
-- Patches may only copy bytes from official files the user downloads, plus this project's changes. Never commit Grok Bot program files, extracted code or IPAs.
+- Keep pull requests small, and run the four test suites above before submitting. After changing the Android shell (`android/shell/`), also run `node android/shell/release-shell.mjs` to rebuild the prebuilt shell (needs JDK 17+ and the Android SDK); otherwise the patcher refuses to run because the digest no longer matches.
+- Patches may only copy bytes from official files the user downloads, plus this project's changes. Never commit Grok Bot program files, extracted code, IPAs or built APKs (the shell in `android/dist/` is the exception: it contains only this project's code).
 - Update both the Chinese and English versions of a document.
+- The optional [GitHub Actions template](ci/regression-tests.yml) runs on Linux, Windows and macOS, including native installer and iOS network tests where supported. It is inactive until a maintainer with workflow write access places it at `.github/workflows/tests.yml`.
 - By contributing you agree that your contribution is released under the [ProkBot Noncommercial License 1.0](LICENSE), for noncommercial use only.

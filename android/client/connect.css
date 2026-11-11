@@ -1,0 +1,24 @@
+:root{color-scheme:dark;--bg:#111;--fg:#f4f4f4;--muted:#a7a7a7;--field:#1e1e1e;--line:#444;--button:#eee;--button-fg:#111;--secondary:#292929;--secondary-fg:#ddd;--error:#f09b94;font:16px system-ui,-apple-system,"Segoe UI",Roboto,"Noto Sans CJK SC","Microsoft YaHei UI",sans-serif;background:var(--bg);color:var(--fg)}
+@media (prefers-color-scheme:light){:root{color-scheme:light;--bg:#fff;--fg:#111;--muted:#666;--field:#f4f4f4;--line:#d0d0d0;--button:#111;--button-fg:#fff;--secondary:#ececec;--secondary-fg:#222;--error:#c0362c}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;-webkit-tap-highlight-color:transparent}
+main{max-width:440px;margin:0 auto;padding:40px 24px 32px}
+.icon{width:64px;height:64px;display:block;margin-bottom:20px;border-radius:16px}
+#edition{font-size:14px;color:var(--muted);margin:0 0 8px;line-height:1.5}
+h1{font-size:26px;font-weight:650;letter-spacing:0;margin:0 0 8px}
+.lead{color:var(--muted);margin:0 0 24px;line-height:1.5;font-size:15px}
+label{display:block;margin:20px 0 8px;font-weight:550;font-size:15px}
+input[type=url],input[type=text]{width:100%;padding:14px 15px;border:1px solid var(--line);border-radius:12px;background:var(--field);color:var(--fg);font:inherit;outline:none}
+input:focus{border-color:var(--muted)}
+#key{letter-spacing:.3em;text-transform:uppercase;font-variant-numeric:tabular-nums}
+#key:placeholder-shown{letter-spacing:normal;text-transform:none}
+.actions{display:flex;justify-content:flex-end;gap:12px;flex-wrap:wrap}
+button{border:0;border-radius:22px;padding:12px 26px;font:600 15px system-ui,sans-serif;background:var(--button);color:var(--button-fg);min-height:44px}
+button.secondary{background:var(--secondary);color:var(--secondary-fg)}
+button:disabled{opacity:.5}
+#status{min-height:24px;color:var(--error);font-size:14px;margin:16px 0;line-height:1.5}
+#status.ok{color:var(--muted)}
+#paired{margin-top:28px;padding-top:20px;border-top:1px solid var(--line)}
+.switch{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 6px}
+.switch input{width:22px;height:22px;accent-color:currentColor}
+.hint{color:var(--muted);font-size:13px;line-height:1.5;margin:0 0 20px}

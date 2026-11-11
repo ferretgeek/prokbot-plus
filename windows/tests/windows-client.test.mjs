@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { inflateRawSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
+import { carveSevenZip } from '../patchers/desktop/original.mjs';
 import os from 'node:os';
 import path from 'node:path';
 import { align, mapRange } from '../tools/byte-align.mjs';
@@ -13,6 +15,32 @@ import { remoteAttachmentPath } from '../../mac/clients/desktop/attachments.mjs'
 import { loadLocalExecDaemon } from '../../mac/clients/desktop/local-exec.mjs';
 
 const pad = text => `${'/* shared prefix that anchors the alignment */'.repeat(2)}${text}${'/* shared suffix that anchors the alignment */'.repeat(2)}`;
+
+test('an explicit installer must match both the wrapper and embedded archive', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'grokbot-wrapper-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const payload = Buffer.alloc(32); Buffer.from('377abcaf271c', 'hex').copy(payload);
+  const wrapper = Buffer.concat([Buffer.from('MZ'), payload]);
+  const pin = data => ({ bytes: data.length, sha256: createHash('sha256').update(data).digest('hex') });
+  const exe = path.join(dir, 'test.exe'), out = path.join(dir, 'test.7z'), original = pin(wrapper);
+  await writeFile(exe, wrapper);
+  await carveSevenZip(exe, out, pin(payload), original);
+  assert.deepEqual(await readFile(out), payload);
+  wrapper[0] ^= 1; await writeFile(exe, wrapper);
+  await assert.rejects(carveSevenZip(exe, out, pin(payload), original), /摘要不匹配/);
+});
+
+test('failed ZIP builds preserve existing output and remove only their own partial file', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'grokbot-zip-error-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const target = path.join(dir, 'keep.zip'), missing = path.join(dir, 'absent');
+  await writeFile(target, 'keep');
+  await assert.rejects(writeZip(missing, target, { prefix: 'test' }), { code: 'EEXIST' });
+  assert.equal(await readFile(target, 'utf8'), 'keep');
+  const partial = path.join(dir, 'partial.zip');
+  await assert.rejects(writeZip(missing, partial, { prefix: 'test' }), { code: 'ENOENT' });
+  await assert.rejects(readFile(partial), { code: 'ENOENT' });
+});
 
 test('a copied range keeps every byte the Windows build reorders inside it', () => {
   // The two builds list the same registry entries in a different order.
@@ -79,7 +107,15 @@ test('Windows chrome follows the original title-bar overlay values', () => {
   assert.equal(initialLink(['Grok Bot.exe']), null);
 });
 
-test('the npm Codex launcher resolves to its native Windows binary', async () => {
+test('Windows npm candidates use the requested architecture regardless of the test host', () => {
+  for (const [arch, triple] of [['x64', 'x86_64'], ['arm64', 'aarch64']]) {
+    const [native] = windowsNativeCodex('C:\\npm', arch);
+    assert.equal(native, path.win32.join('C:\\npm', 'node_modules', '@openai', 'codex', 'node_modules', '@openai',
+      `codex-win32-${arch}`, 'vendor', `${triple}-pc-windows-msvc`, 'bin', 'codex.exe'));
+  }
+});
+
+test('the npm Codex launcher resolves to its native Windows binary', { skip: process.platform !== 'win32' }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'grokbot-codex-test-'));
   try {
     const native = windowsNativeCodex(root)[0];

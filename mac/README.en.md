@@ -2,6 +2,8 @@
 
 Connect Grok Bot 0.71.2 for Apple Silicon to your Host. Requires Node.js 22.12+.
 
+The complete deployment steps are in the [AI deployment guide](../docs/AI-INSTALL.en.md#92-mac-apple-silicon), and how it works is in the [technical documentation](../docs/ARCHITECTURE.en.md#mac-client). `clients/desktop/` is the client's main process; the Windows and Android clients use its code too.
+
 [简体中文](README.md)
 
 ## Use
