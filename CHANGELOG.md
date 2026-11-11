@@ -6,6 +6,9 @@ Versions start at ProkBot Plus 1.0.0. Upstream ProkBot releases are listed at th
 
 ## 未发布 / Unreleased
 
+- **Android 主页截图**：中英文 README 分别展示在 Android App 中实际发送的两轮对话和模型回复，配对页截图移至安装说明。
+- **Android screenshots**: each README now shows a real two-turn conversation in its own language; pairing screenshots are in the Android installation guide.
+
 - **客户端与 Host 修复**：Windows 安装和卸载前校验目录归属；Windows、Android 对显式提供的官方 EXE 校验整包及内层摘要；仅校验时清理临时目录，Windows 构建失败不覆盖已有 ZIP。Android 正确报告保存失败、释放重连监听器、限制网关连接数和握手时间，后台通知不再漏掉同一毫秒的不同事件。新版 Host 区分 Android 和 Windows；新配对的 Android 设备没有桌面执行权限。模型请求不跟随重定向；消息排序等待不会因 Node 提前退出而丢失。
 - **验证与主页**：加入可选的三平台 CI 模板（默认未启用）、Windows 安装器测试，以及 Android 15 干净演示环境的中英文实拍截图，明确 Android App 由项目自开发、不是官方版本。
 

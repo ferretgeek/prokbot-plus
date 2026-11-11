@@ -30,6 +30,8 @@ node android/patchers/patch.mjs
 
 把 APK 传到手机上安装（需要允许「安装未知应用」），或者用 `adb install -r`。打开后填写 Host 地址和六位配对码。
 
+<p align="center"><img src="../docs/images/android-connect-zh.png" alt="Android 首次连接：填写 Host 地址和配对码" width="240"></p>
+
 | 选项 | 作用 |
 | --- | --- |
 | `--source <文件或目录>` | 使用已下载的官方安装包、`app-64.7z` 或已安装的原版目录 |

@@ -82,10 +82,9 @@ Plus 在此基础上补了这些：**Windows 和 Android 客户端**；**Anthrop
 **这是 ProkBot Plus 自开发的 Android App，不是 xAI 官方 Android 版，也不是对官方 Android APK 打补丁。**
 
 <p align="center">
-  <img src="docs/images/android-connect-zh.png" alt="自开发 Android 客户端：首次连接时填写 Host 地址和配对码" width="240">
-  <img src="docs/images/android-bots.png" alt="自开发 Android 客户端：配对后的 Atlas 和 Nova 演示 Bot 列表" width="240">
+  <img src="docs/images/android-chat-zh.png" alt="Android 客户端真实聊天：用户问番茄蛋炒饭先炒什么，饭点回复先炒蛋；用户追问米饭结块怎么办，饭点建议用湿手捏散。" width="380">
 </p>
-<p align="center"><sub>Android 15 模拟器实拍：左为首次配对，右为配对后重新打开的工作区。Bot 名称来自隔离演示环境。</sub></p>
+<p align="center"><sub>Android 15 模拟器实拍：在 App 里问「先炒什么」，再追问「那米饭结块了怎么办」。两轮回复均由连接到自部署 Host 的模型实际生成。</sub></p>
 
 官方 Android 版带有防篡改保护，不能修改。Plus 换了一种做法：把官方**桌面版**的界面（和 Windows、Mac 客户端同一套，取自你自己下载的官方 Windows 安装包）装进一个本项目编写的 Android 外壳，生成 APK：
 

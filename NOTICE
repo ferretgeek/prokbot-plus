@@ -96,7 +96,7 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-12)
     save and notification fixes, distinct mobile and Windows device labels,
     model redirect protection and reliable ordered-message timeouts. Added
     regression tests, an optional cross-platform CI template and Android
-    emulator screenshots.
+    emulator screenshots, including real Chinese and English conversations.
 
 Third-party components
 ----------------------

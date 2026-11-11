@@ -83,10 +83,9 @@ The patches are ported from the Mac version, and the structure of every segment 
 **ProkBot Plus develops this Android app independently. It is neither the official xAI Android app nor a patch to the official Android APK.**
 
 <p align="center">
-  <img src="docs/images/android-connect-en.png" alt="The unofficial Android client asking for a Host address and pairing code" width="240">
-  <img src="docs/images/android-bots.png" alt="Atlas and Nova in the paired Android workspace" width="240">
+  <img src="docs/images/android-chat-en.png" alt="A real Android conversation: Pantry suggests cooking the egg first for fried rice, then answers a follow-up about breaking up clumped rice." width="380">
 </p>
-<p align="center"><sub>Captured on an Android 15 emulator: first-time pairing, then the workspace after reopening the app. Bot names are isolated demo data.</sub></p>
+<p align="center"><sub>Captured on an Android 15 emulator. Both questions were sent in the app; the model connected to the self-hosted Host generated both replies.</sub></p>
 
 The official Android app carries tamper protection and cannot be modified. Plus takes another route: it puts the official **desktop** interface (the same one as the Windows and Mac clients, taken from your own download of the official Windows installer) into an Android shell written for this project, and builds an APK:
 

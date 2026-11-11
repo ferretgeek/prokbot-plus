@@ -28,7 +28,9 @@ The tool downloads and verifies the official `Grok_Bot_0.71.2_Setup.exe` (the sa
 | `GrokBotLocal-0.71.2-android.apk` | Install it on the phone |
 | `GrokBotLocal-0.71.2-android.patch.json` | Build record: input digests, APK digest, signing certificate fingerprint |
 
-Copy the APK to the phone and install it (allow "Install unknown apps"), or use `adb install -r`. Open it and enter the Host address and the six-digit pairing code.
+Copy the APK to the phone and install it (allow "Install unknown apps"), or use `adb install -r`. Open it and enter the Host address and the six-character pairing code.
+
+<p align="center"><img src="../docs/images/android-connect-en.png" alt="First-time pairing on Android: enter the Host address and pairing code" width="240"></p>
 
 | Option | Effect |
 | --- | --- |
