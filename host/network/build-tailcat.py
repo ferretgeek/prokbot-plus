@@ -7,7 +7,7 @@ import subprocess
 
 ROOT = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--target', choices=['native', 'linux-amd64', 'windows-amd64', 'ios-arm64'], default='native')
+parser.add_argument('--target', choices=['native', 'linux-amd64', 'linux-arm64', 'windows-amd64', 'ios-arm64'], default='native')
 parser.add_argument('--output', type=Path, default=ROOT / 'dist/network')
 args = parser.parse_args()
 args.output.mkdir(parents=True, exist_ok=True)
@@ -22,8 +22,8 @@ if args.target == 'ios-arm64':
     command += ['-buildmode=c-archive', '-o', str(args.output.resolve() / 'libGrokTailcat.a'), './mobile']
 else:
     name = 'grokbot-tailcat'
-    if args.target == 'linux-amd64':
-        env.update(GOOS='linux', GOARCH='amd64', CGO_ENABLED='0')
+    if args.target.startswith('linux-'):
+        env.update(GOOS='linux', GOARCH=args.target.split('-')[1], CGO_ENABLED='0')
     elif args.target == 'windows-amd64':
         env.update(GOOS='windows', GOARCH='amd64', CGO_ENABLED='0')
         name += '.exe'

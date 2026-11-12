@@ -4,7 +4,7 @@
 
 **Move the Grok Bot server side onto your own server, and connect your own models.**
 
-Windows, macOS and iOS patches | [Independently developed Android app (unofficial)](#android-client) | Linux server | OpenAI Chat / OpenAI Responses / Anthropic Messages
+Windows, macOS and iOS patches | [Independently developed Android app (unofficial)](#android-client) | **Linux Host for x86_64 and ARM64** | OpenAI Chat / OpenAI Responses / Anthropic Messages
 
 <p>
   <img alt="Windows 0.71.2" src="https://img.shields.io/badge/Windows-0.71.2_x64-0078D4?logo=windows&logoColor=white">
@@ -47,7 +47,7 @@ Plus adds on top of that: **Windows and Android clients**; **two more model APIs
 
 | Part | Supported | Notes |
 | --- | --- | --- |
-| Server | Linux x86_64 (Docker) | Tested on Ubuntu 24.04 + Docker 29. A NAS that supports Docker also works. ARM servers are not supported, and neither is deploying directly on Windows |
+| Server | Linux x86_64 or ARM64 | x86_64 tested on Ubuntu 24.04 + Docker 29. A native Host on Oracle Ampere A1 with a separate amd64 desktop passed two-turn chat and VNC control tests. Emulating the desktop on a single ARM machine remains experimental. [Choose a deployment](docs/AI-INSTALL.en.md#choose-a-deployment) |
 | Windows client | Windows 10 / 11, x64 | **New in this version.** Portable version and installer, no administrator rights needed |
 | Mac client | Apple Silicon, Grok Bot 0.71.2 | From upstream |
 | iOS client | Grok Bot 1.16.0 (23152) | From upstream. You need your own decrypted IPA and signing certificate |
@@ -167,7 +167,7 @@ See the [CHANGELOG](CHANGELOG.md) and the [technical documentation](docs/ARCHITE
 
 | Required | Requirements |
 | --- | --- |
-| Server | x86_64 Linux with 8 GB+ of memory and 30 GB+ of free disk, with Docker, Docker Compose and Python 3.10+ installed. The first build downloads about 8 GB |
+| Server | 64-bit Linux, Docker Compose v2 and Python 3.10+. For a local desktop allow at least 8 GB RAM, 30 GB free disk and about 8 GB of initial downloads. A local ARM desktop also needs QEMU/binfmt |
 | Model API | Any one of: Anthropic Messages, OpenAI Responses, OpenAI Chat Completions. It must support tool calls. For the Bot to operate a computer, it also needs image input |
 | Computer to build the clients | Build the Windows client on Windows 10/11 x64 and the Mac client on an Apple Silicon Mac; the Android client builds on Windows, Mac or Linux. All need Node.js 22.12+. iOS needs a decrypted IPA and a signing certificate |
 
@@ -186,14 +186,14 @@ The easiest way is to hand it to an AI that can run commands (Claude Code, Codex
 ```text
 Please deploy ProkBot Plus for me: https://github.com/ferretgeek/prokbot-plus
 First read docs/AI-INSTALL.en.md in the repository in full, then follow its steps exactly.
-Before you start, tell me what I need to prepare.
+Ask about my machines, any existing instance, model and access method. Run doctor first. Never remove volumes, disclose keys or treat container startup as acceptance. Verify a two-turn client chat and a desktop action at the end.
 ```
 
 The AI first lists what you need to prepare. Then it deploys the server, configures the model, builds the clients step by step, and checks the result at the end.
 
 If you'd rather do it yourself, follow the [AI deployment guide](docs/AI-INSTALL.en.md). It is written for AI, but every step lists the commands and how to check them, so a person can follow it just as well.
 
-[Releases](https://github.com/ferretgeek/prokbot-plus/releases) distributes platform-specific patch tools. `v1.0.0` predates the Android tools; build Android from this repository using the [Android guide](android/README.en.md). Releases do **not** distribute finished clients containing official program files.
+[Releases](https://github.com/ferretgeek/prokbot-plus/releases) distributes platform-specific patch tools. `v1.0.0` predates both the ARM64 Host and the Android tools. Use the `main` branch for ARM64, or the [Android guide](android/README.en.md) to build the app. Releases do **not** distribute finished clients containing official program files.
 
 ## Documentation
 

@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
-import { mkdir, readdir, symlink, lstat, writeFile, rename, readFile } from 'node:fs/promises';
+import { mkdir, writeFile, rename, readFile } from 'node:fs/promises';
+import { provisionResources } from './host-resources.mjs';
 import { resolve, join } from 'node:path';
 import { loadModelConfig } from './config.mjs';
 import { createExtensionStarter } from './host-extensions.mjs';
@@ -23,17 +24,9 @@ Object.assign(process.env, {
   SAND_HOST_IN_BOX: '1', SAND_PACKAGED: '1',
 });
 
-async function provisionResources() {
-  await mkdir(process.env.SAND_DATA_ROOT, { recursive: true });
-  for (const entry of await readdir(originalDir, { withFileTypes: true })) {
-    if (['host-main.cjs', 'package.json', 'sand-eval-runner.cjs'].includes(entry.name)) continue;
-    const destination = join(stateDir, entry.name);
-    if (await lstat(destination).catch(() => null)) continue;
-    await symlink(join(originalDir, entry.name), destination, entry.isDirectory() ? 'dir' : 'file');
-  }
-}
-
-await provisionResources();
+await mkdir(process.env.SAND_DATA_ROOT, { recursive: true });
+await provisionResources(stateDir, originalDir);
+const revision = (await readFile(join(originalDir, 'version'), 'utf8')).trim();
 const executionTransport = await connectExecutionNode(await loadExecutionNode(process.env.GROKBOT_DATA_DIR ?? stateDir), process.env.GROKBOT_DATA_DIR ?? stateDir);
 const executionNode = executionTransport.config;
 if (executionNode?.enabled) {
@@ -60,7 +53,7 @@ const library = require(libraryPath);
 const core = recovered ? await loadRecoveredHostCore(library, repaired.directory) : { mode: 'bundled' };
 if (recovered) core.reliability = repaired.status;
 library.activateHostLocale();
-const prompts = await installLocalPromptPolicy(process.env.GROKBOT_DATA_DIR ?? stateDir, library);
+const prompts = await installLocalPromptPolicy(process.env.GROKBOT_DATA_DIR ?? stateDir, library, { revision });
 const host = new library.SandHost({ startExtensions: createExtensionStarter(library, model) });
 let gateway, computers;
 let stopping = false;
@@ -116,7 +109,7 @@ try {
     onCommandError: report => host.reportGatewayCommandError(report),
     onCommandComplete: report => host.reportGatewayCommandSuccess(report),
   });
-  const status = { ready: true, revision: 'd0a4baa', model: model.model, pid: process.pid,
+  const status = { ready: true, revision, model: model.model, pid: process.pid,
     port: gateway.port, dataRoot: process.env.SAND_DATA_ROOT, identity: 'local-workspace',
     officialAccount: false, officialBackend: false, telemetry: false, updates: false, core };
   await saveHostStatus(status);

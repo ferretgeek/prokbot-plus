@@ -5,12 +5,14 @@ COPY server/package*.json server/
 RUN npm ci --prefix server --omit=dev --ignore-scripts --no-audit --no-fund
 COPY runtime/ runtime/
 COPY server/ server/
+COPY tools/ tools/
 COPY clients/shared/ clients/shared/
 COPY deploy/ deploy/
 COPY release/ release/
 COPY recipes/ recipes/
 COPY network/ network/
 COPY bin/ bin/
-RUN chmod 755 bin/grokbot-tailcat
+RUN case "$(dpkg --print-architecture)" in arm64) mv bin/linux-arm64/grokbot-tailcat bin/grokbot-tailcat ;; amd64) ;; *) exit 1 ;; esac \
+    && rm -r bin/linux-arm64 && chmod 755 bin/grokbot-tailcat
 COPY THIRD_PARTY/ THIRD_PARTY/
 # This stage contains only project code, delta recipes and open-source dependencies.

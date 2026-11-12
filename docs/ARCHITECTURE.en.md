@@ -31,16 +31,17 @@ flowchart LR
   Admin <--> Tailcat[Tailcat built-in networking]
 ```
 
-The patches only work on pinned versions. Original files are checked by SHA-256, and a wrong version is rejected outright:
+## Maintenance map
 
-| Component | Version |
-| --- | --- |
-| Original Host | `sand-host-bundle-d0a4baa` |
-| Linux desktop image | `9d2ac1b` (manifest digest `sha256:73c04dc8…`, config digest `sha256:1bdd316a…`) |
-| Windows client | 0.71.2 x64 (`Grok_Bot_0.71.2_Setup.exe`) |
-| Mac client | 0.71.2 Apple Silicon |
-| iOS client | 1.16.0 (23152) arm64 decrypted IPA |
-| Android client | Interface taken from the Windows 0.71.2 x64 installer; the shell is this project's code |
+Run `node ci/check-inputs.mjs` from the full repository to see the versions actually used by each platform and verify the inputs. Build manifests, not README badges, own versions and digests.
+
+| Change | Start here | Verify together |
+| --- | --- | --- |
+| Deployment, upgrades, backups | `host/deploy.py` → `host/release/`; container startup lives in `host/deploy/supervisor.mjs` | Test fresh installs and upgrades with existing volumes separately; distinguish Host and desktop CPU architecture |
+| Upstream Host or desktop | `host/recipes/host/manifest.json` and sibling recipes; ARM native dependencies are locked in `host/release/arm-runtime/` | Digest checks, patch generation, target image, startup with old volumes, actual chat and desktop |
+| Server feature | `host/server/` owns admin APIs, storage and pages; `host/runtime/` owns agent and model behavior | After saving a setting in the console, verify that a client conversation actually uses it |
+| Desktop or mobile update | Mac and Windows share `mac/clients/desktop/`. Android consumes the Windows extractor and recipes. iOS is independent | Each platform's `supported.json` or recipe manifest, signing and pairing. Exercise all consumers of shared code |
+| Optional capability | Prefer an app or skill when possible: [app development](../host/README.en.md#app-development). Change the runtime only for Host behavior | Install, authorize, invoke and remove the capability. Never distribute upstream programs |
 
 ## Feature comparison
 
@@ -49,7 +50,7 @@ The patches only work on pinned versions. Original files are checked by SHA-256,
 | Feature | Original | Here | You need |
 | --- | --- | --- | --- |
 | 🔁 Sign-in | Official account | No account needed. The Host admin page creates a 6-character pairing code, and the client connects with the Host address and the pairing code | Nothing |
-| 🔁 Host and execution computer | Official cloud | Runs where you deploy it, using the original Host | An x86_64 Linux machine that can run Docker |
+| 🔁 Host and execution computer | Official cloud | Host built for the server architecture; desktop remains original | amd64 / arm64 Linux; the amd64 desktop can be deployed separately |
 | 🔁 Chat model | Official models, with automatic tier selection | Models you choose, through three API formats: OpenAI Chat Completions, OpenAI Responses and Anthropic Messages. The Jev classifier can choose the model and thinking effort automatically | A model API address and API key |
 | 🟢 Computer and browser use | Original Agent | Kept as is | A model with vision |
 | 🟢 Memory, context compaction, scheduled tasks | Original Agent, partly relying on official services | Kept, now running on your model and local timers; context compaction is configurable | Nothing |
@@ -322,6 +323,7 @@ In the original, the skill catalog, the app marketplace, Bot template publishing
 
 | Path | Contents |
 | --- | --- |
+| `host/deploy.py` | Operator entry point: instance selection, checks, initialization, backup before upgrade and status. Distinct from the in-container `host/deploy/` |
 | `host/release/` | `build-docker.py` downloads and verifies the originals and builds `grokbot-host:local`; `patch-host.py` and `bytepatch.py` apply the Host patches; `compose*.yaml` for deployment; `backup.py` for backup and restore; `Dockerfile.*` |
 | `host/server/` | Admin service: authentication, pairing, push, all settings, admin web page (`public/`) |
 | `host/runtime/` | Runtime injected into the original Host: model adapter layer, web and images, automatic review, reliability layer (`reliability/`) |
@@ -343,7 +345,10 @@ In the original, the skill catalog, the app marketplace, Bot template publishing
 
 ## Linux deployment notes
 
-- The image is `linux/amd64`. From Docker 29 on, new installs use the containerd image store by default, and the ID that `docker image inspect` reports becomes the manifest digest. The upstream build script only accepted the config digest and failed with `Unsupported Box image identity`. This version accepts both, and offline archives are checked against the config digest inside the archive.
+- `host/release/platforms.py` detects the **Docker daemon** architecture. `host/recipes/host/manifest.json` owns the Host, desktop and patch inputs. Both architectures share the patch pipeline. amd64 retains the original base; ARM64 uses Node 22, locked native modules and a matching Tailcat build. The original desktop always uses `linux/amd64`.
+- Local ARM mode probes a small isolated amd64 container before downloading the desktop. Split mode skips emulation checks and the ARM Host skips the desktop download. The pinned manifest and config digests are accepted; offline imports verify the config digest and recheck the loaded image.
+- **Split operation verified on Oracle Ampere A1 hardware:** a native ARM64 Host connected to the full amd64 desktop on a separate machine. Device pairing, a two-turn conversation retaining context (local test model), a 1280×800 VNC framebuffer and pointer input passed. After switching from the previous Host runtime to the candidate, the same paired device could read both replies. This tested the runtime and data compatibility; Docker was not installed on the A1, and neither an image build nor a Compose upgrade was exercised there.
+- **Single-machine emulation remains experimental:** an Ubuntu 24.04 ARM64 VM passed both `doctor` preflights, including running an amd64 container. That is not an end-to-end test of the full desktop on a single A1.
 - Code checked out or uploaded on Windows loses its executable permission. So `Dockerfile.base` and `Dockerfile.execution` run `chmod 755` after copying the Tailcat program, and the Mac patcher also makes the Tailcat in its output executable.
 - Ports published by Docker don't go through ufw. To restrict access, change `GROKBOT_LISTEN_ADDRESS`, or restrict it at the network boundary.
 - Containers are paused during a backup, so the health check may fail briefly. This is normal.
@@ -377,7 +382,11 @@ After changing code, it's a good idea to also check it for real:
 - Have a multi-turn conversation with tool calls in a client;
 - Ask the Bot to search for a news item, read a web page, draw a 16:9 image, and then change one thing in that image.
 
+**ARM release acceptance:** use an authorized, unused ARM64 Linux server, never production volumes. Follow the [install guide](AI-INSTALL.en.md) for a local desktop and record the Host platform, desktop mode and completed build. Pair a client, have a two-turn conversation, create a harmless file on the desktop and see it through VNC. Run `backup` and `update`; verify that both the chat and file survive. Record the machine model, cold start time and desktop responsiveness. An isolated Host core, emulator probe or model test cannot substitute for these results.
+
 ## Where to start for further development
+
+For an upstream update, first run `node ci/check-inputs.mjs` to see the current inputs. Update the platform's `supported.json` or `manifest.json` and its recipes. Rerun the check and all four test suites, build with your own pinned upstream files, then verify chat and tools from a client. Never distribute upstream programs. Host changes require an image rebuild on the target architecture. The table below maps ownership rather than introducing another version registry.
 
 | Task | Where |
 | --- | --- |
@@ -391,7 +400,7 @@ After changing code, it's a good idea to also check it for real:
 
 ## Known limitations and to-do
 
-- Only the pinned versions in the table above are supported. When the official apps update, the patches have to be updated too. There are no automatic updates.
+- Only the versions pinned in the build manifests are supported. When the official apps update, the patches must be updated too. There are no automatic updates.
 - Windows client:
   - Can't yet let the Bot control the mouse and keyboard;
   - Not code-signed, so SmartScreen shows a warning on first launch;
@@ -403,5 +412,5 @@ After changing code, it's a good idea to also check it for real:
   - Background notifications rely on a foreground service; some vendor systems require allowing the app to run in the background.
   - Voice input and live calls are verified only up to the request reaching the Host; they have not been tested against a real voice service.
   - Fully tested on an Android 15 emulator (WebView 124); pairing, the notification permission and the layout were verified on an Android 16 emulator (WebView 134). Not yet tested on a physical phone.
-- The server supports only x86_64 Linux, and the original desktop image is amd64 only.
+- The original desktop is amd64 only. Full deployment and performance with the Host and emulated desktop on the same A1 have not been verified.
 - iOS needs your own decrypted IPA and signing certificate. Headphones, Bluetooth and network switching have not been fully tested on real devices.

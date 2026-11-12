@@ -98,6 +98,12 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-12)
     regression tests, an optional cross-platform CI template and Android
     emulator screenshots, including real Chinese and English conversations.
 
+12. ARM64 Host build path, locked ARM runtime dependencies, ARM64 Tailcat,
+    deployment platform checks, operator CLI and upgrade safeguards; revised
+    bilingual installation and architecture guides, version-input checks and
+    deployment regression coverage. Documented Oracle Ampere A1 runtime
+    verification with a separate amd64 desktop. The original desktop is unchanged.
+
 Third-party components
 ----------------------
 

@@ -4,7 +4,7 @@
 
 **把 Grok Bot 的服务端搬到你自己的服务器上，接你自己的模型。**
 
-Windows · macOS · iOS 客户端补丁 ｜ [自开发 Android App（非官方）](#android-客户端) ｜ Linux 服务端 ｜ OpenAI Chat / OpenAI Responses / Anthropic Messages
+Windows · macOS · iOS 客户端补丁 ｜ [自开发 Android App（非官方）](#android-客户端) ｜ **Linux 服务端支持 x86_64 和 ARM64** ｜ OpenAI Chat / OpenAI Responses / Anthropic Messages
 
 <p>
   <img alt="Windows 0.71.2" src="https://img.shields.io/badge/Windows-0.71.2_x64-0078D4?logo=windows&logoColor=white">
@@ -46,7 +46,7 @@ Plus 在此基础上补了这些：**Windows 和 Android 客户端**；**Anthrop
 
 | 部分 | 支持 | 说明 |
 | --- | --- | --- |
-| 服务端 | Linux x86_64（Docker） | 在 Ubuntu 24.04 + Docker 29 上实测。支持 Docker 的 NAS 也可以。不支持 ARM 服务器，也不支持直接部署在 Windows 上 |
+| 服务端 | Linux x86_64 或 ARM64 | x86_64 已在 Ubuntu 24.04 + Docker 29 实测。甲骨文 Ampere A1 原生运行 Host、搭配独立 amd64 桌面，已验证两轮聊天和 VNC 操作。只有一台 ARM 机器时，模拟桌面仍属实验模式。[选部署方式](docs/AI-INSTALL.md#先选部署方式) |
 | Windows 客户端 | Windows 10 / 11，x64 | **本版本新增。** 便携版和安装包，不需要管理员权限 |
 | Mac 客户端 | Apple Silicon，Grok Bot 0.71.2 | 来自上游 |
 | iOS 客户端 | Grok Bot 1.16.0（23152） | 来自上游。需要自备砸壳 IPA 和签名证书 |
@@ -166,7 +166,7 @@ APK 用只属于你的密钥签名。不支持 Tailcat，外网使用请用 VPN�
 
 | 必需 | 要求 |
 | --- | --- |
-| 服务器 | x86_64 Linux，内存 8 GB 以上，空闲磁盘 30 GB 以上，装好 Docker、Docker Compose 和 Python 3.10+。首次构建要下载约 8 GB |
+| 服务器 | 64 位 Linux、Docker Compose v2、Python 3.10+。同机运行桌面建议至少 8 GB 内存、30 GB 空闲磁盘，首次下载约 8 GB；ARM 单机还需要 QEMU/binfmt |
 | 模型接口 | 任意一种：Anthropic Messages、OpenAI Responses、OpenAI Chat Completions。要支持工具调用；想让 Bot 操作电脑，还要支持图片输入 |
 | 生成客户端的电脑 | Windows 客户端在 Windows 10/11 x64 上生成，Mac 客户端在 Apple Silicon Mac 上生成，Android 客户端在 Windows、Mac、Linux 上都能生成，都需要 Node.js 22.12+。iOS 需要砸壳 IPA 和签名证书 |
 
@@ -185,14 +185,14 @@ APK 用只属于你的密钥签名。不支持 Tailcat，外网使用请用 VPN�
 ```text
 请帮我部署 ProkBot Plus：https://github.com/ferretgeek/prokbot-plus
 先完整阅读仓库里的 docs/AI-INSTALL.md，然后严格按里面的步骤做。
-开始之前，先告诉我需要准备哪些东西。
+先问我现有机器、是否已有实例、模型和访问方式。先运行 doctor；不要删除数据卷、公开密钥或把容器启动当成验收。最后用客户端验证两轮聊天和桌面操作。
 ```
 
 AI 会先列出你要准备的东西，然后一步步部署服务端、配置模型、生成客户端，最后验收。
 
 想自己动手的话，照着 [AI 部署手册](docs/AI-INSTALL.md) 做就行。它是写给 AI 的，但每一步都写了命令和检查方法，人照着做也完全没问题。
 
-[Releases](https://github.com/ferretgeek/prokbot-plus/releases) 按平台分发补丁工具。`v1.0.0` 不含 Android 工具；使用 Android 请按 [Android 客户端说明](android/README.md) 从本仓库生成。Releases **不提供**包含官方程序的成品客户端。
+[Releases](https://github.com/ferretgeek/prokbot-plus/releases) 按平台分发补丁工具。`v1.0.0` 不含 ARM64 Host 和 Android 工具；部署 ARM64 请使用 `main` 分支，生成 Android App 见 [Android 客户端说明](android/README.md)。Releases **不提供**包含官方程序的成品客户端。
 
 ## 文档
 

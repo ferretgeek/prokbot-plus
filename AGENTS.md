@@ -3,7 +3,7 @@
 ProkBot Plus 是 ProkBot（https://gitee.com/ahaduoduoduo/ProkBot ，基于提交 `3e9fe8c`）的修改版，公开在 https://github.com/ferretgeek/prokbot-plus 。
 
 它做的事：
-- 把 Grok Bot 的服务端（Host + Linux 执行桌面）用 Docker 跑在用户自己的 x86_64 Linux 上；
+- 把 Grok Bot 的服务端用 Docker 跑在用户自己的 x86_64 或 ARM64 Linux 上；Host 按架构构建，官方执行桌面固定为 amd64；
 - 给官方 Windows / macOS / iOS 客户端打补丁，让它们连这个服务端；
 - Android 客户端不改官方 Android 版（带防篡改保护），而是把官方桌面版界面（取自用户下载的 Windows 安装包）装进本项目的 Android 外壳。
 
@@ -32,6 +32,8 @@ ProkBot Plus 是 ProkBot（https://gitee.com/ahaduoduoduo/ProkBot ，基于提�
 ## 常用命令
 
 ```sh
+node ci/check-inputs.mjs                   # 离线检查固定版本、补丁清单和预编译外壳摘要
+python3 host/deploy.py --help              # 对外部署、备份与升级入口；不是容器内的 host/deploy/
 node --test "host/tests/*.test.mjs"        # 服务端
 node --test "windows/tests/*.test.mjs"     # Windows 客户端
 node --test "mac/tests/*.test.mjs"         # Mac / 共用客户端
@@ -59,8 +61,9 @@ python3 ios/tests/ios-network.test.py      # iOS 网络层 1 项，只能在装�
 
 ## 在 Windows 上提交
 
-- Windows 上 `core.fileMode` 为 false，Git 不会记录可执行权限。新增或改动下面 6 个文件后，要执行 `git update-index --chmod=+x <文件>`：
+- Windows 上 `core.fileMode` 为 false，Git 不会记录可执行权限。新增或改动下面的文件后，要执行 `git update-index --chmod=+x <文件>`：
   - `host/bin/grokbot-tailcat`
+  - `host/bin/linux-arm64/grokbot-tailcat`
   - `mac/dist/network/grokbot-tailcat`
   - `ios/bin/GrokBotLocal.dylib`
   - `mac/patchers/desktop/node_modules/.bin/asar`

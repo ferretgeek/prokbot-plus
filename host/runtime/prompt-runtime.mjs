@@ -3,7 +3,7 @@ import { readJson, writePrivate } from '../server/storage.mjs';
 import { promptDigest, promptId, promptRoles, validatePrompt } from '../server/prompt-settings.mjs';
 
 /** Only base instructions are catalogued. Profile, memory, skills and user content stay in the original assembler. */
-export async function installLocalPromptPolicy(directory, library, { pollMs = 1000 } = {}) {
+export async function installLocalPromptPolicy(directory, library, { pollMs = 1000, revision = 'local' } = {}) {
   const settingsPath = join(directory, 'prompt-settings.json'), catalogPath = join(directory, 'prompt-catalog.json');
   let settings = { version: 1, entries: {} }, catalog = await readJson(catalogPath, { version: 1, entries: [] }), tail = Promise.resolve(), reading = false;
   let stopped = false;
@@ -21,7 +21,7 @@ export async function installLocalPromptPolicy(directory, library, { pollMs = 10
       return id;
     }
     catalog.entries.push({ id, role, original, digest: promptDigest(original), observedAt: Date.now(), observed,
-      source: 'd0a4baa · system-prompt-assembly' });
+      source: `${revision} · system-prompt-assembly` });
     catalog.entries = catalog.entries.slice(-100); void flush(); return id;
   }
   async function refresh() {

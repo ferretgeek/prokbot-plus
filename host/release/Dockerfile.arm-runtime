@@ -1,0 +1,11 @@
+FROM node:22-bookworm-slim AS addons
+WORKDIR /addons
+COPY release/arm-runtime/package*.json ./
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ && rm -rf /var/lib/apt/lists/* \
+    && npm_config_nodedir=/usr/local npm ci --no-audit --no-fund
+
+FROM node:22-bookworm-slim
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libfontconfig1 fonts-dejavu-core && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /exec-daemon && ln -s /usr/local/bin/node /exec-daemon/node
+COPY --from=addons /addons/node_modules/ /opt/sand/deps/
+RUN NODE_PATH=/opt/sand/deps /exec-daemon/node -e "const p=new (require('tree-sitter'))(); p.setLanguage(require('tree-sitter-bash')); if(p.parse('echo ok').rootNode.hasError) process.exit(1); const {CanvasElement}=require('@napi-rs/canvas-linux-arm64-gnu'); if(!new CanvasElement(8,8).toBuffer('image/png').length) process.exit(1)"

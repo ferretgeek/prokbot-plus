@@ -2,7 +2,6 @@ name: grokbot
 services:
   host:
     image: ${GROKBOT_HOST_IMAGE:-grokbot-host:local}
-    platform: linux/amd64
     init: true
     restart: unless-stopped
     ports:
