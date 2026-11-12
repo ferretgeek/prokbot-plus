@@ -381,6 +381,8 @@ After changing code, it's a good idea to also check it for real:
 - Have a multi-turn conversation with tool calls in a client;
 - Ask the Bot to search for a news item, read a web page, draw a 16:9 image, and then change one thing in that image.
 
+**ARM release acceptance:** use an authorized, unused ARM64 Linux server, never production volumes. Follow the [install guide](AI-INSTALL.en.md) for a local desktop and record the Host platform, desktop mode and completed build. Pair a client, have a two-turn conversation, create a harmless file on the desktop and see it through VNC. Run `backup` and `update`; verify that both the chat and file survive. Record the machine model, cold start time and desktop responsiveness. An isolated Host core, emulator probe or model test cannot substitute for these results.
+
 ## Where to start for further development
 
 For an upstream update, first run `node ci/check-inputs.mjs` to see the current inputs. Update the platform's `supported.json` or `manifest.json` and its recipes. Rerun the check and all four test suites, build with your own pinned upstream files, then verify chat and tools from a client. Never distribute upstream programs. Host changes require an image rebuild on the target architecture. The table below maps ownership rather than introducing another version registry.
