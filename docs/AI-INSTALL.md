@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 一台 x86_64 Linux | 默认，Host 和执行桌面都原生运行 | 已有实际对话验证的路线 |
 | 一台 ARM64 Linux，例如 Oracle Ampere A1 | 默认，Host 原生运行，桌面经 QEMU 模拟 amd64 | **实验**。不是原生 ARM 桌面；先通过 `doctor`，实际速度取决于任务 |
-| ARM64 Linux + 一台 amd64 Linux | 在 Host 的 `doctor`、`init` 前加 `--host-only`；桌面放第二台 | ARM 机不下载桌面、不需要模拟器；先按 [独立节点说明](../host/README.md#分开部署执行电脑) 配好节点 |
+| ARM64 Linux + 一台 amd64 Linux | 在 Host 的 `doctor`、`init` 前加 `--host-only`；桌面放第二台 | 推荐的 ARM 方案。A1 原生 Host 已验证聊天和桌面控制，无需在 ARM 机下载或模拟桌面。先看 [独立节点说明](../host/README.md#分开部署执行电脑) |
 
 开始前一次问清：新装还是升级？服务器及 SSH 访问方式？客户端从哪访问（本机、专网、HTTPS 域名）？使用哪种模型接口、模型 ID、哪些客户端？密码和 API Key 由用户在管理页输入，不要贴到聊天、工单或日志。已有服务、域名、反向代理和防火墙不默认改动。
 

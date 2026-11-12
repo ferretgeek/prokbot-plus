@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | One x86_64 Linux server | Default: native Host and execution desktop | Existing end-to-end conversation coverage |
 | One ARM64 Linux server, such as Oracle Ampere A1 | Default: native Host and amd64 desktop under QEMU | **Experimental**. The desktop is not native ARM. Run `doctor` first; performance depends on the workload |
-| ARM64 Linux plus an amd64 Linux machine | Put `--host-only` before `doctor` and `init` on the Host; put the desktop on the second machine | No desktop download or emulator on the ARM machine. Set up the [execution node](../host/README.en.md#separate-execution-computer) before configuring the model |
+| ARM64 Linux plus an amd64 Linux machine | Put `--host-only` before `doctor` and `init` on the Host; put the desktop on the second machine | Recommended for ARM. Chat and desktop control were verified on a native A1 Host without downloading or emulating the desktop on ARM. See [execution node setup](../host/README.en.md#separate-execution-computer) |
 
 Ask once: is this an installation or an upgrade? Which server and SSH access? How will clients reach it (local, private network, HTTPS domain)? Which model API, model ID and clients? Let the owner enter passwords and API keys in the console, not in chat, issues or logs. Do not change existing services, DNS, proxies or firewalls by default.
 

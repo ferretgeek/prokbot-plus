@@ -101,7 +101,8 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-12)
 12. ARM64 Host build path, locked ARM runtime dependencies, ARM64 Tailcat,
     deployment platform checks, operator CLI and upgrade safeguards; revised
     bilingual installation and architecture guides, version-input checks and
-    deployment regression coverage. The original amd64 desktop is unchanged.
+    deployment regression coverage. Documented Oracle Ampere A1 runtime
+    verification with a separate amd64 desktop. The original desktop is unchanged.
 
 Third-party components
 ----------------------

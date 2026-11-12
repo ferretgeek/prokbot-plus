@@ -4,7 +4,7 @@
 
 **Move the Grok Bot server side onto your own server, and connect your own models.**
 
-Windows, macOS and iOS patches | [Independently developed Android app (unofficial)](#android-client) | Linux server | OpenAI Chat / OpenAI Responses / Anthropic Messages
+Windows, macOS and iOS patches | [Independently developed Android app (unofficial)](#android-client) | **Linux Host for x86_64 and ARM64** | OpenAI Chat / OpenAI Responses / Anthropic Messages
 
 <p>
   <img alt="Windows 0.71.2" src="https://img.shields.io/badge/Windows-0.71.2_x64-0078D4?logo=windows&logoColor=white">
@@ -47,7 +47,7 @@ Plus adds on top of that: **Windows and Android clients**; **two more model APIs
 
 | Part | Supported | Notes |
 | --- | --- | --- |
-| Server | Linux x86_64 or ARM64 (Docker) | x86_64 tested on Ubuntu 24.04 + Docker 29. ARM64 builds a native Host; run the desktop on a separate amd64 node or emulate it locally (experimental). [Choose a deployment](docs/AI-INSTALL.en.md#choose-a-deployment) |
+| Server | Linux x86_64 or ARM64 | x86_64 tested on Ubuntu 24.04 + Docker 29. A native Host on Oracle Ampere A1 with a separate amd64 desktop passed two-turn chat and VNC control tests. Emulating the desktop on a single ARM machine remains experimental. [Choose a deployment](docs/AI-INSTALL.en.md#choose-a-deployment) |
 | Windows client | Windows 10 / 11, x64 | **New in this version.** Portable version and installer, no administrator rights needed |
 | Mac client | Apple Silicon, Grok Bot 0.71.2 | From upstream |
 | iOS client | Grok Bot 1.16.0 (23152) | From upstream. You need your own decrypted IPA and signing certificate |
@@ -193,7 +193,7 @@ The AI first lists what you need to prepare. Then it deploys the server, configu
 
 If you'd rather do it yourself, follow the [AI deployment guide](docs/AI-INSTALL.en.md). It is written for AI, but every step lists the commands and how to check them, so a person can follow it just as well.
 
-[Releases](https://github.com/ferretgeek/prokbot-plus/releases) distributes platform-specific patch tools. `v1.0.0` predates the Android tools; build Android from this repository using the [Android guide](android/README.en.md). Releases do **not** distribute finished clients containing official program files.
+[Releases](https://github.com/ferretgeek/prokbot-plus/releases) distributes platform-specific patch tools. `v1.0.0` predates both the ARM64 Host and the Android tools. Use the `main` branch for ARM64, or the [Android guide](android/README.en.md) to build the app. Releases do **not** distribute finished clients containing official program files.
 
 ## Documentation
 

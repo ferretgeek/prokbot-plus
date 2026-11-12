@@ -4,7 +4,7 @@
 
 **把 Grok Bot 的服务端搬到你自己的服务器上，接你自己的模型。**
 
-Windows · macOS · iOS 客户端补丁 ｜ [自开发 Android App（非官方）](#android-客户端) ｜ Linux 服务端 ｜ OpenAI Chat / OpenAI Responses / Anthropic Messages
+Windows · macOS · iOS 客户端补丁 ｜ [自开发 Android App（非官方）](#android-客户端) ｜ **Linux 服务端支持 x86_64 和 ARM64** ｜ OpenAI Chat / OpenAI Responses / Anthropic Messages
 
 <p>
   <img alt="Windows 0.71.2" src="https://img.shields.io/badge/Windows-0.71.2_x64-0078D4?logo=windows&logoColor=white">
@@ -46,7 +46,7 @@ Plus 在此基础上补了这些：**Windows 和 Android 客户端**；**Anthrop
 
 | 部分 | 支持 | 说明 |
 | --- | --- | --- |
-| 服务端 | Linux x86_64 或 ARM64（Docker） | x86_64 已在 Ubuntu 24.04 + Docker 29 实测。ARM64 原生构建 Host；桌面可放独立 amd64 节点，或在同机模拟（实验）。[选部署方式](docs/AI-INSTALL.md#先选部署方式) |
+| 服务端 | Linux x86_64 或 ARM64 | x86_64 已在 Ubuntu 24.04 + Docker 29 实测。甲骨文 Ampere A1 原生运行 Host、搭配独立 amd64 桌面，已验证两轮聊天和 VNC 操作。只有一台 ARM 机器时，模拟桌面仍属实验模式。[选部署方式](docs/AI-INSTALL.md#先选部署方式) |
 | Windows 客户端 | Windows 10 / 11，x64 | **本版本新增。** 便携版和安装包，不需要管理员权限 |
 | Mac 客户端 | Apple Silicon，Grok Bot 0.71.2 | 来自上游 |
 | iOS 客户端 | Grok Bot 1.16.0（23152） | 来自上游。需要自备砸壳 IPA 和签名证书 |
@@ -192,7 +192,7 @@ AI 会先列出你要准备的东西，然后一步步部署服务端、配置�
 
 想自己动手的话，照着 [AI 部署手册](docs/AI-INSTALL.md) 做就行。它是写给 AI 的，但每一步都写了命令和检查方法，人照着做也完全没问题。
 
-[Releases](https://github.com/ferretgeek/prokbot-plus/releases) 按平台分发补丁工具。`v1.0.0` 不含 Android 工具；使用 Android 请按 [Android 客户端说明](android/README.md) 从本仓库生成。Releases **不提供**包含官方程序的成品客户端。
+[Releases](https://github.com/ferretgeek/prokbot-plus/releases) 按平台分发补丁工具。`v1.0.0` 不含 ARM64 Host 和 Android 工具；部署 ARM64 请使用 `main` 分支，生成 Android App 见 [Android 客户端说明](android/README.md)。Releases **不提供**包含官方程序的成品客户端。
 
 ## 文档
 
