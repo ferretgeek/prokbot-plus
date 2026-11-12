@@ -47,7 +47,7 @@ Plus adds on top of that: **Windows and Android clients**; **two more model APIs
 
 | Part | Supported | Notes |
 | --- | --- | --- |
-| Server | Linux x86_64 (Docker) | Tested on Ubuntu 24.04 + Docker 29. A NAS that supports Docker also works. ARM servers are not supported, and neither is deploying directly on Windows |
+| Server | Linux x86_64 or ARM64 (Docker) | x86_64 tested on Ubuntu 24.04 + Docker 29. ARM64 builds a native Host; run the desktop on a separate amd64 node or emulate it locally (experimental). [Choose a deployment](docs/AI-INSTALL.en.md#choose-a-deployment) |
 | Windows client | Windows 10 / 11, x64 | **New in this version.** Portable version and installer, no administrator rights needed |
 | Mac client | Apple Silicon, Grok Bot 0.71.2 | From upstream |
 | iOS client | Grok Bot 1.16.0 (23152) | From upstream. You need your own decrypted IPA and signing certificate |
@@ -167,7 +167,7 @@ See the [CHANGELOG](CHANGELOG.md) and the [technical documentation](docs/ARCHITE
 
 | Required | Requirements |
 | --- | --- |
-| Server | x86_64 Linux with 8 GB+ of memory and 30 GB+ of free disk, with Docker, Docker Compose and Python 3.10+ installed. The first build downloads about 8 GB |
+| Server | 64-bit Linux, Docker Compose v2 and Python 3.10+. For a local desktop allow at least 8 GB RAM, 30 GB free disk and about 8 GB of initial downloads. A local ARM desktop also needs QEMU/binfmt |
 | Model API | Any one of: Anthropic Messages, OpenAI Responses, OpenAI Chat Completions. It must support tool calls. For the Bot to operate a computer, it also needs image input |
 | Computer to build the clients | Build the Windows client on Windows 10/11 x64 and the Mac client on an Apple Silicon Mac; the Android client builds on Windows, Mac or Linux. All need Node.js 22.12+. iOS needs a decrypted IPA and a signing certificate |
 
@@ -186,7 +186,7 @@ The easiest way is to hand it to an AI that can run commands (Claude Code, Codex
 ```text
 Please deploy ProkBot Plus for me: https://github.com/ferretgeek/prokbot-plus
 First read docs/AI-INSTALL.en.md in the repository in full, then follow its steps exactly.
-Before you start, tell me what I need to prepare.
+Ask about my machines, any existing instance, model and access method. Run doctor first. Never remove volumes, disclose keys or treat container startup as acceptance. Verify a two-turn client chat and a desktop action at the end.
 ```
 
 The AI first lists what you need to prepare. Then it deploys the server, configures the model, builds the clients step by step, and checks the result at the end.

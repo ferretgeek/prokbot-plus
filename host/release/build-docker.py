@@ -11,15 +11,16 @@ import tarfile
 import tempfile
 import time
 import urllib.request
+from platforms import BOX as BOX_SPEC, INPUTS, check_box_execution, docker_platform
 
 ROOT = Path(__file__).resolve().parents[1]
-BOX = 'public.ecr.aws/k0i0n2g5/cursorenvironments/universal@sha256:73c04dc8722de013fb2ad99366171e3a4c7379f1253d127348a5047d13f0ed41'
-BOX_ID = 'sha256:1bdd316ac812b6647fe1163e97f200b99edb155b97d927727e85dc0c5ea3cd6f'
+BOX = BOX_SPEC['repository'] + '@' + BOX_SPEC['manifestDigest']
+BOX_ID = BOX_SPEC['configDigest']
 BOX_MANIFEST = BOX.split('@', 1)[1]
 # The classic image store reports the config digest as the image ID; the containerd
 # image store (default on new Docker 29+ installs) reports the pinned manifest digest.
 BOX_IDENTITIES = {BOX_ID, BOX_MANIFEST}
-BOX_TAG = 'grokbot-box-input:9d2ac1b'
+BOX_TAG = BOX_SPEC['localTag']
 
 
 def run(*args, **kwargs):
@@ -48,31 +49,48 @@ def load_verified_archive(path):
     return match.group(1)
 
 
+def prepare_box(box_archive):
+    if box_archive:
+        source = load_verified_archive(box_archive.resolve())
+    else:
+        source = next((ref for ref in (BOX, BOX_TAG, BOX_ID) if image_id(ref) in BOX_IDENTITIES), None)
+        if not source:
+            run('docker', 'pull', '--platform', BOX_SPEC['platform'], BOX)
+            source = BOX
+    identity = image_id(source)
+    if identity not in BOX_IDENTITIES:
+        raise ValueError('Unsupported Box image identity')
+    run('docker', 'tag', source, BOX_TAG)
+    return identity
+
+
+def choose_runtime(platform, host_only):
+    if platform == 'linux/arm64':
+        return 'grokbot-arm-runtime:local', not host_only
+    return BOX_TAG, True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--host-archive', type=Path)
     parser.add_argument('--box-archive', type=Path, help='Optional original docker-save tar or tar.gz')
-    parser.add_argument('--box-only', action='store_true', help='Prepare the verified Box image for a standalone execution node')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--box-only', action='store_true', help='Prepare only the verified desktop')
+    modes.add_argument('--host-only', action='store_true', help='Build a Host for a separate execution node')
     parser.add_argument('--image', default='grokbot-host:local')
     parser.add_argument('--base-image', default='grokbot-patch-base:local')
     args = parser.parse_args()
-    manifest = json.loads((ROOT / 'recipes/host/manifest.json').read_text())
+    manifest = INPUTS
     started = time.monotonic()
-    if args.box_archive:
-        source = load_verified_archive(args.box_archive.resolve())
-        identity = image_id(source)
-    else:
-        source = next((reference for reference in (BOX, BOX_TAG, BOX_ID) if image_id(reference) in BOX_IDENTITIES), None)
-        if not source:
-            run('docker', 'pull', '--platform', 'linux/amd64', BOX)
-            source = BOX
-        identity = image_id(source)
-        if identity not in BOX_IDENTITIES:
-            raise ValueError('Unsupported Box image identity')
-    # docker-save archives do not retain registry RepoDigests. Give Compose a
-    # verified local tag so offline imports do not trigger another registry pull.
-    run('docker', 'tag', source, BOX_TAG)
-    box_image = BOX_TAG
+    platform = docker_platform()
+    arm = platform == 'linux/arm64'
+    if arm and args.host_only and args.box_archive:
+        raise ValueError('ARM host-only mode does not use a desktop archive.')
+    if not args.host_only:
+        check_box_execution(platform)
+    runtime_image, needs_box = choose_runtime(platform, args.host_only)
+    identity = prepare_box(args.box_archive) if needs_box else None
+    box_image = BOX_TAG if identity else None
     if args.box_only:
         print(json.dumps({'boxImage': box_image, 'originalImageId': identity, 'inputSeconds': round(time.monotonic()-started, 3)}))
         return
@@ -86,16 +104,23 @@ def main():
         if hashlib.sha256(archive.read_bytes()).hexdigest() != manifest['archive']['sha256']:
             raise ValueError('Unsupported Host archive SHA-256')
         input_seconds = time.monotonic()-started
-        run('docker', 'build', '--platform', 'linux/amd64', '-f', str(ROOT / 'release/Dockerfile.base'), '-t', args.base_image, str(ROOT))
+        run('docker', 'build', '--platform', platform, '-f', str(ROOT / 'release/Dockerfile.base'), '-t', args.base_image, str(ROOT))
+        if arm:
+            run('docker', 'build', '--platform', platform, '-f', str(ROOT / 'release/Dockerfile.arm-runtime'),
+                '-t', runtime_image, str(ROOT))
         base_seconds = time.monotonic()-started-input_seconds
         (work / 'inputs').mkdir()
         shutil.copy2(archive, work / 'inputs/host.tgz')
-        run('docker', 'build', '--platform', 'linux/amd64', '-f', str(ROOT / 'release/Dockerfile.host'),
-            '--build-arg', f'PATCH_IMAGE={args.base_image}', '--build-arg', f'BOX_IMAGE={box_image}', '-t', args.image, str(work))
-    print(json.dumps({'image': args.image, 'boxImage': box_image, 'inputSeconds': round(input_seconds, 3),
+        run('docker', 'build', '--platform', platform, '-f', str(ROOT / 'release/Dockerfile.host'),
+            '--build-arg', f'PATCH_IMAGE={args.base_image}', '--build-arg', f'RUNTIME_IMAGE={runtime_image}',
+            '--build-arg', f'HOST_REVISION={manifest["archive"]["version"]}', '-t', args.image, str(work))
+    print(json.dumps({'image': args.image, 'platform': platform, 'boxImage': box_image, 'inputSeconds': round(input_seconds, 3),
         'baseBuildSeconds': round(base_seconds, 3), 'finalBuildSeconds': round(time.monotonic()-started-input_seconds-base_seconds, 3),
         'originalImageId': identity, 'distribution': 'local-only'}))
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        raise SystemExit(str(error)) from error

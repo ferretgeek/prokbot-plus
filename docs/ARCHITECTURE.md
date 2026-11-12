@@ -31,16 +31,17 @@ flowchart LR
   Admin <--> Tailcat[Tailcat 内置组网]
 ```
 
-补丁只对固定版本生效。原文件按 SHA-256 校验，版本不对会直接拒绝：
+## 维护地图
 
-| 组件 | 版本 |
-| --- | --- |
-| 原版 Host | `sand-host-bundle-d0a4baa` |
-| Linux 桌面镜像 | `9d2ac1b`（清单摘要 `sha256:73c04dc8…`，配置摘要 `sha256:1bdd316a…`） |
-| Windows 客户端 | 0.71.2 x64（`Grok_Bot_0.71.2_Setup.exe`） |
-| Mac 客户端 | 0.71.2 Apple Silicon |
-| iOS 客户端 | 1.16.0（23152）arm64 砸壳 IPA |
-| Android 客户端 | 界面取自 Windows 0.71.2 x64 安装包，外壳为本项目代码 |
+在完整仓库运行 `node ci/check-inputs.mjs` 查看各平台实际使用的版本并核对输入。版本和摘要由构建工具读取的清单决定，不以 README 徽章为准。
+
+| 想改什么 | 从哪里开始 | 必须一起验证什么 |
+| --- | --- | --- |
+| 部署方式、升级、备份 | `host/deploy.py` → `host/release/`；容器内启动在 `host/deploy/supervisor.mjs` | 新装与带旧卷升级分别测试；Host CPU 架构和桌面 CPU 架构分别验证 |
+| 更新原版 Host 或桌面 | `host/recipes/host/manifest.json` 和同目录补丁；ARM 原生依赖锁在 `host/release/arm-runtime/` | 摘要校验、生成补丁、目标镜像、旧卷启动、实际对话和桌面 |
+| 新增服务端功能 | `host/server/` 负责管理 API、持久化与页面；`host/runtime/` 负责原版 Agent 和模型行为 | 管理页保存后，客户端对话是否真的用上设置 |
+| 更新桌面 / 手机 | Mac 与 Windows 共用 `mac/clients/desktop/`；Windows 解包器和 recipe 也是 Android 的输入；iOS 独立 | 每个平台的 `supported.json` 或 recipe 清单、签名、配对。共享代码改动要测所有使用方 |
+| 增加可选能力 | 先看能否做成应用或技能：[应用开发](../host/README.md#应用开发)；只有需要改变 Host 行为才改运行时 | 安装、授权、调用和移除；不修改官方程序或把它带进发布包 |
 
 ## 功能对照
 
@@ -49,7 +50,7 @@ flowchart LR
 | 功能 | 原版 | 这里 | 你需要准备 |
 | --- | --- | --- | --- |
 | 🔁 登录 | 官方账号 | 不需要账号。Host 管理页生成 6 位配对码，客户端输入 Host 地址和配对码即可连接 | — |
-| 🔁 Host 和执行电脑 | 官方云端 | 运行在你部署的位置，使用原版 Host | 一台能运行 Docker 的 x86_64 Linux |
+| 🔁 Host 和执行电脑 | 官方云端 | Host 按服务器架构构建，执行桌面保持原版 | amd64 / arm64 Linux，amd64 桌面可独立部署 |
 | 🔁 对话模型 | 官方模型，自动选择等级 | 自选模型，支持 OpenAI Chat Completions、OpenAI Responses 与 Anthropic Messages 三种接口格式。可以让 Jev 分类器自动选择模型和思考强度 | 模型接口地址和 API Key |
 | 🟢 电脑和浏览器操作 | 原版 Agent | 保留原版 | 支持视觉能力的模型 |
 | 🟢 记忆、上下文压缩、定时任务 | 原版 Agent，部分依赖官方服务 | 保留原版，改用你的模型和本地计时，上下文压缩可自行设置 | — |
@@ -322,6 +323,7 @@ Host 可以直接给 Apple 推送服务（APNs）发通知，这需要有推送�
 
 | 路径 | 内容 |
 | --- | --- |
+| `host/deploy.py` | 对外部署入口；识别实例、预检、初始化、升级前备份和状态。与容器内的 `host/deploy/` 不同 |
 | `host/release/` | `build-docker.py` 下载校验原版并构建 `grokbot-host:local`；`patch-host.py`、`bytepatch.py` 应用 Host 补丁；`compose*.yaml` 部署；`backup.py` 备份恢复；`Dockerfile.*` |
 | `host/server/` | 管理服务：认证、配对、推送、各类配置、管理网页（`public/`） |
 | `host/runtime/` | 注入原版 Host 的运行时：模型适配层、联网与图片、自动审查、可靠性层（`reliability/`） |
@@ -343,7 +345,9 @@ Host 可以直接给 Apple 推送服务（APNs）发通知，这需要有推送�
 
 ## Linux 部署要点
 
-- 镜像是 `linux/amd64`。Docker 29 起新安装默认使用 containerd 镜像存储，`docker image inspect` 报告的 ID 变成清单摘要。上游构建脚本只认配置摘要，会报 `Unsupported Box image identity`；本版本两种都接受，离线归档按包内的配置摘要校验。
+- `host/release/platforms.py` 识别 **Docker 服务端**架构；`host/recipes/host/manifest.json` 是原版 Host、桌面和补丁的输入清单。两种架构走同一套补丁。amd64 Host 保留原版镜像基底；ARM64 用 Node 22、锁定的 ARM 原生模块和按架构编译的 Tailcat。官方桌面始终是 `linux/amd64`。
+- ARM 同机先运行隔离的小型 amd64 容器，失败时不下载大桌面。独立桌面模式跳过模拟检测，ARM Host 不下载桌面。原版镜像接受固定的清单或配置摘要；离线输入校验配置摘要及导入后的身份。
+- ARM 验证分两层：Ubuntu 24.04 ARM64 虚拟服务器通过两种 `doctor` 预检，包括实际执行 amd64 容器；隔离的 ARM64 Node 运行环境中，原版 Host 核心已连接原版 amd64 执行服务，验证了设备配对、Bot 列表、绘图和本地测试模型的流式回复。后一环境不含完整桌面，不能证明多轮客户端聊天或 VNC 可用。
 - 在 Windows 上检出或上传的代码会丢掉可执行权限，所以 `Dockerfile.base` 和 `Dockerfile.execution` 复制 Tailcat 程序后会再 `chmod 755`，Mac 补丁也会给输出里的 Tailcat 加上可执行权限。
 - Docker 发布的端口不经过 ufw。需要限制访问时，改 `GROKBOT_LISTEN_ADDRESS`，或在网络边界上限制。
 - 备份期间会暂停容器，健康检查可能短暂失败，属于正常现象。
@@ -379,6 +383,8 @@ iOS 注入库的网络层另有一项测试，要在装了 Xcode 命令行工具
 
 ## 二次开发入口
 
+升级原版的顺序：先运行 `node ci/check-inputs.mjs` 查看当前清单，再更新对应平台的 `supported.json` / `manifest.json` 和 recipe。重新运行检查与四套测试，用自己下载的固定输入构建，在客户端验证聊天和工具；不发布原版程序。改 Host 还需在目标架构重建镜像。下面的表只列修改入口，不另设第二份版本表。
+
 | 需求 | 位置 |
 | --- | --- |
 | 新增模型接口格式 | 在 `host/runtime/` 新建适配文件，实现和 `openai-chat.mjs` 相同形态的生成器，再在这些地方注册：`model-session.mjs`、`host-auto-review.mjs` 的 `CLASSIFIERS`、`host/server/models.mjs`、管理页 `host/server/public/model.js` |
@@ -391,7 +397,7 @@ iOS 注入库的网络层另有一项测试，要在装了 Xcode 命令行工具
 
 ## 已知限制与待办
 
-- 只支持上面表格里的固定版本，官方更新后要更新补丁；没有自动更新。
+- 只支持构建清单里的固定版本，官方更新后要更新补丁；没有自动更新。
 - Windows 客户端：
   - 还不能让 Bot 控制鼠标键盘；
   - 没有代码签名，首次打开会有 SmartScreen 提示；
@@ -403,5 +409,5 @@ iOS 注入库的网络层另有一项测试，要在装了 Xcode 命令行工具
   - 后台通知靠一个前台服务保持连接，部分厂商系统需要允许后台运行；
   - 语音输入和实时通话只验证到请求送达 Host，还没有和真实的语音服务联调；
   - 在 Android 15 模拟器（WebView 124）上做了完整测试，在 Android 16 模拟器（WebView 134）上验证了配对、通知权限和界面布局，还没有在真机上测试。
-- 服务端只支持 x86_64 Linux，原版桌面镜像只有 amd64。
+- 原版桌面只有 amd64。ARM 同机执行桌面为实验模式，未在 Oracle A1 实机完成聊天、桌面和性能验收。
 - iOS 需要自备砸壳 IPA 和签名证书；耳机、蓝牙与网络切换场景还没有在真机上充分验证。

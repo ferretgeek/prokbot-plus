@@ -4,8 +4,9 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isMainThread, threadId } from 'node:worker_threads';
 import { constructRecoveredModules } from './recovered-modules.mjs';
+import inputs from '../recipes/host/manifest.json' with { type: 'json' };
 
-const sourceSha256 = '868572888c71b317c7878b5efc81b029aa99192e3bef7402591759388a6bcf3c';
+const sourceSha256 = inputs.sourceSha256['agent-isolation/agent-store-worker.cjs'];
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 
 export async function describeRecoveredBlobWorker(state) {

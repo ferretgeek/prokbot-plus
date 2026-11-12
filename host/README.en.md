@@ -1,6 +1,6 @@
 # ProkBot Plus Host Patch
 
-Self-host the Grok Bot server. Requires Python 3.10+ and Docker Compose; the runtime uses Linux amd64. Tested on Ubuntu 24.04 with Docker 29 (the distribution's `docker.io` and `docker-compose-v2`). Apple Silicon can also build the amd64 image.
+Self-host the Grok Bot server. The Host builds for Linux amd64 or arm64; the original execution desktop is amd64 only. ARM can use a separate amd64 node or local emulation (experimental). Requires Python 3.10+ and Docker Compose v2.
 
 For the full deployment steps see the [AI install guide](../docs/AI-INSTALL.en.md); for how it works see the [technical documentation](../docs/ARCHITECTURE.en.md).
 
@@ -9,43 +9,41 @@ For the full deployment steps see the [AI install guide](../docs/AI-INSTALL.en.m
 ## Use
 
 ```sh
-python3 release/build-docker.py
-docker compose -f release/compose.yaml up -d
-docker compose -f release/compose.yaml exec host cat /data/setup-key
+python3 deploy.py doctor
+python3 deploy.py init
+python3 deploy.py up
 ```
 
-Open `http://127.0.0.1:18080`, use the setup code to create an administrator account, configure a model (OpenAI Chat, OpenAI Responses or Anthropic Messages API) and create a six-character pairing code.
-
-- LAN access: run `export GROKBOT_LISTEN_ADDRESS=0.0.0.0` before starting Compose. Set the port with `GROKBOT_PUBLIC_PORT`.
-- Remote access: use an HTTPS reverse proxy, or enable Tailcat in the console.
+Run these from `host/`; a new install defaults to loopback. Set a custom access address at `init` (see `python3 deploy.py init --help`). For an existing instance use `update`, not `init`. See the install guide for setup, model configuration and pairing.
 
 ## Offline builds
 
 By default the build tool downloads the original files from pinned sources and verifies them strictly; see `recipes/host/manifest.json` and `release/build-docker.py` for the versions. If you already have the original files:
 
 ```sh
-python3 release/build-docker.py --host-archive /path/to/sand-host-bundle-d0a4baa.tgz --box-archive /path/to/box.tar.gz
+python3 deploy.py up --host-archive /path/to/host.tgz --box-archive /path/to/box.tar.gz
 ```
 
 After verification the Box archive is tagged `grokbot-box-input:9d2ac1b`, and Compose uses that local image. New Docker 29 installations use the containerd image store, where the image ID is the pinned manifest digest; the build tool accepts it. Offline archives are verified by their config digest regardless of the store.
+
+Select the instance with `init` first; use `update` instead of `up` for an existing instance. For build-only work `release/build-docker.py` accepts the same archive flags. These replace only upstream downloads. A fully offline build needs cached base images, OS packages, npm dependencies and, on local ARM, amd64 `busybox:1.37`. Omit `--box-archive` for a split ARM Host; amd64 Hosts still use Box as their base.
 
 `release/patch-host.py --archive ORIGINAL --output NEW_DIRECTORY` generates the Host files on their own and records the patch time. It only copies fixed bytes and applies added rules; it does not call an AI or decompile anything.
 
 ## Data and backups
 
-Data lives in three volumes: `host-data`, `box-home` and `box-workspace`. A backup pauses the running containers, saves all volumes with checksums, then resumes them. Restore into a new Compose project so the existing volumes are not overwritten:
+Local mode has three volumes: `host-data`, `box-home` and `box-workspace`. In split mode back up each machine separately. Backup pauses running project containers, saves volumes with checksums, and resumes them. Keep the `.env` and corresponding code revision separately. Restore into a new project without overwriting existing volumes:
 
 ```sh
-python3 release/backup.py backup --project grokbot --directory backups/2026-10-21 --image grokbot-host:local
-python3 release/backup.py restore --project grokbot-restored --directory backups/2026-10-21 --image grokbot-host:local
-docker compose -p grokbot-restored -f release/compose.yaml up -d
+python3 deploy.py backup < /dev/null
+python3 release/backup.py restore --project grokbot-restored --directory /path/to/backup --image grokbot-host:local < /dev/null
 ```
 
-Restore with the image version that matches the backup. The restored instance has the same identity as the original; stop the original before starting it.
+`restore` restores data without starting services. Use the matching image version and replace `/path/to/backup` with the reported backup directory. Confirm the original instance has stopped before starting the restored instance with the same identity. Run Compose with the original `--env-file` and `-p grokbot-restored`, using `release/compose.yaml` for a local desktop or `release/compose.host.yaml` for a split Host. For subsequent operations copy `.env` into a separate instance directory and update `PROKBOT_PROJECT`; never overwrite the original config.
 
 ## Separate execution computer
 
-Use `release/compose.host.yaml` to deploy the Host alone. Deploy an execution node on another computer:
+On the Host use `python3 deploy.py --host-only init` then `python3 deploy.py up`. Deploy the execution node from `host/` on a separate **amd64 Linux** machine:
 
 ```sh
 python3 release/build-docker.py --box-only

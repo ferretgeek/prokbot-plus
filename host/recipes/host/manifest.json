@@ -1,5 +1,16 @@
 {
   "schema": "grokbot-host-inputs/v1",
+  "sourceSha256": {
+    "host-main.cjs": "d7ffb02b831337f6e4618a2604fb6ecd00a7f75f4c4bf96f5075f54d473b7f67",
+    "agent-isolation/agent-store-worker.cjs": "868572888c71b317c7878b5efc81b029aa99192e3bef7402591759388a6bcf3c"
+  },
+  "box": {
+    "repository": "public.ecr.aws/k0i0n2g5/cursorenvironments/universal",
+    "platform": "linux/amd64",
+    "manifestDigest": "sha256:73c04dc8722de013fb2ad99366171e3a4c7379f1253d127348a5047d13f0ed41",
+    "configDigest": "sha256:1bdd316ac812b6647fe1163e97f200b99edb155b97d927727e85dc0c5ea3cd6f",
+    "localTag": "grokbot-box-input:9d2ac1b"
+  },
   "archive": {
     "version": "d0a4baa",
     "url": "https://public-asphr-vm-daemon-bucket.s3.us-east-1.amazonaws.com/sand-host-bundle/sand-host-bundle-d0a4baa.tgz",

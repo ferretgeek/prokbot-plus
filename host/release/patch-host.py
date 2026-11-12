@@ -55,6 +55,8 @@ def main():
         download_seconds = time.monotonic() - started
         extract(archive, work / 'original')
         original = work / 'original' / 'sand-host'
+        if (original / 'version').read_text().strip() != spec['archive']['version']:
+            raise ValueError('Pinned Host revision does not match the archive')
         source_cache = {}
         seed = work / 'seed'
         for record in spec['files']:
@@ -64,6 +66,8 @@ def main():
                 raise ValueError('Unsafe patch path')
             if record['source'] not in source_cache:
                 source_cache[record['source']] = (original / source_path).read_bytes()
+                if digest(source_cache[record['source']]) != spec['sourceSha256'][record['source']]:
+                    raise ValueError('Pinned Host source digest mismatch: ' + record['source'])
             source = source_cache[record['source']]
             target = seed / target_path
             target.parent.mkdir(parents=True, exist_ok=True)

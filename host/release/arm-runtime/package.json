@@ -1,0 +1,9 @@
+{
+  "name": "prokbot-arm-host-runtime",
+  "private": true,
+  "dependencies": {
+    "@napi-rs/canvas-linux-arm64-gnu": "0.1.80",
+    "tree-sitter": "0.25.0",
+    "tree-sitter-bash": "0.25.0"
+  }
+}

@@ -20,6 +20,7 @@
 2. 提交前跑测试，全部通过：
 
    ```sh
+   node ci/check-inputs.mjs
    node --test "host/tests/*.test.mjs"
    node --test "windows/tests/*.test.mjs"
    node --test mac/tests/*.test.mjs
@@ -52,7 +53,7 @@ Issues, bug reports and pull requests are welcome.
 
   **Never post API keys, admin passwords, pairing codes or public server addresses.**
 - Report security issues privately, see [SECURITY.md](SECURITY.md).
-- Keep pull requests small, and run the four test suites above before submitting. After changing the Android shell (`android/shell/`), also run `node android/shell/release-shell.mjs` to rebuild the prebuilt shell (needs JDK 17+ and the Android SDK); otherwise the patcher refuses to run because the digest no longer matches.
+- Keep pull requests small. Run the offline input check and the four test suites above before submitting. After changing the Android shell (`android/shell/`), also run `node android/shell/release-shell.mjs` to rebuild the prebuilt shell (needs JDK 17+ and the Android SDK); otherwise the patcher refuses to run because the digest no longer matches.
 - Patches may only copy bytes from official files the user downloads, plus this project's changes. Never commit Grok Bot program files, extracted code, IPAs or built APKs (the shell in `android/dist/` is the exception: it contains only this project's code).
 - Update both the Chinese and English versions of a document.
 - The optional [GitHub Actions template](ci/regression-tests.yml) runs on Linux, Windows and macOS, including native installer and iOS network tests where supported. It is inactive until a maintainer with workflow write access places it at `.github/workflows/tests.yml`.

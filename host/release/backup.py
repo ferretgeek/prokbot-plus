@@ -53,8 +53,14 @@ def backup(project, destination, image):
             path.chmod(0o600)
             records.append({'name': volume, 'suffix': volume[len(project)+1:], 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size})
     finally:
-        for container in paused:
-            run('unpause', container, stdout=subprocess.DEVNULL)
+        failed = []
+        for container in reversed(paused):
+            try:
+                run('unpause', container, stdout=subprocess.DEVNULL)
+            except (OSError, subprocess.SubprocessError):
+                failed.append(container)
+        if failed:
+            raise RuntimeError('Could not resume these containers; check docker ps and unpause them: ' + ', '.join(failed))
     manifest = {'schema':'grokbot-volumes/v1', 'project':project, 'image':image,
                 'at':time.strftime('%Y-%m-%dT%H:%M:%S%z'), 'volumes':records}
     (destination/'manifest.json').write_text(json.dumps(manifest, indent=2)+'\n')

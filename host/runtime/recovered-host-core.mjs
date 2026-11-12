@@ -12,13 +12,14 @@ import { installRecoveredStorage } from './recovered-storage.mjs';
 import { installRecoveredPromptTools } from './recovered-prompt-tools.mjs';
 import { installRecoveredHostKernel } from './recovered-host-kernel.mjs';
 import { installRecoveredToolFramework } from './recovered-tool-framework.mjs';
+import inputs from '../recipes/host/manifest.json' with { type: 'json' };
 
 /** Install editable recovery modules before any Host service is constructed. */
 export async function loadRecoveredHostCore(library, directory) {
   const modules = [];
   for (const filename of ['provenance.json', 'acceptance-provenance.json', 'handoff-provenance.json', 'host-flow-provenance.json', 'storage-provenance.json', 'worker-pool-provenance.json', 'tool-framework-provenance.json', 'engine-provenance.json', 'computer-provenance.json', 'prompt-tools-provenance.json', 'harness-provenance.json', 'host-execution-provenance.json', 'host-session-provenance.json', 'host-kernel-provenance.json']) {
     const manifest = JSON.parse(await readFile(join(directory, filename), 'utf8'));
-    if (manifest.sourceSha256 !== 'd7ffb02b831337f6e4618a2604fb6ecd00a7f75f4c4bf96f5075f54d473b7f67') {
+    if (manifest.sourceSha256 !== inputs.sourceSha256['host-main.cjs']) {
       throw new Error(`Unexpected recovered source: ${filename}`);
     }
     for (const entry of manifest.modules) {
