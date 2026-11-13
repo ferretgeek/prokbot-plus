@@ -6,6 +6,8 @@ Versions start at ProkBot Plus 1.0.0. Upstream ProkBot releases are listed at th
 
 ## 未发布 / Unreleased
 
+- **文档更正 / Documentation correction (2026-11-14)**：首页列明四种部署模式尚无实测配置评级、苹果真机验收边界和数据卷备份范围；修正 `v1.0.0` 发布说明中的安装链接，不改变其安装包。The homepages distinguish measured deployment limits, Apple hardware coverage and volume-only backups. The two installation links in the `v1.0.0` release notes were repaired without replacing its assets.
+
 - **ARM64 与部署**：Host 可原生构建在 ARM64 Linux 上；官方桌面仍为 amd64，可放独立节点，或在同机经预检后模拟（实验）。新增统一部署入口，记住项目和模式，更新前备份；双语安装手册改为一条流程。维护者可离线核对固定版本、补丁和外壳摘要。
 - **ARM64 and deployment**: build the Host natively on ARM64 Linux. The original amd64 desktop runs separately or under local emulation after a preflight (experimental). A single operator command remembers the project and topology and backs up before upgrading. Both install guides now follow one route; maintainers can check pinned inputs, recipes and shell digests offline.
 - **A1 真机验证 / A1 hardware verification**：ARM64 Host 搭配独立 amd64 桌面通过两轮聊天、VNC 操作及旧版数据兼容测试。A native ARM64 Host with a separate amd64 desktop passed two-turn chat, VNC control and data compatibility tests. This did not test a single-machine Docker deployment on A1.

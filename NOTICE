@@ -104,6 +104,10 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-12)
     deployment regression coverage. Documented Oracle Ampere A1 runtime
     verification with a separate amd64 desktop. The original desktop is unchanged.
 
+Public documentation correction (2026-11-14): clarified tested hardware,
+Apple device coverage, version pins and volume-only backup scope. No official
+program or changed release binary is included in that correction.
+
 Third-party components
 ----------------------
 

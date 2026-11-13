@@ -147,11 +147,11 @@ See the [CHANGELOG](CHANGELOG.md) and the [technical documentation](docs/ARCHITE
   - Tasks triggered by webhooks;
   - Write your own apps (plugins);
   - Bot collaboration across several Hosts;
-  - Full-machine backup and restore.
+  - Backup and restore of managed data volumes (not images or the host OS).
 
 **Trade-offs**
 
-- You need a Linux server (at least 8 GB of memory and 30 GB of disk), and you handle upgrades and backups yourself.
+- You need a Linux server and handle upgrades and backups yourself. The table below separates the measured limits by deployment mode.
 - Versions are pinned: client 0.71.2, iOS 1.16.0, Host `d0a4baa`. When the official apps update, you have to wait for the patches to catch up before upgrading, and there are no automatic updates.
 - Results depend on the model you choose. The official service is tuned for its own models. With other models, the experience may not be as good.
 - Some official features are turned off or replaced:
@@ -165,9 +165,24 @@ See the [CHANGELOG](CHANGELOG.md) and the [technical documentation](docs/ARCHITE
 
 ## What you need to deploy
 
+**Published packages and verified limits (November 14, 2026)**
+
+- `v1.0.0` ships four tool packages: x86_64 Host, Windows, Mac and iOS. It has no Android package or ARM64 Host support. The Android shell in the repository is independently developed and unofficial; its actual chat screenshot is retained below.
+- The official Windows x64 and macOS ARM64 stable feeds list **1.0.3**, and the US iOS store lists **1.25.0**. This project still pins Windows/macOS **0.71.2** and iOS **1.16.0 (23152)**. Android uses the pinned Windows installer. The newer official releases have not passed project acceptance. The maintainer has no Mac, iPhone or iPad for this round; Apple hardware installation, pairing and chat have not been tested.
+
+| Deployment mode | Tested minimum | Tested recommendation | Disk | Measured workload and limits |
+| --- | --- | --- | --- | --- |
+| x86_64 Host and amd64 desktop together | Not established | Not established | 50 GiB was an earlier test disk, not a minimum | Neither timed 2-vCPU / 2-GiB chat diagnostic delivered all replies on time. The 2-vCPU / 4-GiB and 4-vCPU / 8-GiB guests have fresh-install functional observations, not three one-hour rounds. |
+| ARM64 Host + separate amd64 desktop | Neither machine rated | Neither machine rated | Budget images, data and backups on both machines; no rating | Historical chat and desktop control do not establish Docker build, upgrade or sustained capacity for this candidate on both machines. |
+| ARM64 Host with emulated amd64 desktop | Not established | Not established | Not established | Experimental; no whole-machine capacity rating. |
+| Host alone, no execution node | Not established | Not established | Not established | Setup and management only. Without an enabled execution node the chat core does not start; this is not a complete chat deployment. |
+
+External model inference is outside these guest allocations; local inference requires its own budget. The older 8-GB RAM / 30-GB disk figures were planning allowances, not measured minima. Backups contain managed volumes, not images, the instance `.env` or the host OS. These observations do not establish lossless upgrades or failure recovery for a new release.
+
+
 | Required | Requirements |
 | --- | --- |
-| Server | 64-bit Linux, Docker Compose v2 and Python 3.10+. For a local desktop allow at least 8 GB RAM, 30 GB free disk and about 8 GB of initial downloads. A local ARM desktop also needs QEMU/binfmt |
+| Server | 64-bit Linux, Docker Compose v2 and Python 3.10+. See the table above for tested limits; allow separate space for build caches and backups. A local ARM desktop also needs QEMU/binfmt |
 | Model API | Any one of: Anthropic Messages, OpenAI Responses, OpenAI Chat Completions. It must support tool calls. For the Bot to operate a computer, it also needs image input |
 | Computer to build the clients | Build the Windows client on Windows 10/11 x64 and the Mac client on an Apple Silicon Mac; the Android client builds on Windows, Mac or Linux. All need Node.js 22.12+. iOS needs a decrypted IPA and a signing certificate |
 
