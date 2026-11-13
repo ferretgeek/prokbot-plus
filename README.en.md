@@ -51,7 +51,7 @@ Plus adds on top of that: **Windows and Android clients**; **two more model APIs
 | Windows client | Windows 10 / 11, x64 | **New in this version.** Portable version and installer, no administrator rights needed |
 | Mac client | Apple Silicon, Grok Bot 0.71.2 | From upstream |
 | iOS client | Grok Bot 1.16.0 (23152) | From upstream. You need your own decrypted IPA and signing certificate |
-| Android client | Android 9 or later | **New in this version.** An APK built from the official desktop interface and this project's shell, on a Windows, Mac or Linux computer |
+| Android client | Android 9 or later | Independently developed, unofficial shell. The `v1.0.0` release has no Android tools. Build the APK on Windows, Mac or Linux from the pinned Windows installer, using the repository source or a later release that explicitly includes the Android tools. |
 | Linux desktop | Not supported | There is no official client for it |
 
 ## What's new in this version

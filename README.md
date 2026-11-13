@@ -50,7 +50,7 @@ Plus 在此基础上补了这些：**Windows 和 Android 客户端**；**Anthrop
 | Windows 客户端 | Windows 10 / 11，x64 | **本版本新增。** 便携版和安装包，不需要管理员权限 |
 | Mac 客户端 | Apple Silicon，Grok Bot 0.71.2 | 来自上游 |
 | iOS 客户端 | Grok Bot 1.16.0（23152） | 来自上游。需要自备砸壳 IPA 和签名证书 |
-| Android 客户端 | Android 9 及以上 | **本版本新增。** 用官方桌面版的界面加本项目的外壳生成 APK，在 Windows、Mac 或 Linux 电脑上生成 |
+| Android 客户端 | Android 9 及以上 | 自开发非官方外壳，`v1.0.0` 发布包不含 Android 工具。使用仓库源码或明确包含 Android 工具的后续发布包，在 Windows、Mac 或 Linux 上从固定的 Windows 原包生成 APK。 |
 | Linux 桌面 | 不支持 | 官方没有对应的客户端 |
 
 ## 这个版本新增了什么
