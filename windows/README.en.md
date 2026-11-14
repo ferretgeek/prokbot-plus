@@ -8,6 +8,8 @@ The complete deployment steps are in the [AI deployment guide](../docs/AI-INSTAL
 
 ## Use
 
+On November 14, 2026, the official Grok Bot Windows x64 stable channel reported **1.1.0**, but the patcher accepts only the unmodified [Windows x64 **0.71.2** input](patchers/desktop/supported.json). In testing, the patcher rejected the official 1.1.0 installer during input verification, before pairing. No chat was attempted. **ProkBot Plus v1.1.0** is the client tools release number, not the supported Grok Bot version. You can use a separately downloaded 0.71.2 installer without running it or downgrading your installed official app.
+
 From the repository root:
 
 ```powershell
@@ -42,7 +44,7 @@ The new files go to a sibling named `<old folder> (side-by-side)`. The setup doe
 ## Notes
 
 - The original package is extracted with the `tar.exe` included in Windows 11; on Windows 10 install 7-Zip (or set `GROKBOT_7Z` to `7z.exe`).
-- The patch updates the ASAR integrity value embedded in `Grok Bot.exe` and removes the official signature that the change invalidates. If SmartScreen appears on first run, choose Run anyway; computers with Smart App Control enabled block unsigned programs.
+- Before using the official installer as input, verify that its signature is valid and identifies the expected publisher. The patch updates the ASAR integrity value only in the output copy of `Grok Bot.exe` and removes the invalidated signature. That copy and the locally generated `GrokBotLocal-0.71.2-x64-Setup.exe` are unsigned. If SmartScreen warns, or if Smart App Control or your organization's policy blocks the file, stop. Do not bypass the warning or disable protection.
 - Supported: conversations, notifications (notification-area icon, Start menu shortcut), attachments, Tailcat, local command execution and Codex delegation. The original graphical computer-use helper exists only for macOS, so the Windows client does not offer local mouse and keyboard control yet.
 - Local commands use the original executor. When the client is started normally it runs Windows PowerShell with the original UTF-8 output option turned on, so non-ASCII output is not garbled. Start the client from the Start menu or the desktop shortcut: when it is started from Git Bash, the original executor switches to Git Bash, which rewrites arguments such as `cmd /c`.
 - Codex delegation uses the local `codex.exe` (including npm installs) with this computer's Codex sign-in and model.

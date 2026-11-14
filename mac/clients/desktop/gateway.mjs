@@ -12,11 +12,13 @@ export function createGateway(config, onUnauthorized, onConnected, onStateChange
   const unauthorized = () => { if (!lifetime.signal.aborted) { close(); onUnauthorized?.(); } };
   async function request(endpoint, args, signal, method = 'POST') {
     if (lifetime.signal.aborted) throw new Error(grokText('已退出连接，请重新连接。', 'Disconnected. Connect again.'));
+    const active = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
     const response = await fetch(`${config.server}${endpoint}`, {
       method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${config.token}` },
       ...(method === 'GET' ? {} : { body: JSON.stringify(args) }),
-      signal: signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal, redirect: 'error',
+      signal: active, redirect: 'error',
     });
+    active.throwIfAborted(); // A late 401 for a closed port is not a revocation of its live siblings.
     if (process.env.GROKBOT_LOCAL_DEBUG_PORT) console.log('[gateway]', endpoint, response.status);
     if (!response.ok) {
       if (response.status === 401) unauthorized();
@@ -47,17 +49,27 @@ export function createGateway(config, onUnauthorized, onConnected, onStateChange
       if (frame.kind === 'lifecycle' && frame.phase === 'hello') {
         // The legacy hello can omit a version. Never acknowledge a different explicit wire version.
         if (Object.hasOwn(frame, 'protocolVersion') && frame.protocolVersion !== COORDINATOR_VERSION) { dispose(); return; }
+        // A second ready is a protocol error for a live renderer session.
+        if (subscribed) return;
+        subscribed = true;
         send({ kind: 'lifecycle', phase: 'ready', protocolVersion: COORDINATOR_VERSION });
-        if (!subscribed) {
-          subscribed = true;
-          void subscribe(config, '/events', ({ data }) => {
-            if (data.channel) emit(data.channel, data.payload);
-          }, controller.signal, {
-            onConnected: () => { streams.add(controller); updateState('online'); emit('transport-connected', { generation: ++generation }); onConnected?.(); },
-            onDisconnected: () => { streams.delete(controller); if (!streams.size) updateState('reconnecting'); emit('transport-down', { generation, reason: 'stream-error', cause: null }); },
-            onUnauthorized: unauthorized,
-          });
-        }
+        void subscribe(config, '/events', ({ data }) => {
+          if (data.channel) emit(data.channel, data.payload);
+        }, controller.signal, {
+          onConnected: () => {
+            streams.add(controller); updateState('online');
+            emit('coordinator-transport-state', { state: 'connected' });
+            emit('transport-connected', { generation: ++generation }); onConnected?.();
+          },
+          onDisconnected: () => {
+            streams.delete(controller); if (!streams.size) updateState('reconnecting');
+            emit('coordinator-transport-state', { state: 'down' });
+            emit('transport-down', { generation, reason: 'stream-error', cause: null });
+          },
+          onUnauthorized: unauthorized,
+        });
+      } else if (frame.kind === 'lifecycle' && frame.phase === 'shutdown') {
+        dispose();
       } else if (frame.kind === 'cancel') {
         pending.get(frame.requestId)?.abort();
       } else if (frame.kind === 'request' && !pending.has(frame.requestId)) {

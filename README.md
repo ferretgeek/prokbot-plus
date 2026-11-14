@@ -8,7 +8,8 @@ Windows · macOS · iOS 客户端补丁 ｜ [自开发 Android App（非官方�
 
 <p>
 <!-- client-badges:start -->
-  <a href="#client-versions"><img alt="Windows 官方 1.1.0 x64" src="https://img.shields.io/badge/Windows%20%E5%AE%98%E6%96%B9-1.1.0%20x64-0078D4?logo=windows&logoColor=white"></a>
+  <a href="#client-versions"><img alt="Windows 官方 1.1.0 x64 (与此补丁不兼容)" src="https://img.shields.io/badge/Windows%20%E5%AE%98%E6%96%B9-1.1.0%20x64%20(%E4%B8%8E%E6%AD%A4%E8%A1%A5%E4%B8%81%E4%B8%8D%E5%85%BC%E5%AE%B9)-0078D4?logo=windows&logoColor=white"></a>
+  <a href="#client-versions"><img alt="Windows 补丁仅接受 0.71.2 x64" src="https://img.shields.io/badge/Windows%20%E8%A1%A5%E4%B8%81%E4%BB%85%E6%8E%A5%E5%8F%97-0.71.2%20x64-237E55?logo=windows&logoColor=white"></a>
   <a href="#client-versions"><img alt="macOS 官方 1.1.0 ARM64" src="https://img.shields.io/badge/macOS%20%E5%AE%98%E6%96%B9-1.1.0%20ARM64-111111?logo=apple&logoColor=white"></a>
   <a href="#client-versions"><img alt="iOS 官方 1.25.0" src="https://img.shields.io/badge/iOS%20%E5%AE%98%E6%96%B9-1.25.0-111111?logo=apple&logoColor=white"></a>
   <a href="#client-versions"><img alt="Android shell 1.1.0" src="https://img.shields.io/badge/%E8%87%AA%E5%BC%80%E5%8F%91%20Android-1.1.0-237E55?logo=android&logoColor=white"></a>
@@ -28,7 +29,7 @@ Windows · macOS · iOS 客户端补丁 ｜ [自开发 Android App（非官方�
 
 | 平台 | 官方最新 | 本项目接受的原包 / 外壳 |
 | --- | --- | --- |
-| Windows x64 | [1.1.0](https://api2.cursor.sh/updates/api/download/stable/win32-x64-user/sand) | 0.71.2 |
+| Windows x64 | [1.1.0](https://api2.cursor.sh/updates/api/download/stable/win32-x64-user/sand)（补丁在输入校验时拒绝了该安装包；未测试原生客户端聊天） | 0.71.2 |
 | macOS ARM64 | [1.1.0](https://api2.cursor.sh/updates/api/download/stable/darwin-arm64/sand) | 0.71.2；无 Mac 真机测试 |
 | iOS | [1.25.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.16.0 (23152)；无 iPhone / iPad 真机测试 |
 | Android 9+（自开发，非官方） | 不使用官方 Android APK | 外壳 **1.1.0**（构建 10100），界面来自 Windows **0.71.2** |

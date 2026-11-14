@@ -18,6 +18,10 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-12)
 --------------------------------------------------------------
 
 1. Windows x64 client (new)
+   - On 2026-11-14, added source-bound Windows 1.1.0 protocol checks and
+     explicit incompatible-input diagnostics, corrected desktop/Android
+     connection lifecycle handling and preserved desktop settings on save
+     failures. No official code or new supported client is included.
    - windows/: patcher, Windows recipes ported from the macOS recipes,
      per-user installer source, prebuilt grokbot-tailcat.exe and installer
      stub, tests.

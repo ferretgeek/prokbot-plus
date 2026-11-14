@@ -14,9 +14,9 @@ const official = {
 };
 
 export async function readVersions() {
-  const [snap, win, mac, ios, android, host] = await Promise.all(['ci/official-snapshot.json',
+  const [snap, win, mac, ios, android, host, checkedWindows] = await Promise.all(['ci/official-snapshot.json',
     'windows/patchers/desktop/supported.json', 'mac/patchers/desktop/supported.json', 'ios/recipes/ios/manifest.json',
-    'android/patchers/supported.json', 'host/recipes/host/manifest.json'].map(json));
+    'android/patchers/supported.json', 'host/recipes/host/manifest.json', 'windows/patchers/desktop/known-unsupported.json'].map(json));
   assert.match(snap.checkedOn, /^\d{4}-\d{2}-\d{2}$/);
   assert.equal(snap.ios.trackId, 6794501026); assert.equal(snap.ios.store, 'us');
   for (const channel of [snap.windows, snap.mac]) assert.match(channel.build, /^[a-f0-9]{40}$/);
@@ -27,7 +27,7 @@ export async function readVersions() {
   assert.match(host.archive.version, /^[a-f0-9]{7,40}$/);
   const box = /^grokbot-box-input:([a-f0-9]{7,40})$/.exec(host.box.localTag);
   assert.ok(box); assert.equal(host.box.platform, 'linux/amd64');
-  return { snap, win, mac, ios, android, host: host.archive.version, box: box[1] };
+  return { snap, win, mac, ios, android, checkedWindows, host: host.archive.version, box: box[1] };
 }
 
 function block(text, name, body) {
@@ -39,6 +39,19 @@ function block(text, name, body) {
   return text.slice(0, start) + '\n' + body + '\n' + text.slice(end);
 }
 
+function windowsNotes(observed, pin, checked, zh) {
+  if (observed.version === pin.version && observed.observedArchiveSha256 === pin.archive.sha256) return { badge: '', table: '' };
+  // windows/README.md and windows/tools/compat/1.1.0/README.md document this installer and patch pin.
+  const researched = pin.version === checked.testedAgainst.version && pin.archive?.sha256 === checked.testedAgainst.sha256
+    && ['version', 'build', 'observedArchiveSha256', 'observedAsarSha256'].every(field => observed[field] === checked[field]);
+  if (researched) return {
+    badge: zh ? '与此补丁不兼容' : 'incompatible with this patch',
+    table: zh ? '补丁在输入校验时拒绝了该安装包；未测试原生客户端聊天' : 'installer rejected during input verification; no native chat test',
+  };
+  const unsupported = zh ? '此补丁不支持' : 'not supported by this patch';
+  return { badge: unsupported, table: unsupported };
+}
+
 export function render(text, lang, data) {
   assert.ok(['zh','en'].includes(lang));
   const { snap, win, mac, ios, android, host, box } = data;
@@ -46,7 +59,12 @@ export function render(text, lang, data) {
   function badge(name, value, description, logo, color) {
     return `  <a href="#client-versions"><img alt="${description}" src="https://img.shields.io/badge/${encodeURIComponent(name)}-${encodeURIComponent(value)}-${color}?logo=${logo}&logoColor=white"></a>`;
   }
-  const badges = [badge(`Windows ${label}`,`${snap.windows.version} x64`,`Windows ${label} ${snap.windows.version} x64`,'windows','0078D4'),
+  const windowsBadge = (name, value, color) => badge(name,value,`${name} ${value}`,'windows',color);
+  const notes = windowsNotes(snap.windows, win, data.checkedWindows, zh);
+  const windowsOfficial = `${snap.windows.version} x64${notes.badge ? ` (${notes.badge})` : ''}`;
+  const windowsTableNote = notes.table ? (zh ? `（${notes.table}）` : ` (${notes.table})`) : '';
+  const badges = [windowsBadge(`Windows ${label}`,windowsOfficial,'0078D4'),
+    windowsBadge(zh ? 'Windows 补丁仅接受' : 'Windows patch accepts only',`${win.version} x64`,'237E55'),
     badge(`macOS ${label}`,`${snap.mac.version} ARM64`,`macOS ${label} ${snap.mac.version} ARM64`,'apple','111111'),
     badge(`iOS ${label}`,snap.ios.version,`iOS ${label} ${snap.ios.version}`,'apple','111111'),
     badge(zh ? '自开发 Android' : 'Unofficial Android',android.shell.versionName,`Android shell ${android.shell.versionName}`,'android','237E55')].join('\n');
@@ -54,7 +72,7 @@ export function render(text, lang, data) {
     `**Which version should I install?** Official channels checked on ${snap.checkedOn}. Use the input in the right column. A newer vendor release is not a Plus compatibility claim.`, '',
     zh ? '| 平台 | 官方最新 | 本项目接受的原包 / 外壳 |' : '| Platform | Latest official release | Input accepted by Plus / shell version |',
     '| --- | --- | --- |',
-    `| Windows x64 | [${snap.windows.version}](${official.win}) | ${win.version} |`,
+    `| Windows x64 | [${snap.windows.version}](${official.win})${windowsTableNote} | ${win.version} |`,
     `| macOS ARM64 | [${snap.mac.version}](${official.mac}) | ${mac.version}${zh ? '；无 Mac 真机测试' : '; no Mac hardware test'} |`,
     `| iOS | [${snap.ios.version}](${official.ios}) | ${ios.version} (${ios.build})${zh ? '；无 iPhone / iPad 真机测试' : '; no iPhone or iPad hardware test'} |`,
     zh ? `| Android 9+（自开发，非官方） | 不使用官方 Android APK | 外壳 **${android.shell.versionName}**（构建 ${android.shell.versionCode}），界面来自 Windows **${android.desktopVersion}** |` :

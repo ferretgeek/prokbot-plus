@@ -55,4 +55,12 @@ node --expose-internals windows/tools/compat/1.1.0/verify.mjs <coordinator-verif
 
 No full rehash, unpack, codesign/Gatekeeper check, signed-app launch, Host contact or native acceptance. Production pins and manifests remain untouched.
 
-**Next gate:** main would need evidence of a sanctioned integration point on an unchanged signature-verified client, the actual wire sender/receiver contract, and approval for native tests on both platforms. In its absence, keep official-client migration blocked; the research recipes are not an installer or a workaround.
+## Windows protocol follow-up
+
+The signed input was checked again against the Windows stable feed. The `1.1.0` renderer sends coordinator hello **3** and requires ready **3** once per live port. It consumes `coordinator-transport-state` with `state: connected` or `down`; a raw SSE transport event is not a substitute. The project gateway now reports that real connection state, closes just the requesting port on shutdown and discards late revocation responses after cancellation. Both 0.71.2 and 1.1.0 have this renderer state listener. These are gateway changes, not a working 1.1.0 client.
+
+The [local layout contract](contract.mjs) separately verifies the source declarations, peer response shapes and layout callers. Its research adapter implements two persistence methods for one account-independent layout key; it does not register Electron handlers or grant access to account data. To include fixed-input checks in the normal Windows test suite, set `PROKBOT_WINDOWS_110_ASAR` to the verified stock Windows archive. Do not commit that file.
+
+With that variable set, `node --expose-internals windows/tools/compat/1.1.0/coordinator-replay.mjs` prints the reproducible [renderer replay](coordinator-replay.mjs). It checks three method shapes (roster, transcript, send), lifecycle frames and malformed responses using synthetic data. It never contacts a Host, loads the full renderer, or establishes native pairing.
+
+**Still blocked:** the [vendor deployment model](https://docs.x.ai/grok-bot/security#hosting) and [network documentation](https://docs.x.ai/grok-bot/proxies) describe vendor-hosted chat, not a selectable conversation server. No public integration that preserves the vendor signature and integrity checks was found. The old packaging path modifies the executable. A fresh native Windows session paired to the selected Host, real two-turn chat, stream/cancel, attachments, reconnect and restart with history preserved are still required for a supported pin. The research adapters do not constitute a launcher. No Mac native acceptance was performed.

@@ -8,7 +8,8 @@ Windows, macOS and iOS patches | [Independently developed Android app (unofficia
 
 <p>
 <!-- client-badges:start -->
-  <a href="#client-versions"><img alt="Windows official 1.1.0 x64" src="https://img.shields.io/badge/Windows%20official-1.1.0%20x64-0078D4?logo=windows&logoColor=white"></a>
+  <a href="#client-versions"><img alt="Windows official 1.1.0 x64 (incompatible with this patch)" src="https://img.shields.io/badge/Windows%20official-1.1.0%20x64%20(incompatible%20with%20this%20patch)-0078D4?logo=windows&logoColor=white"></a>
+  <a href="#client-versions"><img alt="Windows patch accepts only 0.71.2 x64" src="https://img.shields.io/badge/Windows%20patch%20accepts%20only-0.71.2%20x64-237E55?logo=windows&logoColor=white"></a>
   <a href="#client-versions"><img alt="macOS official 1.1.0 ARM64" src="https://img.shields.io/badge/macOS%20official-1.1.0%20ARM64-111111?logo=apple&logoColor=white"></a>
   <a href="#client-versions"><img alt="iOS official 1.25.0" src="https://img.shields.io/badge/iOS%20official-1.25.0-111111?logo=apple&logoColor=white"></a>
   <a href="#client-versions"><img alt="Android shell 1.1.0" src="https://img.shields.io/badge/Unofficial%20Android-1.1.0-237E55?logo=android&logoColor=white"></a>
@@ -28,7 +29,7 @@ Windows, macOS and iOS patches | [Independently developed Android app (unofficia
 
 | Platform | Latest official release | Input accepted by Plus / shell version |
 | --- | --- | --- |
-| Windows x64 | [1.1.0](https://api2.cursor.sh/updates/api/download/stable/win32-x64-user/sand) | 0.71.2 |
+| Windows x64 | [1.1.0](https://api2.cursor.sh/updates/api/download/stable/win32-x64-user/sand) (installer rejected during input verification; no native chat test) | 0.71.2 |
 | macOS ARM64 | [1.1.0](https://api2.cursor.sh/updates/api/download/stable/darwin-arm64/sand) | 0.71.2; no Mac hardware test |
 | iOS | [1.25.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.16.0 (23152); no iPhone or iPad hardware test |
 | Android 9+ (unofficial) | Does not use the official Android APK | Shell **1.1.0** (build 10100), renderer from Windows **0.71.2** |

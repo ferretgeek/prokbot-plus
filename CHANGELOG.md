@@ -4,11 +4,16 @@
 
 Versions start at ProkBot Plus 1.0.0. Upstream ProkBot releases are listed at the end for reference.
 
+## Windows 兼容性修复 / Windows compatibility fixes (main, 2026-11-14)
+
+- 已验证：Windows 官方 1.1.0 原包与已发布的 0.71.2 补丁不兼容。没有用新版原生客户端配对或聊天。首页和补丁工具区分「已知不兼容」与「来源不明」，不从文件名猜版本。 Verified: the signed Windows 1.1.0 input is incompatible with the released 0.71.2 patch. Native pairing and chat on 1.1.0 were not tested. The homepage and patcher distinguish a known incompatible input from an unknown file without trusting its name.
+- 修复桌面连接状态、重复握手及关闭窗口后的请求；自开发 Android 网页桥接同步修复。桌面设置按序保存、失败保留原文件，「关于」页读取实际应用版本。补丁输入未变。 Fixed desktop connection-state notifications, duplicate ready replies and requests surviving window shutdown; the unofficial Android bridge has the same fixes. Desktop preferences are saved in order without replacing a damaged profile, and About reports the running app version. Production pins are unchanged.
+
 ## ProkBot Plus 1.1.0 (2026-11-14)
 
-客户端工具更新：不必重装或升级现有 Host，不改服务器的 `.env`、项目名或数据卷。Windows 与 Mac 的固定原包仍是 0.71.2；第三方桌面 1.1.0 的文件、校验和与部分界面已检查，未通过新版自托管配对和聊天。Android 外壳 1.1.0（10100）与固定 Windows 界面 0.71.2 分开编号；已有 Android 安装须使用原签名密钥，不要先卸载。iOS 固定 1.16.0（23152），没有 Mac、iPhone 或 iPad 真机结果。不承诺低配容量或服务器升级无损。
+客户端工具更新：不必重装或升级现有 Host，不改服务器的 `.env`、项目名或数据卷。Windows 与 Mac 的固定原包仍是 0.71.2；旧补丁与官方桌面 1.1.0 原包不兼容。已核对原包、摘要和部分界面；未测试新版原生客户端配对或聊天。Android 外壳 1.1.0（10100）与固定 Windows 界面 0.71.2 分开编号；已有 Android 安装须使用原签名密钥，不要先卸载。iOS 固定 1.16.0（23152），没有 Mac、iPhone 或 iPad 真机结果。不承诺低配容量或服务器升级无损。
 
-Client tools update: existing users do not need to reinstall or upgrade their Host, change its `.env`, project name or volumes. Windows and Mac still require the 0.71.2 originals; the vendor's desktop 1.1.0 files and parts of the UI were inspected, not accepted for self-hosted pairing or chat. Android shell 1.1.0 (10100) carries the pinned 0.71.2 Windows renderer. Use the existing Android signing key; do not uninstall first. iOS remains pinned to 1.16.0 (23152). No Mac, iPhone or iPad hardware test, capacity rating or lossless server upgrade is claimed.
+Client tools update: existing users do not need to reinstall or upgrade their Host, change its `.env`, project name or volumes. Windows and Mac still require the 0.71.2 originals; the old patches are incompatible with the vendor's 1.1.0 desktop inputs. The files and parts of the UI were checked; native pairing and chat were not tested. Android shell 1.1.0 (10100) carries the pinned 0.71.2 Windows renderer. Use the existing Android signing key; do not uninstall first. iOS remains pinned to 1.16.0 (23152). No Mac, iPhone or iPad hardware test, capacity rating or lossless server upgrade is claimed.
 
 - **原包和外壳验证 / Input verification**：桌面与 Android 的 `--verify-only` 回放固定补丁；Android 还核对实际 APK 清单、入口页和手机版界面补丁。Mac 对显式 DMG 校验整包；原始 App 验签只在 macOS 完成。Desktop and Android verification replays pinned recipes; Android also checks the compiled APK manifest, entry point and mobile changes. The Mac tool verifies supplied DMG bytes and requires a valid original app signature on macOS.
 - **配对和重连 / Pairing and reconnect**：换 Host 需要重新配对；旧连接取消或重连时不再把非事件流响应当作新消息。Changing Host requires fresh pairing. Cancelling or reconnecting no longer treats a non-event response as a stream of messages.

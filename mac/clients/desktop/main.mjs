@@ -7,6 +7,7 @@ import { credentialStore, credentialUnavailableText, finishPairingWindow, pair, 
 import { APP_USER_MODEL_ID, canRegisterDesktopIntegration, connectWindowChrome, createTray, ensureStartMenuShortcut, initialLink, isWindows,
   windowChrome, windowHandlers } from './platform.mjs';
 import { createGateway } from './gateway.mjs';
+import { createClientPersistence } from './client-persistence.mjs';
 import { createAttachmentHandlers, createAttachmentMediaResolver } from './attachments.mjs';
 import { createAttachmentUploads } from './attachment-uploads.mjs';
 import { createNotifications, agentFromLink } from './notifications.mjs';
@@ -48,6 +49,7 @@ const transportBinary = path.join(process.resourcesPath, isWindows ? 'grokbot-ta
 let methodCall, accountProfile, localExec, browserProviders, voiceAvailability, deepLinksReady = false, pendingAgent = null;
 const ports = new Set();
 const store = credentialStore(profile, safeStorage);
+const persistence = createClientPersistence(profile);
 if (!app.requestSingleInstanceLock()) app.exit(0);
 app.on('second-instance', (_event, argv) => {
   const link = argv.find(value => value.startsWith('grokbot-local:'));
@@ -182,6 +184,7 @@ async function showWorkspace() {
   const uploads = createAttachmentUploads({ profile, command: gateway.command,
     onProgress: progress => { if (!win.isDestroyed()) win.webContents.send('dune-rpc:main:e:attachment-commit-progress', progress); } });
   methodCall = await createLocalServices(profile, win, {
+    appVersion: app.getVersion(), persistence,
     command: gateway.command, request: gateway.request, connection: showConnection, openExternal,
     attachmentHandlers: { ...uploads.handlers, ...createAttachmentHandlers({
       command: gateway.command,

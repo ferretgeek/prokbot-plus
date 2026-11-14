@@ -15,6 +15,7 @@ import { extractNotificationPolicy } from '../../../mac/patchers/desktop/extract
 import { acquireDesktopSource } from '../../../mac/patchers/desktop/download-original.mjs';
 import { applicationIcon, replaceAsarIntegrity, stripAuthenticode } from './pe.mjs';
 import { unpackOriginal } from './original.mjs';
+import { withInstallerDiagnostic } from './input-diagnostic.mjs';
 export { carveSevenZip } from './original.mjs';
 import { writeZip } from './zip.mjs';
 import { checkOutputLocation, publishBuild, writeSetup } from './output.mjs';
@@ -58,9 +59,10 @@ function unpackedFiles(header, prefix = '') {
 const temporary = await mkdtemp(path.join(os.tmpdir(), 'grokbot-windows-patch-'));
 let stage, createdRoot;
 async function build() {
-  const source = await acquireDesktopSource({ source: arg('--source'), cacheDirectory: path.join(windowsRoot, '.cache'), supported,
+  const explicitSource = arg('--source');
+  const source = await acquireDesktopSource({ source: explicitSource, cacheDirectory: path.join(windowsRoot, '.cache'), supported,
     onDownload: ({ version }) => console.error(`正在下载 Grok Bot ${version} Windows x64…`) });
-  const app = await unpackOriginal(source, temporary, supported);
+  const app = await withInstallerDiagnostic(unpackOriginal(source, temporary, supported), explicitSource && source, supported);
   const originalExe = path.join(app, EXE), originalAsar = path.join(app, 'resources/app.asar');
   const [exeSha256, asarSha256] = await Promise.all([hashFile(originalExe), hashFile(originalAsar)]);
   if (exeSha256 !== supported.exeSha256 || asarSha256 !== supported.asarSha256)

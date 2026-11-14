@@ -2,8 +2,7 @@ import { grokText } from './i18n.mjs';
 import { createConnectorHandlers } from './connectors.mjs';
 import { externalHttpUrl } from './external-url.mjs';
 import { createLinkPreview } from './link-preview.mjs';
-import { readFile, writeFile } from "node:fs/promises";
-import path from "node:path";
+import { createClientPersistence } from './client-persistence.mjs';
 export const auth = {
   kind: "logged-in",
   authId: "grokbot-local-workspace",
@@ -57,13 +56,7 @@ export function probeLocalMethod(trusted, declared, call, method) {
   return { ok: Boolean(trusted), value: Boolean(trusted && declared.has(method) && call?.supports(method)) };
 }
 
-export async function createLocalServices(profile, window, { command, request, attachment, attachmentHandlers = {}, connection, disconnect, notifications, pickAvatarFile, openExternal, settings = {} }) {
-  const storePath = path.join(profile, "local-client-persistence.json");
-  let store = {};
-  try {
-    store = JSON.parse(await readFile(storePath, "utf8"));
-  } catch {}
-  const persist = () => writeFile(storePath, JSON.stringify(store), "utf8");
+export async function createLocalServices(profile, window, { command, request, attachment, attachmentHandlers = {}, connection, disconnect, notifications, pickAvatarFile, openExternal, settings = {}, appVersion, persistence = createClientPersistence(profile) }) {
   const linkPreview = createLinkPreview({ profile });
   const known = {
     getLinkMetadata: args => linkPreview.getMetadata(args),
@@ -145,29 +138,7 @@ export async function createLocalServices(profile, window, { command, request, a
     closeWindow: () => window.close(),
     toggleMaximizeWindow: () =>
       window.isMaximized() ? window.unmaximize() : window.maximize(),
-    readClientPersistence: ({ key }) => store[key] ?? null,
-    readManyClientPersistence: ({ include, exclude = [] }) =>
-      Object.fromEntries(Object.entries(store).filter(([key]) => {
-        const longest = prefixes => prefixes.reduce((length, prefix) =>
-          key.startsWith(prefix) ? Math.max(length, prefix.length) : length, -1);
-        const included = longest(include);
-        return included >= 0 && included >= longest(exclude);
-      })),
-    writeClientPersistence: async ({ key, value }) => {
-      store[key] = value;
-      await persist();
-    },
-    removeClientPersistence: async ({ key }) => {
-      delete store[key];
-      await persist();
-    },
-    listClientPersistenceKeys: ({ prefix }) =>
-      Object.keys(store).filter((x) => x.startsWith(prefix)),
-    hasMigratedClientPersistence: () => true,
-    migrateClientPersistence: async ({ entries }) => {
-      for (const e of entries) store[e.key] = e.value;
-      await persist();
-    },
+    ...persistence,
     getEgressTunnelEnabled: () => false,
     getWebauthnProxyEnabled: () => true,
     getBotColorInChatEnabled: () => false,
@@ -176,7 +147,7 @@ export async function createLocalServices(profile, window, { command, request, a
     getHardwareAcceleration: () => true,
     getUpdateStatus: () => ({
       state: { type: "disabled", reason: "disabled-by-env" },
-      currentVersion: "0.71.2",
+      currentVersion: appVersion,
       currentTrack: "stable",
       availableTracks: ["stable"],
       isTrackManagedByPolicy: true,

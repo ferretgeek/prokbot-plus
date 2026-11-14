@@ -392,7 +392,9 @@ iOS 注入库的网络层另有一项测试，要在装了 Xcode 命令行工具
 
 1.1.0 实物：Windows 完整 EXE SHA-256 `01ccb10f2144ea0eb787042c54fc4b8ca2c6f43eccb7dabe5fe5eb86fa5ed044`，Anysphere Authenticode 有效；Mac 完整 DMG SHA-256 `80b718f4ba9e75d9b240675591fd5f024ecc8aa1913180c50d075fdb5a330d78`，只读解包核对内部版本与 Bundle ID，未在 Mac 验签或启动。两端各 16 个旧补丁输入：10 个路径缺失，另 6 个内容变化。完整摘要和 ASAR 摘要在仓库 `ci/official-snapshot.json`；这是观察记录，不是构建白名单。
 
-升级原版的顺序：先运行 `node ci/check-inputs.mjs` 查看当前清单，再更新对应平台的 `supported.json` / `manifest.json` 和 recipe。重新运行检查与四套测试，用自己下载的固定输入构建，在客户端验证聊天和工具；不发布原版程序。改 Host 还需在目标架构重建镜像。下面的表只列修改入口，不另设第二份版本表。
+Windows 1.1.0 的[消息协议复核](../windows/tools/compat/1.1.0/README.md#windows-protocol-follow-up)确认，界面和 Plus 都使用第 3 版握手，但只有真实事件流接通后才能通知界面「在线」。共享桌面代码已修复断线通知、退出时遗留的请求，以及保存失败后旧设置被覆盖的问题。这是本项目代码的修复。Windows 1.1.0 官方安装包仍被补丁拒绝，新版原生客户端没有进行配对或聊天。官方的[私网接入](https://docs.x.ai/grok-bot/private-networks)也不是更换聊天服务器的入口。
+
+升级原版的顺序：先运行 `node ci/check-inputs.mjs` 查看当前清单。为候选原包单独制作 recipe，保持发布版固定输入不变；验证原包签名、消息格式、配对、两轮聊天、附件、重连及重启后的旧数据，成功后才更新 `supported.json` / `manifest.json`。提交前重新跑固定输入检查与四套测试；不发布原版程序。改 Host 还需在目标架构重建镜像。
 
 | 需求 | 位置 |
 | --- | --- |

@@ -5,6 +5,7 @@ import { grokText } from './desktop/i18n.mjs';
 import { combineSignals, timeout } from './native.js';
 
 const FIRST_RETRY_MS = 500, MAX_RETRY_MS = 10000, STABLE_STREAM_MS = 30000;
+const COORDINATOR_VERSION = 3;
 
 export async function readSse(body, consume) {
   const reader = body.getReader();
@@ -58,7 +59,9 @@ export async function subscribe(endpoint, consume, signal, options = {}) {
       clearTimeout(timer);
       if (request.signal.aborted) throw request.signal.reason;
       if (response.status === 401) { options.onUnauthorized?.(); return; }
-      if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+      if (response.status !== 200 || !response.body) throw new Error(`HTTP ${response.status}`);
+      if (options.requireEventStream && response.headers.get('content-type')?.split(';', 1)[0].trim().toLowerCase() !== 'text/event-stream')
+        throw new Error('Expected a text/event-stream response');
       openedAt = performance.now();
       options.onConnected?.();
       await readSse(response.body, async frame => {
@@ -100,6 +103,7 @@ export function createGateway({ onUnauthorized, onConnected, onStateChanged } = 
         ...(method === 'GET' ? {} : { body: JSON.stringify(args ?? {}) }),
         signal: combined.signal,
       });
+      if (combined.signal.aborted) throw combined.signal.reason;
       if (response.status === 401) onUnauthorized?.();
       if (!response.ok) {
         const value = await response.json().catch(() => null);
@@ -131,17 +135,31 @@ export function createGateway({ onUnauthorized, onConnected, onStateChanged } = 
     const receive = async ({ data: frame }) => {
       if (!frame || controller.signal.aborted) return;
       if (frame.kind === 'lifecycle' && frame.phase === 'hello') {
-        send({ kind: 'lifecycle', phase: 'ready', protocolVersion: 3 });
-        if (!subscribed) {
-          subscribed = true;
-          void subscribe('/events', ({ data }) => {
-            if (data.channel) emit(data.channel, data.payload);
-          }, controller.signal, {
-            onConnected: () => { streams.add(controller); updateState('online'); emit('transport-connected', { generation: ++generation }); onConnected?.(); },
-            onDisconnected: () => { streams.delete(controller); if (!streams.size) updateState('reconnecting'); emit('transport-down', { generation, reason: 'stream-error', cause: null }); },
-            onUnauthorized,
-          });
+        // Legacy renderers omit the version; an explicit mismatch tears down even a live port.
+        if (Object.prototype.hasOwnProperty.call(frame, 'protocolVersion') && frame.protocolVersion !== COORDINATOR_VERSION) {
+          dispose(); return;
         }
+        if (subscribed) return;
+        subscribed = true;
+        send({ kind: 'lifecycle', phase: 'ready', protocolVersion: COORDINATOR_VERSION });
+        void subscribe('/events', ({ data }) => {
+          if (data.channel) emit(data.channel, data.payload);
+        }, controller.signal, {
+          requireEventStream: true,
+          onConnected: () => {
+            streams.add(controller); updateState('online');
+            emit('coordinator-transport-state', { state: 'connected' });
+            emit('transport-connected', { generation: ++generation }); onConnected?.();
+          },
+          onDisconnected: () => {
+            streams.delete(controller); if (!streams.size) updateState('reconnecting');
+            emit('coordinator-transport-state', { state: 'down' });
+            emit('transport-down', { generation, reason: 'stream-error', cause: null });
+          },
+          onUnauthorized,
+        });
+      } else if (frame.kind === 'lifecycle' && frame.phase === 'shutdown') {
+        dispose();
       } else if (frame.kind === 'cancel') {
         pending.get(frame.requestId)?.abort();
       } else if (frame.kind === 'request' && !pending.has(frame.requestId)) {
@@ -168,16 +186,17 @@ export function createGateway({ onUnauthorized, onConnected, onStateChanged } = 
       controller.abort(); streams.delete(controller);
       for (const call of pending.values()) call.abort();
       pending.clear();
-      lifetime.signal.removeEventListener('abort', cleanup);
+      lifetime.signal.removeEventListener('abort', dispose);
       port.removeEventListener('message', listener);
       port.removeEventListener('close', cleanup);
       if (!streams.size && !lifetime.signal.aborted) updateState('reconnecting');
     };
-    lifetime.signal.addEventListener('abort', cleanup, { once: true });
+    const dispose = () => { if (!controller.signal.aborted) { cleanup(); port.close(); } };
+    lifetime.signal.addEventListener('abort', dispose, { once: true });
     port.addEventListener('message', listener);
     port.addEventListener('close', cleanup);
     port.start();
-    return () => { cleanup(); port.close(); };
+    return dispose;
   }
 
   return { command, request, attach, getState: () => state,

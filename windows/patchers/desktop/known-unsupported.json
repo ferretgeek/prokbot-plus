@@ -1,0 +1,8 @@
+{
+  "version": "1.1.0",
+  "build": "83d46d618ef4c12afa17edd8e3c29d6caf046d17",
+  "observedAsarSha256": "ae8f0a14fe65f421881f96fdcb66aaaaed8b28806f79d5239dbefec9ef2ea972",
+  "testedAgainst": { "version": "0.71.2", "sha256": "be14f2f2067d86334360f5d4f7c94515886ef795df25645aa883d3983c4ab4aa" },
+  "archiveBytes": 127403656,
+  "observedArchiveSha256": "01ccb10f2144ea0eb787042c54fc4b8ca2c6f43eccb7dabe5fe5eb86fa5ed044"
+}

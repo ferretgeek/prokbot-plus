@@ -27,7 +27,7 @@ function delayedFetch(t) {
   const calls = [];
   t.mock.method(globalThis, 'fetch', (_url, { signal }) => {
     const { resolve, promise } = Promise.withResolvers();
-    calls.push({ signal, finish: value => resolve(Response.json(value)) });
+    calls.push({ signal, finish: (value, status = 200) => resolve(Response.json(value, { status })) });
     return promise; // Deliberately let a response arrive after cancellation.
   });
   return calls;
@@ -105,6 +105,24 @@ test('an explicit incompatible coordinator hello never acknowledges readiness or
   assert.equal(calls.length, 0);
 });
 
+test('a repeated hello never sends a second ready, and renderer shutdown cancels only its own port', async t => {
+  let revoked = 0;
+  const calls = delayedFetch(t), gw = createGateway(config, () => { revoked++; });
+  t.after(() => gw.close());
+  const first = attach(gw), other = attach(gw);
+  const hello = { kind: 'lifecycle', phase: 'hello', protocolVersion: 3 };
+  first.send(hello); first.send(hello); other.send(hello);
+  first.request('work');
+  first.send({ kind: 'lifecycle', phase: 'shutdown', reason: 'requested', detail: null });
+  first.request('after-shutdown');
+  assert.equal(calls.length, 3, 'one stream per port, one legitimate command, no post-shutdown call');
+  assert.deepEqual(calls.map(call => call.signal.aborted), [true, false, true]);
+  calls[2].finish({ error: 'late' }, 401); await turn();
+  assert.equal(revoked, 0, 'an abandoned window must not revoke a live sibling');
+  assert.deepEqual(first.replies, [{ kind: 'lifecycle', phase: 'ready', protocolVersion: 3 }]);
+  assert.deepEqual(other.replies, first.replies);
+});
+
 test('an error page or partial HTTP response cannot make the event transport online', async t => {
   const mock = t.mock.method(globalThis, 'fetch', () => { throw new Error('missing fixture'); });
   for (const [status, type] of [[200, 'text/html'], [200, 'text/event-stream-extra'], [200, ''], [206, 'text/event-stream']]) {
@@ -136,7 +154,7 @@ test('baseline hello opens one event stream, forwards its payload, and a revoked
   port.send({ kind: 'lifecycle', phase: 'hello' });
   port.send({ kind: 'lifecycle', phase: 'hello', protocolVersion: 3 });
   await turn();
-  assert.deepEqual(port.replies.filter(f => f.phase === 'ready').map(f => f.protocolVersion), [3, 3]);
+  assert.deepEqual(port.replies.filter(f => f.phase === 'ready').map(f => f.protocolVersion), [3]);
   assert.deepEqual(port.replies.filter(f => f.family === 'fixture').map(f => f.payload), [{ visible: true }]);
   assert.equal(gw.getState(), 'online');
   port.request('unauthorized'); await turn(); port.request('after-close'); await turn();

@@ -93,6 +93,9 @@ test('gateway reconnects real loopback SSE, ignores incomplete frames, resets an
   assert.deepEqual(cursors, [undefined, '1', undefined]);
   assert.deepEqual(messages.filter(m => m.family === 'fixture').map(m => m.payload), [1, 2]);
   assert.deepEqual(messages.filter(m => m.family === 'transport-connected').map(m => m.payload.generation), [1, 2]);
+  assert.deepEqual(messages.filter(m => m.family === 'coordinator-transport-state').map(m => m.payload.state),
+    ['connected', 'down', 'connected', 'down'], 'the renderer sees connection loss and recovery');
+  assert.equal(messages.filter(m => m.kind === 'lifecycle' && m.phase === 'ready').length, 1);
   assert.deepEqual(states.slice(0, 4), ['online', 'reconnecting', 'online', 'reconnecting']);
   assert.equal(gateway.getState(), 'disconnected', 'a revoked subscription will not retry');
   assert.equal(portClosures, 1, 'the renderer must not keep a dead port with pending calls');
