@@ -6,6 +6,7 @@ export const PHONE_QUERY = '(max-width: 599px)';
 const BACK_ICON = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
   + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg>';
 
+const fittedFrames = new WeakMap();
 /**
  * Image attachments get a fixed inline size (for example 320 x 180) chosen for desktop
  * message columns. On a phone the column can be narrower, so the frame is scaled down
@@ -13,11 +14,20 @@ const BACK_ICON = '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" s
  */
 export function fitAttachmentFrames(root = document) {
   for (const frame of root.querySelectorAll('.sand-attachment__image-frame[style]')) {
-    const width = Number.parseFloat(frame.style.width), height = Number.parseFloat(frame.style.height);
+    const currentWidth = frame.style.width, currentHeight = frame.style.height;
+    if (!currentWidth.endsWith('px') || !currentHeight.endsWith('px')) continue;
+    const last = fittedFrames.get(frame);
+    const unchanged = last && currentWidth === last.fittedWidth && currentHeight === last.fittedHeight;
+    const width = unchanged ? last.width : Number.parseFloat(currentWidth);
+    const height = unchanged ? last.height : Number.parseFloat(currentHeight);
     const available = frame.parentElement?.clientWidth ?? 0;
-    if (!(width > 0 && height > 0 && available > 0) || width <= available + 1) continue;
-    frame.style.width = `${available}px`;
-    frame.style.height = `${Math.round(height * available / width)}px`;
+    if (!(width > 0 && height > 0 && available > 0)) continue;
+    const fittedWidth = `${Math.min(width, available)}px`;
+    const fittedHeight = `${width > available ? Math.round(height * available / width) : height}px`;
+    if (width > available) fittedFrames.set(frame, { width, height, fittedWidth, fittedHeight });
+    else fittedFrames.delete(frame);
+    if (currentWidth !== fittedWidth) frame.style.width = fittedWidth;
+    if (currentHeight !== fittedHeight) frame.style.height = fittedHeight;
   }
 }
 

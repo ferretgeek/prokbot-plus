@@ -1,8 +1,10 @@
 # ProkBot Plus 部署手册
 
-[English](AI-INSTALL.en.md) · [架构与扩展](ARCHITECTURE.md) · [备份恢复、离线输入与独立执行节点](../host/README.md)
+[English](AI-INSTALL.en.md) · [架构与扩展](ARCHITECTURE.md) · [备份恢复、离线输入与独立执行节点](https://github.com/ferretgeek/prokbot-plus/blob/v1.1.0/host/README.md)
 
 **给人和 AI 的同一条路线：选机器 → 检查 → 启动 → 配模型 → 客户端发消息。** 不要把容器显示 `healthy` 当作交付成功。下文的服务器命令从仓库根目录运行，Host 发布包解压后也是同样的结构。
+
+**已有 Host、只更新客户端？** 跳过下面全部服务器命令。使用对应客户端 ZIP；保留现有 `.env`、项目名和数据卷，不运行 `init`、`up` 或 `update`。
 
 ## 先选部署方式
 
@@ -10,11 +12,11 @@
 | --- | --- | --- |
 | 一台 x86_64 Linux | 默认，Host 和执行桌面都原生运行 | 已有实际对话验证的路线 |
 | 一台 ARM64 Linux，例如 Oracle Ampere A1 | 默认，Host 原生运行，桌面经 QEMU 模拟 amd64 | **实验**。不是原生 ARM 桌面；先通过 `doctor`，实际速度取决于任务 |
-| ARM64 Linux + 一台 amd64 Linux | 在 Host 的 `doctor`、`init` 前加 `--host-only`；桌面放第二台 | 推荐的 ARM 方案。A1 原生 Host 已验证聊天和桌面控制，无需在 ARM 机下载或模拟桌面。先看 [独立节点说明](../host/README.md#分开部署执行电脑) |
+| ARM64 Linux + 一台 amd64 Linux | 在 Host 的 `doctor`、`init` 前加 `--host-only`；桌面放第二台 | 推荐的 ARM 方案。A1 原生 Host 已验证聊天和桌面控制，无需在 ARM 机下载或模拟桌面。先看 [独立节点说明](https://github.com/ferretgeek/prokbot-plus/blob/v1.1.0/host/README.md#分开部署执行电脑) |
 
 开始前一次问清：新装还是升级？服务器及 SSH 访问方式？客户端从哪访问（本机、专网、HTTPS 域名）？使用哪种模型接口、模型 ID、哪些客户端？密码和 API Key 由用户在管理页输入，不要贴到聊天、工单或日志。已有服务、域名、反向代理和防火墙不默认改动。
 
-服务器需 Python 3.10+、可访问的 Linux Docker daemon、Docker Compose v2（支持 `up --wait`）、Git 或解压好的 Host 包。同机桌面按至少 8 GB 内存、Docker 数据盘 30 GB 空闲预留，首次要下载约 8 GB；模拟桌面应留更多余量。ARM 同机还需要系统注册 x86-64 QEMU/binfmt，安装或变更前请机主确认。
+服务器需 Python 3.10+、可访问的 Linux Docker daemon、Docker Compose v2（支持 `up --wait`）、Git 或解压好的 Host 包。同机桌面的早期规划预留为 8 GB 内存、Docker 数据盘 30 GB 空闲，不是持续负载下的实测最低值，首次要下载约 8 GB；模拟桌面应留更多余量。ARM 同机还需要系统注册 x86-64 QEMU/binfmt，安装或变更前请机主确认。
 
 全新 Ubuntu 24.04 可从系统仓库安装 `docker.io docker-compose-v2 docker-buildx python3 git`，启用 Docker，让部署用户获得使用权限并重新登录。仅 ARM 同机模式还需 `qemu-user-static binfmt-support`，用 `sudo update-binfmts --enable qemu-x86_64` 启用解释器，再跑 `doctor`。已有 Docker 的机器只补缺项；加入 `docker` 组相当于授予主机管理权限。
 
@@ -34,7 +36,7 @@ EOF
 
 已有代码不要重复 clone。服务器不能访问 GitHub 时，在本机用 `git archive --format=tar.gz -o prokbot-host-src.tar.gz HEAD host`，只上传这个归档，解到新的源码目录；不要打包工作目录或私密文件。构建仍需访问固定原版来源和依赖源。
 
-`doctor` 成功时输出 JSON：`ok: true`、Host 架构、桌面方式、资源和数据卷。`hostDataVolumes` 包括其他项目名下的 Host 卷。若发现已有实例，先确认原来的 `.env`、项目名和部署方式，走**更新**，不要换项目名重装。探针失败不会下载大桌面。新装示例：
+`doctor` 成功时输出 JSON：`ok: true`、Host 架构、桌面方式、资源和数据卷。`hostDataVolumes` 包括其他项目名下的 Host 卷。若发现已有实例，先确认原来的 `.env`、项目名和部署方式。仅在明确要升级服务端时才运行 `update`；只更新客户端请跳过服务器步骤。不要换项目名重装。探针失败不会下载大桌面。新装示例：
 
 ```sh
 cd "$HOME/grokbot/src"
@@ -50,7 +52,10 @@ python3 host/deploy.py status < /dev/null
 - 独立桌面：新装时用 `python3 host/deploy.py --host-only init`，之后工具会记住模式。自定义实例目录或项目名用 `--home`、`--project`，全局选项在命令前。旧的 `.env` 没有模式标记，独立部署每次都要传 `--host-only` 和原来的项目名。
 
 <a id="91-windows-1011-x64"></a><a id="92-macapple-silicon"></a><a id="94-android-手机"></a>
+<a id="client-packages"></a>
 ## 模型与客户端
+
+仅更新客户端不需要重新部署服务端。先看[可接受的原包和外壳版本](../README.md#client-versions)；Android 用之前的签名密钥原地升级。使用发布包时，应使用同一包内文档，不能从旧标签的说明改装默认分支。
 
 1. 在私有终端运行 `python3 host/deploy.py setup-key`，不要把输出转发到聊天。打开管理页，用初始化码设置 12–128 位管理员密码。该码仅首次使用，与设备配对码不同。
 2. 独立桌面模式先在管理页连接执行节点。然后在「模型」里填接口地址、模型 ID、Key。OpenAI Chat 和 Responses 通常填到 `/v1`，Anthropic Messages 可填根地址；按供应商实际接口选择。先测试再保存，等 Host 显示已连接。联网、生图、语音、推送按需配置，不是首次聊天的前提。
@@ -58,10 +63,10 @@ python3 host/deploy.py status < /dev/null
 
 | 客户端 | 生成与安装 |
 | --- | --- |
-| Windows 10/11 x64 | [Windows 说明](../windows/README.md) |
-| Mac（Apple Silicon） | [Mac 说明](../mac/README.md) |
-| iPhone | [iOS 补丁和签名](../ios/README.md) |
-| Android 9+ | [自开发 Android 客户端（非官方）](../android/README.md) |
+| Windows 10/11 x64 | [Windows 说明](https://github.com/ferretgeek/prokbot-plus/blob/v1.1.0/windows/README.md) |
+| Mac（Apple Silicon） | [Mac 说明](https://github.com/ferretgeek/prokbot-plus/blob/v1.1.0/mac/README.md) |
+| iPhone | [iOS 补丁和签名](https://github.com/ferretgeek/prokbot-plus/blob/v1.1.0/ios/README.md) |
+| Android 9+ | [自开发 Android 客户端（非官方）](https://github.com/ferretgeek/prokbot-plus/blob/v1.1.0/android/README.md) |
 
 AI 可以用 `python3 host/deploy.py admin help` 查看同一套管理操作。管理员密码和模型 Key 通过 `GROKBOT_ADMIN_PASSWORD`、`MODEL_API_KEY` 环境变量传入，不放进命令参数；不要打印环境变量。`admin session` 查初始化，`admin status` 查核心是否连接，`admin model-set --test-only` 可用指定的格式、地址和模型测试而不保存。
 
@@ -77,7 +82,7 @@ AI 可以用 `python3 host/deploy.py admin help` 查看同一套管理操作。�
 | 查看状态 / 最近日志 | `python3 host/deploy.py status` / `python3 host/deploy.py logs` |
 | 备份 | `python3 host/deploy.py backup < /dev/null`；输出备份目录，只交给机主 |
 | 更新 | Git 安装先 `git pull --ff-only`；发布包解到新源码目录。获取成功后 `python3 host/deploy.py update < /dev/null` |
-| 恢复 | [Host 备份与恢复](../host/README.md#数据与备份)：恢复到新项目，原卷不覆盖 |
+| 恢复 | [Host 备份与恢复](https://github.com/ferretgeek/prokbot-plus/blob/v1.1.0/host/README.md#数据与备份)：恢复到新项目，原卷不覆盖 |
 
 更新期间短暂暂停容器做备份，再构建并启动。备份或构建失败不会切换正在运行的容器；启动新容器失败不等于已自动回滚。不要删除卷或运行 `down -v`。更新成功后重复聊天和桌面验收。客户端有改动时才重新生成；Android 更新要保留第一次签名的密钥。
 

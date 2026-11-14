@@ -16,6 +16,8 @@ node patchers/desktop/patch.mjs
 
 已有原版 `.app` 或 `.dmg` 时，可增加 `--source "/path/to/Grok Bot.app"`。
 
+`--verify-only` 在临时目录回放固定版本的补丁，不生成客户端。手动指定的 DMG 也检查完整 SHA-256；Mac 上还会验证输入 App 的原签名。维护者没有 Mac 测试设备，本轮未在 macOS 上验证安装、启动、配对或聊天。可接受的原包和官方最新版本分别见[首页版本表](../README.md#client-versions)。
+
 需要控制本机图形界面时，在命令中增加 `--identity auto`，使用已有签名证书。
 
 ## 许可与支持

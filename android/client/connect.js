@@ -10,6 +10,8 @@ const $ = selector => document.querySelector(selector);
 const server = $('#server'), key = $('#key'), status = $('#status'), connect = $('#connect');
 const paired = $('#paired'), background = $('#background'), disconnect = $('#disconnect'), workspace = $('#workspace');
 let current = boot.connection ?? {};
+let backgroundEnabled = boot.settings?.backgroundNotifications !== false;
+let busy = false, composing = false;
 
 document.documentElement.lang = /^zh/i.test(locale) ? 'zh-CN' : 'en';
 document.title = text('连接 Grok Bot', 'Connect Grok Bot');
@@ -34,7 +36,7 @@ function render() {
   server.value ||= current.server ?? '';
   paired.hidden = !isPaired;
   workspace.hidden = !usable();
-  background.checked = boot.settings?.backgroundNotifications !== false;
+  background.checked = backgroundEnabled;
   connect.textContent = isPaired ? text('重新配对', 'Pair again') : text('连接', 'Connect');
   if (current.error) setStatus(current.error);
 }
@@ -42,22 +44,41 @@ function setStatus(message, ok = false) {
   status.textContent = message;
   status.classList.toggle('ok', ok);
 }
+function setBusy(value) {
+  busy = value;
+  for (const control of [server, key, connect, disconnect, workspace, background]) control.disabled = value;
+}
 // Chinese input methods often type full-width characters and the ideographic full stop.
 const halfWidth = value => value.normalize('NFKC').replace(/\u3002/g, '.').replace(/\s+/g, '');
 // Rewriting the field while an input method is still composing would drop the composition.
 const tidyKey = () => { key.value = halfWidth(key.value).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6); };
-key.addEventListener('input', event => { if (!event.isComposing) tidyKey(); });
-key.addEventListener('compositionend', tidyKey);
+const form = $('#form');
+form.addEventListener('compositionstart', () => { composing = true; });
+form.addEventListener('compositionend', event => { composing = false; if (event.target === key) tidyKey(); });
+key.addEventListener('input', event => { if (!composing && !event.isComposing) tidyKey(); });
 server.addEventListener('change', () => { server.value = halfWidth(server.value); });
 
-$('#form').addEventListener('submit', async event => {
+form.addEventListener('submit', async event => {
   event.preventDefault();
+  if (busy || composing) return;
+  tidyKey();
   const address = halfWidth(server.value), code = key.value.trim();
   if (!address) { setStatus(text('请输入 Host 地址。', 'Enter the Host address.')); server.focus(); return; }
-  // With an existing pairing and no code, only the address changes.
-  const edit = current.paired === true && !code;
+  let sameOrigin = false;
+  if (usable()) {
+    try {
+      const candidate = new URL(address), saved = new URL(current.server);
+      sameOrigin = /^(https?:)$/.test(candidate.protocol) && !candidate.username && !candidate.password &&
+        candidate.pathname === '/' && !candidate.search && !candidate.hash && candidate.origin === saved.origin;
+    } catch { /* Native pairing validates the complete address before sending a new code. */ }
+  }
+  if (usable() && !code && !sameOrigin) {
+    setStatus(text('更换 Host 地址须使用新 Host 的配对码。', 'Enter a new pairing code to change Host.'));
+    key.focus(); return;
+  }
+  const edit = usable() && !code && sameOrigin;
   if (!edit && code.length !== 6) { setStatus(text('请输入 6 位配对码。', 'Enter the six-character pairing code.')); key.focus(); return; }
-  connect.disabled = true;
+  setBusy(true);
   setStatus(text('正在连接…', 'Connecting…'), true);
   try {
     const result = await native('pair', { server: address, key: code, edit });
@@ -66,11 +87,12 @@ $('#form').addEventListener('submit', async event => {
     setStatus(text('已连接，正在打开工作区…', 'Connected. Opening the workspace…'), true);
   } catch (error) {
     setStatus(error.message);
-    connect.disabled = false;
+    setBusy(false);
   }
 });
 disconnect.addEventListener('click', async () => {
-  disconnect.disabled = true;
+  if (busy) return;
+  setBusy(true);
   try {
     await native('disconnect');
     current = { paired: false };
@@ -78,12 +100,19 @@ disconnect.addEventListener('click', async () => {
     render();
     setStatus(text('已断开', 'Disconnected'), true);
   } catch (error) { setStatus(error.message); }
-  finally { disconnect.disabled = false; }
+  finally { setBusy(false); }
 });
 workspace.addEventListener('click', () => { location.assign('/app/renderer/index.html'); });
 background.addEventListener('change', async () => {
-  try { await native('settings', { key: 'backgroundNotifications', value: background.checked }); }
-  catch (error) { setStatus(error.message); background.checked = !background.checked; }
+  if (busy) return;
+  const value = background.checked;
+  setBusy(true);
+  try {
+    const result = await native('settings', { key: 'backgroundNotifications', value });
+    backgroundEnabled = result.settings?.backgroundNotifications ?? value;
+    setStatus(current.error || '');
+  } catch (error) { setStatus(error.message); }
+  finally { background.checked = backgroundEnabled; setBusy(false); }
 });
 
 window.__grokbotAndroid = Object.freeze({

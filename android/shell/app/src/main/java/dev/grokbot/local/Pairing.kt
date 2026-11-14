@@ -59,9 +59,11 @@ object Pairing {
         return Connection(server, deviceId, token)
     }
 
-    /** Moves an existing pairing to another address of the same Host. */
+    /** A saved device credential is valid only at its originally paired origin. */
     fun verify(context: Context, address: String, current: Connection): Connection {
         val server = normalizeServer(context, address)
+        if (server != normalizeServer(context, current.server))
+            throw PairingException(Text.t(context, "更换 Host 地址须使用新 Host 的配对码。", "Enter a new pairing code to change Host."))
         val status = try { request("$server/connect/status", "GET", null, current.token).first } catch (_: Exception) { 0 }
         if (status !in 200..299)
             throw PairingException(Text.t(context, "无法验证此 Host 的设备凭据。", "Could not verify this device with the Host."))

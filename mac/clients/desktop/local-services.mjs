@@ -53,6 +53,10 @@ const access = {
   proAndSuperGrokPlansGrantAccess: false,
   isUnified: false,
 };
+export function probeLocalMethod(trusted, declared, call, method) {
+  return { ok: Boolean(trusted), value: Boolean(trusted && declared.has(method) && call?.supports(method)) };
+}
+
 export async function createLocalServices(profile, window, { command, request, attachment, attachmentHandlers = {}, connection, disconnect, notifications, pickAvatarFile, openExternal, settings = {} }) {
   const storePath = path.join(profile, "local-client-persistence.json");
   let store = {};
@@ -208,8 +212,9 @@ export async function createLocalServices(profile, window, { command, request, a
     setHostSettings: (args) => command("setHostSettings", args),
   };
   Object.assign(known, settings);
-  return async (method, args = {}) => {
-    if (known[method]) return known[method](args);
+  const supports = method => typeof method === 'string' && Object.hasOwn(known, method) && typeof known[method] === 'function';
+  const call = async (method, args = {}) => {
+    if (supports(method)) return known[method](args);
     if (
       /^(report|note|expose|log|setTitleBar|setUnreadFilter|setWindow|markGrokBotTerms)/.test(
         method,
@@ -219,4 +224,6 @@ export async function createLocalServices(profile, window, { command, request, a
     console.error("[missing local method]", method);
     throw new Error(`Local desktop does not implement ${method}`);
   };
+  // Passive compatibility notices above are not implemented capabilities.
+  return Object.assign(call, { supports });
 }

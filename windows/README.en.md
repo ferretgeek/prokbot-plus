@@ -24,9 +24,20 @@ The tool downloads and verifies the official `Grok_Bot_0.71.2_Setup.exe` and wri
 
 Open the client and enter your Host address and six-character pairing code. To use an existing original installer, `app-64.7z` or installed original folder, pass `--source`; `--no-installer` builds the portable outputs only.
 
-The installer accepts `/S` (silent) and `/D=folder` (last). Uninstall from Settings → Apps or run `Uninstall Grok Bot Local.exe` in the installation folder; pairing and settings live in `%APPDATA%\Grok Bot Local` and can be kept.
+The installer accepts `/S` (silent) and `/D=folder` (last). For a regular install, uninstall from Settings → Apps or run `Uninstall Grok Bot Local.exe` in its folder. The new uninstaller keeps pairing, settings and personal files.
 
-Use an absolute path for a custom destination. Choose a new or empty folder, or an existing ProkBot Plus installation. The installer refuses other non-empty folders; the uninstaller refuses official and portable clients.
+Use an absolute path for a new or empty folder, or a ProkBot Plus installation with an ownership receipt. The uninstaller refuses official, portable and receipt-less clients.
+
+### Upgrading a legacy install
+
+Quit the old client from its tray menu. When the new setup recognizes an install without a receipt, choose the side-by-side option, or run this PowerShell command from the folder containing the **new** setup. For a custom install, replace `$old` with the old folder's absolute path:
+
+```powershell
+$old = Join-Path $env:LOCALAPPDATA 'Programs\Grok Bot Local'
+.\GrokBotLocal-0.71.2-x64-Setup.exe --migrate-legacy "/D=$old"
+```
+
+The new files go to a sibling named `<old folder> (side-by-side)`. The setup does not copy or delete legacy files or replace its uninstall entry. Run `Grok Bot.exe` directly from the new folder. Both versions use `%APPDATA%\Grok Bot Local`; run only one at a time. To go back, quit the new client and open the old executable. To remove **only the new copy**, run the uninstaller in the **side-by-side** folder, not the old uninstaller or its Settings → Apps entry. Repeat the same setup command for later upgrades; add `/S` before `/D=` for silent use.
 
 ## Notes
 

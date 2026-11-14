@@ -70,6 +70,7 @@ try {
     app = path.join(mount, 'Grok Bot.app');
   }
   if (!app.endsWith('.app')) throw new Error('输入必须是原版 Grok Bot.app 或 DMG。');
+  run('codesign', ['--verify', '--deep', '--strict', app]);
   const infoPath = path.join(app, 'Contents/Info.plist');
   const info = plist(infoPath);
   const asarPath = path.join(app, 'Contents/Resources/app.asar');
@@ -78,7 +79,17 @@ try {
   if (info.CFBundleIdentifier !== supported.bundleId || info.CFBundleShortVersionString !== supported.version ||
       asarSha256 !== supported.asarSha256 || frameworkSha256 !== supported.frameworkSha256)
     throw new Error(`不支持此发行包。仅支持未经修改的 Grok Bot ${supported.version} macOS ${supported.architecture}；版本、ASAR 或 Electron Framework 摘要不匹配。`);
-  console.log(JSON.stringify({ verified: true, version: supported.version, architecture: supported.architecture, asarSha256 }));
+  const asar = createRequire(import.meta.url)('@electron/asar');
+  const unpacked = path.join(temporary, 'app');
+  asar.extractAll(asarPath, unpacked);
+  const notificationPolicy = await extractNotificationPolicy(unpacked, here);
+  const pkgPath = path.join(unpacked, 'package.json');
+  const pkg = JSON.parse(await readFile(pkgPath));
+  if (pkg.version !== supported.version) throw new Error('ASAR 包版本不一致。');
+  const patchStarted = performance.now();
+  await applyReleaseRecipes(unpacked, path.join(here, 'recipes'));
+  timings.patchSeconds = Number(((performance.now() - patchStarted) / 1000).toFixed(3));
+  console.log(JSON.stringify({ verified: true, recipesVerified: true, version: supported.version, architecture: supported.architecture, asarSha256 }));
   if (!args.includes('--verify-only')) {
     if (await exists(output)) throw new Error(`输出已存在，不会覆盖：${output}`);
     if (output === backup || output.startsWith(`${backup}/`) || backup.startsWith(`${output}/`)) throw new Error('输出与备份路径必须独立。');
@@ -92,16 +103,6 @@ try {
     }
     await mkdir(path.dirname(output), { recursive: true });
     run('ditto', [app, output]); createdOutput = true;
-    let asar;
-    try { asar = createRequire(import.meta.url)('@electron/asar'); }
-    catch { try { asar = createRequire(path.join(root, 'desktop/package.json'))('@electron/asar'); }
-      catch { throw new Error('缺少 @electron/asar；执行 npm install --prefix patchers/desktop。'); } }
-    const unpacked = path.join(temporary, 'app');
-    asar.extractAll(asarPath, unpacked);
-    const notificationPolicy = await extractNotificationPolicy(unpacked, here);
-    const pkgPath = path.join(unpacked, 'package.json');
-    const pkg = JSON.parse(await readFile(pkgPath));
-    if (pkg.version !== supported.version) throw new Error('ASAR 包版本不一致。');
     const previousMain = pkg.main;
     pkg.main = 'local-client/main.mjs';
     await writeFile(pkgPath, JSON.stringify(pkg, null, 2));
@@ -112,14 +113,6 @@ try {
     // Copies made on Windows or extracted from some archives lose the executable bit.
     await chmod(path.join(output, 'Contents/Resources/grokbot-tailcat'), 0o755);
     await cp(path.join(root, 'network/TAILCAT-LICENSE'), path.join(output, 'Contents/Resources/TAILCAT-LICENSE'));
-    const patchStarted = performance.now();
-    if (await exists(path.join(here, 'recipes/manifest.json'))) {
-      await applyReleaseRecipes(unpacked, path.join(here, 'recipes'));
-    } else {
-      const { patchDesktopPayload } = await import('./prepare-payload.mjs');
-      await patchDesktopPayload(unpacked, path.join(root, 'clients/desktop'));
-    }
-    timings.patchSeconds = Number(((performance.now() - patchStarted) / 1000).toFixed(3));
     // ASAR extraction does not retain Unix executable bits for native helpers.
     for (const name of ['sand-op-launcher', 'sand-webauthn-signer'])
       await chmod(path.join(unpacked, 'dist/native', name), 0o755);

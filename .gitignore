@@ -30,3 +30,5 @@ android/shell/.kotlin/
 android/shell/build/
 android/shell/app/build/
 android/shell/local.properties
+android/shell/hs_err_pid*.log
+android/shell/replay_pid*.log

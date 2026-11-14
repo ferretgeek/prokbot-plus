@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Patch a user-supplied decrypted IPA; export unsigned files for the user's signer."""
 import argparse
-import importlib.util
 import json
 from pathlib import Path
 import plistlib
@@ -44,8 +43,12 @@ def extract(source, destination):
 
 
 def main():
+    manifest = json.loads((ROOT / 'recipes/ios/manifest.json').read_text(encoding='utf-8'))
+    version, build = manifest['version'], manifest['build']
+    if not all(isinstance(pin, str) and pin for pin in (version, build)):
+        raise ValueError('Invalid fixed iOS version or build')
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--input', type=Path, required=True, help='Decrypted Grok Bot 1.16.0 (23152) IPA')
+    parser.add_argument('--input', type=Path, required=True, help=f'Decrypted Grok Bot {version} ({build}) IPA')
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--bundle-id', default='dev.grokbot.local')
     parser.add_argument('--app-group', help='App Group configured in your signing account')
@@ -53,7 +56,6 @@ def main():
     args = parser.parse_args()
     if args.output.exists():
         parser.error('Output exists; choose a new directory')
-    manifest = json.loads((ROOT / 'recipes/ios/manifest.json').read_text())
     started = time.monotonic()
     original_digest = digest(args.input.read_bytes())
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -61,8 +63,9 @@ def main():
         work = Path(temporary)
         source = extract(args.input, work / 'source')
         info = plistlib.loads((source / 'Info.plist').read_bytes())
-        if (info.get('CFBundleIdentifier'), info.get('CFBundleShortVersionString'), info.get('CFBundleVersion')) != ('co.anysphere.sand', '1.16.0', '23152'):
-            raise ValueError('Unsupported app version')
+        identity = (info.get('CFBundleIdentifier'), info.get('CFBundleShortVersionString'), info.get('CFBundleVersion'))
+        if identity != ('co.anysphere.sand', version, build):
+            raise ValueError(f'Unsupported app version; expected co.anysphere.sand {version} ({build})')
         executable = Path(info['CFBundleExecutable'])
         if executable.name != str(executable):
             raise ValueError('Invalid app executable path')

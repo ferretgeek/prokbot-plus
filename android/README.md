@@ -13,6 +13,8 @@
 - 界面用官方**桌面版**的界面，和 Windows、Mac 客户端完全相同，取自你自己下载的官方 Windows 0.71.2 安装包；
 - 外面套一个本项目编写的 Android 外壳（`shell/`），负责连接 Host、保存凭据、通知、文件和返回键等手机功能。
 
+Android 安装的是**本项目自开发的外壳** `dev.grokbot.local`：`versionName` **1.1.0**，`versionCode` **10100**。Windows 界面来源仍固定为 **0.71.2**。外壳升级不代表支持新版界面，也不会改变已安装应用的包名。
+
 ## 使用
 
 在仓库根目录执行：
@@ -25,20 +27,23 @@ node android/patchers/patch.mjs
 
 | 输出 | 用途 |
 | --- | --- |
-| `GrokBotLocal-0.71.2-android.apk` | 安装到手机 |
-| `GrokBotLocal-0.71.2-android.patch.json` | 生成记录：输入文件摘要、APK 摘要、签名证书指纹 |
+| `GrokBotLocal-1.1.0-android.apk` | 安装到手机；文件名使用外壳版本 |
+| `GrokBotLocal-1.1.0-android.patch.json` | 生成记录：外壳和界面来源版本、输入文件摘要、APK 摘要、签名证书指纹 |
 
-把 APK 传到手机上安装（需要允许「安装未知应用」），或者用 `adb install -r`。打开后填写 Host 地址和六位配对码。
+校验报告、补丁生成记录和 APK 内的 `assets/web/client/build.json` 都用 `shell.versionName`、`shell.versionCode` 和 `rendererVersion` 代替原来含义不明确的 `version` 字段。写出产物前，工具还会按固定版本核对签名后 APK 的编译清单和内置生成记录。
+
+把 APK 传到手机上安装（需要允许「安装未知应用」），或者用 `adb install -r`。打开后填写 Host 地址和六位配对码。已配对的设备只能在原 Host 地址重试连接；域名、协议或端口变了，请用新地址上的管理页生成新配对码。不要卸载 App 来修复配对。
 
 <p align="center"><img src="../docs/images/android-connect-zh.png" alt="Android 首次连接：填写 Host 地址和配对码" width="240"></p>
 
 | 选项 | 作用 |
 | --- | --- |
 | `--source <文件或目录>` | 使用已下载的官方安装包、`app-64.7z` 或已安装的原版目录 |
+| `--shell <文件>` | 指定已核验外壳的另一份副本；SHA-256、包名和两个版本字段都必须匹配 |
 | `--output <目录>` | 输出目录，默认 `android/output/` |
 | `--signing-key <文件>` | 签名密钥文件，默认 `~/.grokbot-local/android-signing.json` |
 | `--force` | 覆盖已有的输出 |
-| `--verify-only` | 只校验输入，不生成 |
+| `--verify-only` | 核对原包和外壳，在临时目录实际执行 Windows recipe，再检查 Android 入口、桥接注入、CSP、preload 和界面补丁的固定摘要与锚点。不生成 APK 或补丁清单，不访问签名密钥 |
 
 ### 签名密钥
 
@@ -72,7 +77,8 @@ node android/patchers/patch.mjs
 ## 维护
 
 - `client/`：运行在 WebView 里的桥接代码，代替 Electron 的主进程和 preload；`patchers/renderer-patches.mjs`：对官方界面的少量修改（逐个文件校验 SHA-256，锚点必须唯一）。
-- `shell/`：Android 外壳源码（Kotlin，不依赖第三方库）。修改后执行 `node android/shell/release-shell.mjs` 重新构建 `dist/grokbot-android-shell.apk`，它会同时更新 `patchers/supported.json` 里的摘要。构建需要 JDK 17+ 和 Android SDK（`ANDROID_HOME`）。
+- `shell/`：Android 外壳源码（Kotlin，不依赖第三方库）。发布新版外壳时，同步修改 `shell/app/build.gradle.kts` 和 `patchers/supported.json` 的 `shell.versionName`、`shell.versionCode`。版本码须高于上一版（旧外壳随界面编号，版本码为 7102）。未经新版 Windows 输入和 recipe 验证，不改 `desktopVersion` 或界面摘要。
+- 修改外壳后执行 `node android/shell/release-shell.mjs`。工具先核对编译后的清单，再更新 `dist/grokbot-android-shell.apk` 和摘要。需要 JDK 17+ 和 Android SDK（`ANDROID_HOME`）；已缓存 Gradle 发行包和依赖时可加 `--offline`，Gradle 只用一个 worker。
 - 测试：`node --test "android/tests/*.test.mjs"`
 
 ## 许可与支持

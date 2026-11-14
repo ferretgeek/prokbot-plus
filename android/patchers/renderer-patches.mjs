@@ -1,4 +1,5 @@
 // Android changes to the original renderer, applied after the desktop recipes.
+// `input` distinguishes a Windows recipe output from an untouched installer asset.
 // Each target file is verified by SHA-256 first, and every anchor must occur exactly
 // once, so a different official build is refused instead of being half patched.
 import { createHash } from 'node:crypto';
@@ -6,6 +7,7 @@ import { createHash } from 'node:crypto';
 export const RENDERER_PATCHES = [
   {
     file: 'assets/index.eager-app-CrGjYQbA.js',
+    input: 'windows-recipe',
     sha256: 'f17c145c7816c898432e143bf8f8185c93d8b3fe1d881948c6e3af73931123cd',
     edits: [
       // The conversation details pane (Bot computer, files, skills) opens only when the
@@ -19,6 +21,7 @@ export const RENDERER_PATCHES = [
   },
   {
     file: 'assets/index-CUXtfEUp.js',
+    input: 'windows-recipe',
     sha256: '6e08e299755840bc1488a032180a9117578d5ddeda8b0c99ab6fde6a062f759c',
     edits: [
       // "Teach a task" records the desktop screen, which a phone cannot provide; the
@@ -35,6 +38,7 @@ export const RENDERER_PATCHES = [
   },
   {
     file: 'assets/chunk-computer-screen-preview-BnTMKGxa.js',
+    input: 'original',
     sha256: '9ab8a5dd6cd20fc732d466ca20ae861dd3d17d5471db99fa7a821e39ba2d75af',
     edits: [
       // The Bot computer view is laid over its placeholder with CSS anchor positioning,
@@ -52,16 +56,34 @@ export const RENDERER_PATCHES = [
 
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 
+/** Resolve all edits against the same pinned input, never against another edit's output. */
+export function applyPinnedRendererPatch({ file, sha256, edits }, bytes) {
+  const source = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes);
+  if (sha(source) !== sha256) throw new Error(`界面文件与支持的版本不一致：${file}`);
+  if (!edits.length) throw new Error(`界面补丁没有修改：${file}`);
+  const spans = edits.map(([from, to], i) => {
+    const anchor = Buffer.from(from);
+    const at = source.indexOf(anchor);
+    if (!anchor.length || at < 0) throw new Error(`界面补丁缺少锚点：${file} (#${i + 1})`);
+    if (source.indexOf(anchor, at + 1) >= 0) throw new Error(`界面补丁锚点不唯一：${file} (#${i + 1})`);
+    const replacement = Buffer.from(to);
+    if (anchor.equals(replacement)) throw new Error(`界面补丁没有修改：${file} (#${i + 1})`);
+    return { at, end: at + anchor.length, replacement, edit: i + 1 };
+  }).sort((a, b) => a.at - b.at);
+
+  let end = 0;
+  const parts = [];
+  for (const span of spans) {
+    if (span.at < end) throw new Error(`界面补丁锚点重叠：${file} (#${span.edit})`);
+    parts.push(source.subarray(end, span.at), span.replacement);
+    end = span.end;
+  }
+  parts.push(source.subarray(end));
+  return Buffer.concat(parts);
+}
+
 /** Returns the patched bytes of `name`, or null when the file has no Android patch. */
 export function patchRendererFile(name, bytes) {
   const patch = RENDERER_PATCHES.find(item => item.file === name);
-  if (!patch) return null;
-  if (sha(bytes) !== patch.sha256) throw new Error(`界面文件与支持的版本不一致：${name}`);
-  let text = Buffer.from(bytes).toString('utf8');
-  for (const [from, to] of patch.edits) {
-    const at = text.indexOf(from);
-    if (at < 0 || text.indexOf(from, at + 1) >= 0) throw new Error(`界面补丁锚点不唯一：${name}`);
-    text = text.slice(0, at) + to + text.slice(at + from.length);
-  }
-  return Buffer.from(text, 'utf8');
+  return patch ? applyPinnedRendererPatch(patch, bytes) : null;
 }

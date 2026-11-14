@@ -1,0 +1,6 @@
+{
+  "checkedOn": "2026-11-14",
+  "windows": { "version": "1.1.0", "build": "83d46d618ef4c12afa17edd8e3c29d6caf046d17", "archiveBytes": 127403656, "observedArchiveSha256": "01ccb10f2144ea0eb787042c54fc4b8ca2c6f43eccb7dabe5fe5eb86fa5ed044", "observedAsarSha256": "ae8f0a14fe65f421881f96fdcb66aaaaed8b28806f79d5239dbefec9ef2ea972" },
+  "mac": { "version": "1.1.0", "build": "83d46d618ef4c12afa17edd8e3c29d6caf046d17", "archiveBytes": 159217912, "observedArchiveSha256": "80b718f4ba9e75d9b240675591fd5f024ecc8aa1913180c50d075fdb5a330d78", "observedAsarSha256": "2ce3b335f3d92c7be6ad59da397f8f6bf16c6d29474041ec5cc1e508b65b8e48" },
+  "ios": { "version": "1.25.0", "store": "us", "trackId": 6794501026 }
+}

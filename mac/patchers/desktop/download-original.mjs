@@ -19,7 +19,12 @@ async function matchesArchive(file, archive) {
 
 export async function acquireDesktopSource({ source, cacheDirectory, supported,
   fetchImpl = globalThis.fetch, onDownload = () => {} }) {
-  if (source) return path.resolve(source);
+  if (source) {
+    const file = path.resolve(source);
+    if (path.extname(file).toLowerCase() === '.dmg' && (!supported?.archive || !await matchesArchive(file, supported.archive)))
+      throw new Error('原版 DMG 整包摘要不匹配；不会挂载此文件。');
+    return file;
+  }
   const archive = supported.archive;
   if (!archive?.url || !archive.bytes || !/^[a-f0-9]{64}$/.test(archive.sha256))
     throw new Error('缺少原版下载信息。');

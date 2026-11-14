@@ -4,7 +4,7 @@
 import { grokText } from './desktop/i18n.mjs';
 import { externalHttpUrl } from './desktop/external-url.mjs';
 import { createConnectorHandlers } from './desktop/connectors.mjs';
-import { boot as androidBoot, native, log, toBase64, fromBase64, toBytes, timeout } from './native.js';
+import { boot as androidBoot, native, log, toBase64, fromBase64, toBytes, timeout, combineSignals } from './native.js';
 
 export const auth = {
   kind: 'logged-in', authId: 'grokbot-local-workspace', email: '', displayName: '本地工作区',
@@ -45,6 +45,7 @@ export function remoteAttachmentPath(source) {
 }
 
 const CHUNK_BYTES = 4 * 1024 * 1024;
+const DOWNLOAD_HEAD_BYTES = 64 * 1024;
 const PREVIEW_BYTES = 25 * 1024 * 1024;
 const TEXT_HEAD_BYTES = 6 * 1024 * 1024;
 const FILE_LIMIT = 25 * 1024 * 1024;
@@ -76,8 +77,10 @@ async function decodeImage(url) {
 /** Attachments staged on the phone before sending; the original renderer keeps their previews. */
 export function createStaging() {
   const files = new Map();
-  const localPath = source => typeof source === 'string' && source.startsWith(STAGING_PREFIX) &&
-    /^[0-9a-f-]{36}(?:\.[a-zA-Z0-9]{1,16})?$/.test(source.slice(STAGING_PREFIX.length)) && files.has(source) ? source : null;
+  const localPath = source => {
+    const path = remoteAttachmentPath(source);
+    return files.has(path) ? path : null;
+  };
   return {
     localPath,
     read: source => { const path = localPath(source); return path ? files.get(path) : null; },
@@ -87,7 +90,7 @@ export function createStaging() {
       files.set(path, { bytes, filename, type: mimeFor(filename) });
       return path;
     },
-    remove: source => files.delete(source),
+    remove: source => files.delete(localPath(source)),
   };
 }
 
@@ -101,33 +104,40 @@ export function createAttachments({ command, staging, onProgress }) {
     if (!Number.isSafeInteger(chunk?.totalSize) || chunk.totalSize < 0) throw new Error(grokText('附件大小无效。', 'Invalid attachment size.'));
     return chunk.totalSize;
   };
-  async function readChunk(args, offset, length, expectedSize) {
-    const chunk = await request('readAttachmentChunk', { ...args, offset, length });
-    if (chunk === null) return null;
+  function chunkBytes(chunk, length, expectedSize) {
     if (totalSize(chunk) !== expectedSize || typeof chunk.bytesBase64 !== 'string')
       throw new Error(grokText('附件已改变，请重试。', 'The attachment changed. Try again.'));
     const bytes = fromBase64(chunk.bytesBase64);
-    if (bytes.length === 0 || bytes.length > length) throw new Error(grokText('附件读取不完整，请重试。', 'Incomplete attachment. Try again.'));
+    if ((!bytes.length && expectedSize !== 0) || bytes.length > length) throw new Error(grokText('附件读取不完整，请重试。', 'Incomplete attachment. Try again.'));
     return bytes;
   }
+  async function readChunk(args, offset, length, expectedSize) {
+    const chunk = await request('readAttachmentChunk', { ...args, offset, length });
+    return chunk === null ? null : chunkBytes(chunk, length, expectedSize);
+  }
   const commits = new Map();
-  async function upload({ agentId, path: source, filename }, progress) {
+  async function upload({ agentId, path: source, filename }, progress, cancel) {
     const staged = staging.read(source);
     if (!staged) throw new Error('Invalid staged attachment');
     const size = staged.bytes.length;
     if (sizeFailure(size, filename)) throw new Error(grokText('附件为空或超过大小限制。', 'The attachment is empty or too large.'));
     const uploadId = crypto.randomUUID();
-    const signal = timeout(120000);
     for (let offset = 0; offset < size;) {
+      if (cancel.aborted) throw cancel.reason;
       const piece = staged.bytes.subarray(offset, Math.min(size, offset + CHUNK_BYTES));
-      const result = await command('uploadAttachmentChunk', { agentId, uploadId, filename, offset, totalSize: size,
-        bytesBase64: toBase64(piece) }, signal);
+      const { signal, dispose } = combineSignals([cancel, timeout(120000)]);
+      let result;
+      try {
+        result = await command('uploadAttachmentChunk', { agentId, uploadId, filename, offset, totalSize: size,
+          bytesBase64: toBase64(piece) }, signal);
+        if (signal.aborted) throw signal.reason;
+      } finally { dispose(); }
       offset += piece.length;
-      progress(offset / size);
       if (result?.committedPath) {
         if (offset !== size || typeof result.committedPath !== 'string') throw new Error('Incomplete attachment upload');
         return result.committedPath;
       }
+      if (offset < size) progress(offset / size);
     }
     throw new Error(grokText('附件上传未完成，请重试。', 'The attachment upload did not complete. Try again.'));
   }
@@ -135,7 +145,7 @@ export function createAttachments({ command, staging, onProgress }) {
     async resolveAttachmentMedia({ source, rendition }) {
       const staged = staging.read(source);
       const remote = remoteAttachmentPath(source);
-      if (!staged && remote === null) throw new Error('Invalid attachment path');
+      if (!staged && (remote === null || remote.startsWith(STAGING_PREFIX))) throw new Error('Invalid attachment path');
       const result = staged ? { dataUrl: dataUrl(staged.bytes, staged.type) }
         : await command('readAttachmentImage', { path: remote, rendition: rendition === 'original' ? 'original' : 'preview' }, timeout(30000));
       if (!/^data:image\/(png|jpeg|webp|gif);base64,/.test(result?.dataUrl)) throw new Error('Unsupported attachment');
@@ -158,6 +168,7 @@ export function createAttachments({ command, staging, onProgress }) {
         const staged = staging.read(args.path);
         if (staged) return { kind: 'text', text: new TextDecoder().decode(staged.bytes.subarray(0, TEXT_HEAD_BYTES)),
           bytes: staged.bytes.length, truncated: staged.bytes.length > TEXT_HEAD_BYTES };
+        if (args.path.startsWith(STAGING_PREFIX)) return null;
       }
       return args === null ? null : request('readAttachmentText', args);
     },
@@ -171,6 +182,7 @@ export function createAttachments({ command, staging, onProgress }) {
         const text = /\.(?:md|markdown|txt|text)$/i.test(args.path);
         return { kind: 'bytes', bytes: staged.bytes.slice(0, text ? TEXT_HEAD_BYTES : maxBytes), size: staged.bytes.length };
       }
+      if (args.path.startsWith(STAGING_PREFIX)) return null;
       const info = await request('readAttachmentChunk', { ...args, offset: 0, length: 0 });
       if (info === null) return null;
       const size = totalSize(info);
@@ -191,15 +203,21 @@ export function createAttachments({ command, staging, onProgress }) {
       try {
         const args = scope(input);
         if (args === null) throw new Error('Invalid attachment path');
-        const info = await request('readAttachmentChunk', { ...args, offset: 0, length: 0 });
+        const staged = staging.read(args.path);
+        if (!staged && args.path.startsWith(STAGING_PREFIX)) throw new Error('Attachment not found');
+        // Prove the file is readable before Android creates a destination. Keep the probe small on cancellation.
+        const info = staged ? { totalSize: staged.bytes.length, resolvedName: staged.filename }
+          : await request('readAttachmentChunk', { ...args, offset: 0, length: DOWNLOAD_HEAD_BYTES });
         if (info === null) throw new Error('Attachment not found');
         const size = totalSize(info);
+        const first = staged ? staged.bytes.subarray(0, CHUNK_BYTES) : chunkBytes(info, Math.min(size, DOWNLOAD_HEAD_BYTES), size);
         const name = baseName(input.suggestedName || info.resolvedName || args.path);
         const started = await native('save-begin', { name, mime: mimeFor(name) });
         if (!started.id) return false;
         id = started.id;
         for (let offset = 0; offset < size;) {
-          const bytes = await readChunk(args, offset, Math.min(CHUNK_BYTES, size - offset), size);
+          const length = Math.min(CHUNK_BYTES, size - offset);
+          const bytes = offset === 0 ? first : staged ? staged.bytes.subarray(offset, offset + length) : await readChunk(args, offset, length, size);
           if (bytes === null) throw new Error('Attachment not found');
           await native(`save-chunk?id=${encodeURIComponent(id)}`, null, { binary: bytes });
           offset += bytes.length;
@@ -208,11 +226,10 @@ export function createAttachments({ command, staging, onProgress }) {
         id = null;
         return true;
       } catch (error) {
+        if (id) await native('save-end', { id, ok: false }).catch(() => {});
         log('[attachment-download]', error);
         alert(grokText('无法下载文件，请重试。', 'Could not download this file. Try again.'));
         return false;
-      } finally {
-        if (id) await native('save-end', { id, ok: false }).catch(() => {});
       }
     },
     async stageAttachmentBytes({ filename, bytes }) {
@@ -232,23 +249,30 @@ export function createAttachments({ command, staging, onProgress }) {
       const results = [];
       report(0);
       for (let index = 0; index < paths.length; index++) {
-        const source = paths[index], filename = filenames[index];
+        const source = staging.localPath(paths[index]), filename = filenames[index];
         const key = JSON.stringify([agentId, source, filename]);
         let pending = commits.get(key);
         if (!pending) {
-          pending = upload({ agentId, path: source, filename }, fraction => report((index + fraction) / paths.length));
+          const controller = new AbortController();
+          const result = upload({ agentId, path: source, filename }, fraction => report((index + fraction) / paths.length),
+            controller.signal);
+          pending = { path: source, controller, result };
           commits.set(key, pending);
-          pending.catch(() => { if (commits.get(key) === pending) commits.delete(key); });
+          result.catch(() => { if (commits.get(key) === pending) commits.delete(key); });
         }
-        results.push(await pending);
+        results.push(await pending.result);
         report((index + 1) / paths.length);
       }
       return results;
     },
     async discardStagedAttachment({ path: source }) {
-      if (!staging.localPath(source)) return;
-      staging.remove(source);
-      for (const key of commits.keys()) if (JSON.parse(key)[1] === source) commits.delete(key);
+      const path = staging.localPath(source);
+      if (!path) return;
+      staging.remove(path);
+      for (const [key, pending] of commits) if (pending.path === path) {
+        pending.controller.abort();
+        commits.delete(key);
+      }
     },
     preuploadStagedAttachment: async () => {},
     releaseStagedAttachmentPreupload: async () => {},
@@ -334,7 +358,15 @@ export async function mintVoiceCredential({ request }, agentId) {
 export function createPersistence(initial) {
   const store = { ...(initial ?? {}) };
   let writes = Promise.resolve();
-  const commit = ops => { writes = writes.catch(() => {}).then(() => native('persistence', { ops })); return writes; };
+  const commit = ops => {
+    writes = writes.catch(() => {}).then(async () => {
+      await native('persistence', { ops });
+      for (const { op, key, value } of ops) {
+        if (op === 'remove') delete store[key]; else store[key] = value;
+      }
+    });
+    return writes;
+  };
   const longest = (key, prefixes) => prefixes.reduce((length, prefix) => key.startsWith(prefix) ? Math.max(length, prefix.length) : length, -1);
   return {
     readClientPersistence: ({ key }) => store[key] ?? null,
@@ -342,14 +374,11 @@ export function createPersistence(initial) {
       const included = longest(key, include);
       return included >= 0 && included >= longest(key, exclude);
     })),
-    writeClientPersistence: async ({ key, value }) => { store[key] = value; await commit([{ op: 'set', key, value }]); },
-    removeClientPersistence: async ({ key }) => { delete store[key]; await commit([{ op: 'remove', key }]); },
+    writeClientPersistence: ({ key, value }) => commit([{ op: 'set', key, value }]),
+    removeClientPersistence: ({ key }) => commit([{ op: 'remove', key }]),
     listClientPersistenceKeys: ({ prefix }) => Object.keys(store).filter(key => key.startsWith(prefix)),
     hasMigratedClientPersistence: () => true,
-    migrateClientPersistence: async ({ entries }) => {
-      for (const entry of entries) store[entry.key] = entry.value;
-      await commit(entries.map(entry => ({ op: 'set', key: entry.key, value: entry.value })));
-    },
+    migrateClientPersistence: ({ entries }) => commit(entries.map(entry => ({ op: 'set', key: entry.key, value: entry.value }))),
   };
 }
 
@@ -380,8 +409,9 @@ export function createServices(context) {
   const { gateway, server, emit, settings, systemLocale, theme, language, boot, experiments,
     profile, voice, persistence, attachments, onSettingsChanged } = context;
   const { command, request } = gateway;
-  const notificationPreferences = { sound: 'ping-1-open-blip', playSound: true,
-    ...(persistence.readClientPersistence({ key: 'grokbot-android:notification-preferences' }) ?? {}) };
+  const notificationKey = 'grokbot-android:notification-preferences';
+  const notificationPreferences = () => ({ sound: 'ping-1-open-blip', playSound: true,
+    ...(persistence.readClientPersistence({ key: notificationKey }) ?? {}) });
   const saveSetting = async (key, value) => {
     const result = await native('settings', { key, value });
     if (result.settings) Object.assign(settings, result.settings);
@@ -425,14 +455,14 @@ export function createServices(context) {
       await command('setHostSettings', { autoReviewInstructions: instructions });
       return (await command('getHostSettings')).autoReviewInstructions;
     },
-    getDesktopNotificationPreferences: () => ({ ...notificationPreferences }),
-    getNotificationPreferences: () => ({ ...notificationPreferences }),
+    getDesktopNotificationPreferences: notificationPreferences,
+    getNotificationPreferences: notificationPreferences,
     setDesktopNotificationPreferences: async ({ preferences }) => {
       const choices = ['ping-1-open-blip', 'ping-2-tick', 'ping-3-double-tick', 'ping-4-chime-a', 'ping-5-chime-b'];
       if (typeof preferences?.playSound !== 'boolean' || !choices.includes(preferences.sound)) throw new Error('Invalid notification preferences');
-      Object.assign(notificationPreferences, { sound: preferences.sound, playSound: preferences.playSound });
-      await persistence.writeClientPersistence({ key: 'grokbot-android:notification-preferences', value: { ...notificationPreferences } });
-      return { ...notificationPreferences };
+      const value = { sound: preferences.sound, playSound: preferences.playSound };
+      await persistence.writeClientPersistence({ key: notificationKey, value });
+      return { ...value };
     },
     setViewingAgent: ({ agentId }) => native('viewing-agent', { agentId: typeof agentId === 'string' ? agentId : '' }).then(() => null),
     setComposingAgent: () => null,
@@ -475,7 +505,7 @@ export function createServices(context) {
     // The desktop's on-disk transcript cache answers null while it is not in use; there is none here.
     readTranscriptStoreTail: () => null,
     getUpdateStatus: () => ({
-      state: { type: 'disabled', reason: 'disabled-by-env' }, currentVersion: androidBoot.appVersion ?? '0.71.2',
+      state: { type: 'disabled', reason: 'disabled-by-env' }, currentVersion: androidBoot.appVersion ?? '',
       currentTrack: 'stable', availableTracks: ['stable'], isTrackManagedByPolicy: true,
       delivery: 'package-manager', isBelowMinimumVersion: false, autoUpdateWhenIdle: false,
     }),

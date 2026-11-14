@@ -54,8 +54,17 @@ test('failed HTTP and fingerprint checks leave no cached input or partial downlo
   assert.equal(f.requests(), 3);
 });
 
-test('an explicit original app or DMG is used without contacting the download server', async () => {
-  for (const source of ['./original.app', './original.dmg']) {
-    assert.equal(await acquireDesktopSource({ source, fetchImpl: () => { throw new Error('Unexpected download'); } }), path.resolve(source));
-  }
+test('an explicit original app is passed to bundle verification without downloading', async () => {
+  assert.equal(await acquireDesktopSource({ source: './original.app', fetchImpl: () => assert.fail('network') }), path.resolve('original.app'));
+});
+
+test('an explicit DMG must match its entire archive pin before it is mounted', async t => {
+  const f = await fixture(t), source = path.join(f.options.cacheDirectory, 'input.DMG');
+  const options = { ...f.options, source, fetchImpl: () => assert.fail('network') };
+  await writeFile(source, body);
+  assert.equal(await acquireDesktopSource(options), source);
+  const damaged = Buffer.from(body); damaged[damaged.length - 1] ^= 1;
+  await writeFile(source, damaged);
+  await assert.rejects(acquireDesktopSource(options), /DMG/);
+  assert.deepEqual(await readFile(source), damaged); assert.equal(f.requests(), 0);
 });

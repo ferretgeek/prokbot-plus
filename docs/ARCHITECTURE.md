@@ -86,7 +86,7 @@ flowchart LR
 | **按模型设置上下文** | 每个模型的容量和开始摘要的时机可以单独设置 |
 | **管理网页** | 所有设置都在浏览器里完成，支持中英文、深浅色和手机屏幕 |
 | **分开部署** | Host 和执行电脑可以放在不同的机器上，见 [host/README.md](../host/README.md#分开部署执行电脑) |
-| **备份恢复** | 备份全部数据，恢复成一个新的实例 |
+| **备份恢复** | 备份选定项目的受管卷，在未使用的项目名下恢复；不含镜像、实例 `.env`、其他主机或操作系统，也不保证备份后新写入的消息。 |
 
 ## 各部分的实现
 
@@ -385,6 +385,12 @@ iOS 注入库的网络层另有一项测试，要在装了 Xcode 命令行工具
 **ARM 发布验收**：选一台获准测试的空闲 ARM64 Linux，不复用生产卷。按[部署手册](AI-INSTALL.md)做同机新装，记录 `doctor` 的 Host 架构、桌面模式、构建是否完成。用客户端配对、两轮聊天并在桌面创建一个无敏感内容的文件，打开 VNC 看见它；运行 `backup`、`update`，确认对话和文件都还在。记录服务器型号、冷启动时间和桌面响应体验。单独的 Host 核心、预检探针或模型测试均不能替代这组结果。
 
 ## 二次开发入口
+
+两份首页的版本区块从 `ci/official-snapshot.json` 和实际补丁清单生成；从实时通道取得新版并核对产品身份后才更新快照。运行 `node ci/homepage-versions.mjs --write` 和 `node ci/homepage-versions.mjs`。这两个命令都不改补丁或签名。Android `versionName/versionCode` 从编译后的 `AndroidManifest.xml` 另验；不能用桌面界面版本代替。
+
+2026-11-14 稳定通道后来发布了 Windows x64 / macOS ARM64 **1.1.0**（构建 `83d46d618ef4c12afa17edd8e3c29d6caf046d17`）。截至核对时，[官方更新日志](https://x.ai/changelog/bot)只到 1.0.1，并没有说明 1.0.3 到 1.1.0 改了哪些功能。[官方部署说明](https://docs.x.ai/grok-bot/deployment)区分桌面 App 和厂商管理的云电脑；桌面版本不对应可获取的 Host 或执行镜像版本。对新版原包执行的只读检查为 `node ci/desktop-source-audit.mjs <windows|mac> <原包中的 app.asar> 1.1.0 <已核对的 ASAR SHA-256>`。它不执行官方代码，也不生成或发布客户端。
+
+1.1.0 实物：Windows 完整 EXE SHA-256 `01ccb10f2144ea0eb787042c54fc4b8ca2c6f43eccb7dabe5fe5eb86fa5ed044`，Anysphere Authenticode 有效；Mac 完整 DMG SHA-256 `80b718f4ba9e75d9b240675591fd5f024ecc8aa1913180c50d075fdb5a330d78`，只读解包核对内部版本与 Bundle ID，未在 Mac 验签或启动。两端各 16 个旧补丁输入：10 个路径缺失，另 6 个内容变化。完整摘要和 ASAR 摘要在仓库 `ci/official-snapshot.json`；这是观察记录，不是构建白名单。
 
 升级原版的顺序：先运行 `node ci/check-inputs.mjs` 查看当前清单，再更新对应平台的 `supported.json` / `manifest.json` 和 recipe。重新运行检查与四套测试，用自己下载的固定输入构建，在客户端验证聊天和工具；不发布原版程序。改 Host 还需在目标架构重建镜像。下面的表只列修改入口，不另设第二份版本表。
 

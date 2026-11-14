@@ -47,10 +47,242 @@ test('attachment download reports a failed system save even after all bytes were
   });
   const old = globalThis.alert; globalThis.alert = message => alerts.push(message);
   t.after(() => { if (old === undefined) delete globalThis.alert; else globalThis.alert = old; });
-  const api = client.services.createAttachments({ command: async () => ({ totalSize: 1, bytesBase64: 'eA==' }) });
+  const api = client.services.createAttachments({ staging: client.services.createStaging(),
+    command: async () => ({ totalSize: 1, bytesBase64: 'eA==' }) });
   assert.equal(await api.downloadAttachment({ path: '/data/demo.txt' }), false);
   assert.ok(calls.includes('/__native/save-chunk?id=demo'));
   assert.equal(alerts.length, 1);
+});
+
+test('an unreadable attachment never opens the system picker; a later interruption closes the partial save', async t => {
+  const calls = [], reads = [], alerts = [];
+  let readableHead = false;
+  t.mock.method(globalThis, 'fetch', async (url, init) => {
+    if (!url.endsWith('/log')) calls.push([url, url.endsWith('save-end') ? JSON.parse(init.body).ok : null]);
+    return Response.json(url.endsWith('save-begin') ? { id: 'demo' } : { ok: true });
+  });
+  const oldAlert = globalThis.alert; globalThis.alert = text => alerts.push(text);
+  t.after(() => { if (oldAlert === undefined) delete globalThis.alert; else globalThis.alert = oldAlert; });
+  const api = client.services.createAttachments({ staging: client.services.createStaging(), command: async (_method, { length, offset }) => {
+    reads.push({ length, offset });
+    if (!length) return { totalSize: 2, bytesBase64: '' };
+    if (!readableHead || offset) throw new Error('Fixture interrupted');
+    return { totalSize: 2, bytesBase64: 'YQ==' };
+  } });
+  assert.equal(await api.downloadAttachment({ path: '/demo/file' }), false);
+  assert.deepEqual(calls, [], 'a failed first read still created a system document');
+  assert.ok(reads[0].length > 0 && reads[0].length <= 65536);
+  readableHead = true;
+  assert.equal(await api.downloadAttachment({ path: '/demo/file' }), false);
+  assert.deepEqual(calls, [['/__native/save-begin', null], ['/__native/save-chunk?id=demo', null], ['/__native/save-end', false]]);
+  assert.equal(alerts.length, 2);
+});
+
+test('staged attachment previews accept renderer file URLs and downloads never ask the Host for phone bytes', async t => {
+  const calls = [], alerts = [], host = [];
+  let cancel = false;
+  t.mock.method(globalThis, 'fetch', async (endpoint, init) => {
+    calls.push([endpoint, init.headers['content-type'] === 'application/json' ? JSON.parse(init.body) : [...init.body]]);
+    return Response.json(endpoint.endsWith('save-begin') ? (cancel ? { cancelled: true } : { id: 'demo' }) : { ok: true });
+  });
+  const oldAlert = globalThis.alert; globalThis.alert = message => alerts.push(message);
+  t.after(() => { if (oldAlert === undefined) delete globalThis.alert; else globalThis.alert = oldAlert; });
+  const api = client.services.createAttachments({ staging: client.services.createStaging(), command: async method => { host.push(method); return null; } });
+  const { path } = await api.stageAttachmentBytes({ filename: 'demo.txt', bytes: new Uint8Array([65, 66]) });
+  const input = { path: `file://${path}` };
+  assert.equal((await api.readAttachmentText(input)).text, 'AB');
+  assert.equal(await api.downloadAttachment(input), true);
+  assert.deepEqual(calls, [['/__native/save-begin', { name: 'demo.txt', mime: 'text/plain' }],
+    ['/__native/save-chunk?id=demo', [65, 66]], ['/__native/save-end', { id: 'demo', ok: true }]]);
+  cancel = true; calls.length = 0;
+  assert.equal(await api.downloadAttachment(input), false);
+  assert.deepEqual(calls.map(([method]) => method), ['/__native/save-begin']);
+  assert.deepEqual(alerts, []);
+  assert.deepEqual(host, []);
+});
+
+test('upload reaches 100 percent only on Host commit, retries original bytes, and coalesces path aliases', async () => {
+  const progress = [], chunks = [];
+  let accepted = false;
+  const api = client.services.createAttachments({ staging: client.services.createStaging(),
+    onProgress: ({ fraction }) => progress.push(fraction), command: async (_method, args) => {
+      chunks.push(args.bytesBase64);
+      return accepted ? { committedPath: '/demo/note.txt' } : {};
+    } });
+  const { path } = await api.stageAttachmentBytes({ filename: 'note.txt', bytes: Uint8Array.of(65) });
+  const commit = source => api.commitStagedAttachments({ agentId: 'demo', filenames: ['note.txt'], paths: [source], progressKey: 'demo' });
+  await assert.rejects(commit(path));
+  assert.ok(!progress.includes(1), 'uncommitted bytes reported complete');
+  accepted = true;
+  assert.deepEqual(await commit(`file://${path}`), ['/demo/note.txt']);
+  assert.deepEqual(await commit(path), ['/demo/note.txt']);
+  assert.equal(progress.at(-1), 1);
+  assert.deepEqual(chunks, ['QQ==', 'QQ==']);
+});
+
+test('removing a staged attachment cancels its pending upload before another chunk is sent', async () => {
+  const started = Promise.withResolvers(), reply = Promise.withResolvers(), progress = [], offsets = [];
+  const api = client.services.createAttachments({ staging: client.services.createStaging(),
+    onProgress: ({ fraction }) => progress.push(fraction), command: async (_method, { offset }, signal) => {
+      offsets.push(offset);
+      if (offset) return { committedPath: '/demo/note.txt' };
+      started.resolve(signal);
+      return reply.promise;
+    } });
+  const { path } = await api.stageAttachmentBytes({ filename: 'note.txt', bytes: new Uint8Array(4 * 1024 * 1024 + 1) });
+  const pending = api.commitStagedAttachments({ agentId: 'demo', filenames: ['note.txt'], paths: [path], progressKey: 'demo' });
+  const signal = await started.promise;
+  await api.discardStagedAttachment({ path: `file://${path}` });
+  await api.discardStagedAttachment({ path });
+  reply.resolve({});
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(signal.aborted, true);
+  assert.deepEqual(offsets, [0]);
+  assert.deepEqual(progress, [0]);
+  assert.equal(await api.readAttachmentBytes({ path }), null);
+});
+
+test('each upload chunk gets its own deadline while the complete transfer can take longer', async t => {
+  const deadlines = [];
+  let elapsed = 0, stalled = false;
+  t.mock.method(AbortSignal, 'timeout', ms => {
+    const controller = new AbortController();
+    deadlines.push({ controller, at: elapsed + ms });
+    return controller.signal;
+  });
+  const api = client.services.createAttachments({ staging: client.services.createStaging(), command: async (_method, args, signal) => {
+    elapsed += stalled ? 120001 : 75000;
+    for (const { at, controller } of deadlines) if (elapsed >= at) controller.abort(new DOMException('Chunk deadline', 'TimeoutError'));
+    if (signal.aborted) throw signal.reason;
+    return args.offset ? { committedPath: '/demo/slow.txt' } : {};
+  } });
+  const { path } = await api.stageAttachmentBytes({ filename: 'slow.txt', bytes: new Uint8Array(4 * 1024 * 1024 + 1) });
+  const args = { agentId: 'demo', filenames: ['slow.txt'], paths: [path] };
+  assert.deepEqual(await api.commitStagedAttachments(args), ['/demo/slow.txt']);
+  assert.equal(elapsed, 150000);
+  assert.deepEqual(deadlines.map(d => d.at), [120000, 195000]);
+  stalled = true;
+  await assert.rejects(api.commitStagedAttachments({ ...args, agentId: 'another' }), { name: 'TimeoutError' });
+});
+
+test('failed settings writes do not appear saved in either the preference or persistence API', async t => {
+  const storageKey = 'grokbot-android:notification-preferences';
+  const original = { sound: 'ping-1-open-blip', playSound: true };
+  const next = { sound: 'ping-2-tick', playSound: false };
+  const persistence = client.services.createPersistence({ [storageKey]: original });
+  const services = client.services.createServices({ gateway: {}, settings: {}, persistence, profile: { handlers: {} } });
+  let fail = true;
+  t.mock.method(globalThis, 'fetch', async () => Response.json(fail ? { ok: false, error: 'Could not save' } : { ok: true }));
+  await assert.rejects(services.call('setDesktopNotificationPreferences', { preferences: next }), /Could not save/);
+  assert.deepEqual(await services.call('getNotificationPreferences'), original);
+  assert.deepEqual(persistence.readClientPersistence({ key: storageKey }), original);
+  fail = false;
+  assert.deepEqual(await services.call('setDesktopNotificationPreferences', { preferences: next }), next);
+  fail = true;
+  await assert.rejects(persistence.removeClientPersistence({ key: storageKey }), /Could not save/);
+  await assert.rejects(persistence.migrateClientPersistence({ entries: [{ key: 'fixture', value: true }] }), /Could not save/);
+  assert.deepEqual(persistence.readClientPersistence({ key: storageKey }), next);
+  assert.equal(persistence.readClientPersistence({ key: 'fixture' }), null);
+});
+
+test('gateway distinguishes a null reply from malformed or interrupted success responses', async t => {
+  const gw = client.gateway.createGateway();
+  let response;
+  t.mock.method(globalThis, 'fetch', async () => response);
+  response = Response.json(null);
+  assert.equal(await gw.command('listAgents'), null);
+  response = new Response('{');
+  await assert.rejects(gw.command('listAgents'), SyntaxError);
+  const stop = new DOMException('cancelled while reading', 'AbortError');
+  response = new Response(new ReadableStream({ start(controller) { controller.error(stop); } }));
+  await assert.rejects(gw.command('listAgents'), error => error === stop);
+  response = new Response('not JSON', { status: 502 });
+  await assert.rejects(gw.command('listAgents'), error => error.httpStatus === 502 && error.message === 'HTTP 502');
+  gw.close();
+});
+
+test('reconnect resumes after the last delivered event, then stops on cancellation', async t => {
+  const control = new AbortController(), seen = [], requests = [], states = [];
+  t.mock.method(globalThis, 'fetch', async (_endpoint, { headers }) => {
+    requests.push(headers);
+    const id = requests.length;
+    return new Response(`id: ${id}\ndata: {"n":${id}}\n\n` + (id === 2 ? 'id: 3\ndata: {"n":3}\n\n' : ''));
+  });
+  await client.gateway.subscribe('/events', frame => {
+    seen.push(frame.data.n);
+    if (frame.data.n === 2) control.abort();
+  }, control.signal, { onConnected: () => states.push('online'), onDisconnected: () => states.push('reconnecting') });
+  assert.deepEqual(seen, [1, 2]);
+  assert.deepEqual(requests, [{}, { 'Last-Event-ID': '1' }]);
+  assert.deepEqual(states, ['online', 'reconnecting', 'online']);
+  assert.equal(getEventListeners(control.signal, 'abort').length, 0);
+});
+
+test('an empty event ID clears the cursor and a revoked connection is not retried', async t => {
+  const headers = [], control = new AbortController();
+  let unauthorized = 0;
+  t.mock.method(globalThis, 'fetch', async (_url, init) => {
+    headers.push(init.headers['Last-Event-ID']);
+    return headers.length === 3 ? new Response(null, { status: 401 })
+      : new Response(`id: ${headers.length === 1 ? 'demo-1' : ''}\ndata: {}\n\n`);
+  });
+  await client.gateway.subscribe('/events', () => {}, control.signal, { onUnauthorized: () => { unauthorized++; } });
+  assert.deepEqual(headers, [undefined, 'demo-1', undefined]);
+  assert.equal(unauthorized, 1);
+});
+
+test('short HTTP 200 event streams back off even with a snapshot; a stable stream resets the delay', async t => {
+  const delays = [], control = new AbortController();
+  let attempt = 0, clock = 0;
+  const timer = globalThis.setTimeout;
+  t.mock.method(globalThis, 'setTimeout', (fn, ms, ...args) => {
+    if (ms === 15000) return timer(fn, ms, ...args); // Connection-header timeout, not a retry.
+    delays.push(ms);
+    return timer(fn, 0, ...args);
+  });
+  t.mock.method(performance, 'now', () => clock);
+  t.mock.method(globalThis, 'fetch', async () => {
+    ++attempt;
+    if (attempt === 10) return new Response(null, { status: 401 });
+    return new Response(attempt === 3 || attempt === 8 ? `data: {"stable":${attempt === 8}}\n\n` : '');
+  });
+  await client.gateway.subscribe('/events', frame => { if (frame.data.stable) clock += 30001; }, control.signal);
+  assert.deepEqual(delays, [500, 1000, 2000, 4000, 8000, 10000, 10000, 500, 1000]);
+});
+
+test('completed requests release fallback abort listeners on WebViews without AbortSignal.any', async t => {
+  const old = AbortSignal.any;
+  AbortSignal.any = undefined;
+  t.after(() => { AbortSignal.any = old; });
+  const control = new AbortController(), gw = client.gateway.createGateway();
+  t.mock.method(globalThis, 'fetch', async () => Response.json({}));
+  try {
+    for (let i = 0; i < 4; ++i) await gw.command('listAgents', {}, control.signal);
+    assert.equal(getEventListeners(control.signal, 'abort').length, 0);
+  } finally { gw.close(); }
+});
+
+test('cancelling a coordinator request aborts its fetch and settles only that request', async t => {
+  const gw = client.gateway.createGateway(), { port1, port2 } = new MessageChannel();
+  const dispose = gw.attach(port1);
+  t.after(() => { dispose(); port2.close(); gw.close(); });
+  const started = Promise.withResolvers(), cancelled = Promise.withResolvers(), next = Promise.withResolvers();
+  port2.onmessage = ({ data }) => (data.requestId === 'slow' ? cancelled : next).resolve(data.outcome);
+  t.mock.method(globalThis, 'fetch', async (endpoint, { signal }) => {
+    if (endpoint.endsWith('/listAgents')) {
+      started.resolve(signal);
+      return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    }
+    return Response.json({ theme: 'system' });
+  });
+  const send = (requestId, method) => port2.postMessage({ kind: 'request', requestId, method, args: {} });
+  send('slow', 'listAgents');
+  const signal = await started.promise;
+  port2.postMessage({ kind: 'cancel', requestId: 'slow' });
+  send('next', 'getHostSettings');
+  assert.deepEqual(await next.promise, { status: 'ok', value: { theme: 'system' } });
+  assert.equal(signal.aborted, true);
+  assert.equal((await cancelled.promise).failure.code, 'cancelled');
 });
 
 test('APK entries are aligned, signed with scheme v2 and checked against tampering', () => {
@@ -199,6 +431,12 @@ test('wide image attachments are scaled down to the message column', () => {
   client.layout.fitAttachmentFrames({ querySelectorAll: () => [wide, narrow] });
   assert.deepEqual(wide.style, { width: '240px', height: '135px' });
   assert.deepEqual(narrow.style, { width: '160px', height: '90px' });
+  wide.parentElement.clientWidth = 360;
+  client.layout.fitAttachmentFrames({ querySelectorAll: () => [wide] });
+  assert.deepEqual(wide.style, { width: '320px', height: '180px' });
+  Object.assign(wide.style, { width: '400px', height: '200px' });
+  client.layout.fitAttachmentFrames({ querySelectorAll: () => [wide] });
+  assert.deepEqual(wide.style, { width: '360px', height: '180px' });
 });
 
 

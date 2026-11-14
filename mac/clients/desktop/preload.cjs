@@ -1,3 +1,4 @@
+require('./workspace-keys.cjs');
 require('../dist/electron-preload/preload.cjs');
 const { ipcRenderer, contextBridge } = require('electron');
 contextBridge.exposeInMainWorld('localBot', {

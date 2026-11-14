@@ -12,7 +12,7 @@ func TestDirectoryOwnership(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "installation")
 	check := func(install, want bool) {
 		t.Helper()
-		if err := checkDirectory(dir, install); (err == nil) != want {
+		if _, _, err := inspectDirectory(dir, install); (err == nil) != want {
 			t.Fatalf("install=%v want=%v error=%v", install, want, err)
 		}
 	}
@@ -41,10 +41,10 @@ func TestDirectoryOwnership(t *testing.T) {
 	put("resources/grokbot-local.patch.json", `{}`)
 	check(false, false)
 	put("resources/grokbot-local.patch.json", `{"appUserModelId":"dev.grokbot.local"}`)
-	check(true, true)
-	check(false, true)
+	check(true, false)
+	check(false, false)
 	for _, invalid := range []string{".", "", filepath.VolumeName(dir) + `\`} {
-		if err := checkDirectory(invalid, true); err == nil {
+		if _, _, err := inspectDirectory(invalid, true); err == nil {
 			t.Fatalf("accepted %q", invalid)
 		}
 	}

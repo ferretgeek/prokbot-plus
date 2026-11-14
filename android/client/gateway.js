@@ -2,7 +2,9 @@
 // streams.mjs. Requests go to the page's own origin; the Android shell forwards
 // them to the paired Host and adds the device credential, which the page never holds.
 import { grokText } from './desktop/i18n.mjs';
-import { anySignal, timeout } from './native.js';
+import { combineSignals, timeout } from './native.js';
+
+const FIRST_RETRY_MS = 500, MAX_RETRY_MS = 10000, STABLE_STREAM_MS = 30000;
 
 export async function readSse(body, consume) {
   const reader = body.getReader();
@@ -41,8 +43,9 @@ export function wait(ms, signal) {
 }
 
 export async function subscribe(endpoint, consume, signal, options = {}) {
-  let failures = 0, lastId = options.lastId ?? '';
+  let retryMs = FIRST_RETRY_MS, lastId = options.lastId ?? '';
   while (!signal.aborted) {
+    let openedAt;
     const request = new AbortController();
     const abort = () => request.abort(signal.reason);
     signal.addEventListener('abort', abort, { once: true });
@@ -53,25 +56,30 @@ export async function subscribe(endpoint, consume, signal, options = {}) {
         signal: request.signal, redirect: 'error', credentials: 'same-origin', cache: 'no-store',
       });
       clearTimeout(timer);
+      if (request.signal.aborted) throw request.signal.reason;
       if (response.status === 401) { options.onUnauthorized?.(); return; }
       if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
-      failures = 0;
+      openedAt = performance.now();
       options.onConnected?.();
       await readSse(response.body, async frame => {
+        if (request.signal.aborted) throw request.signal.reason;
         await consume(frame);
-        if (frame.id) lastId = frame.id;
+        if (frame.id !== undefined && !frame.id.includes('\0')) lastId = frame.id;
       });
       throw new Error('事件连接结束');
     } catch {
       if (signal.aborted) return;
+      // A proxy may send 200 (even an initial snapshot) and immediately close each time.
+      if (openedAt !== undefined && performance.now() - openedAt >= STABLE_STREAM_MS) retryMs = FIRST_RETRY_MS;
       options.onDisconnected?.();
     } finally {
       clearTimeout(timer);
       signal.removeEventListener('abort', abort);
       request.abort();
     }
-    try { await wait(Math.min(500 * 2 ** Math.min(failures++, 4), 10000), signal); }
+    try { await wait(retryMs, signal); }
     catch { return; }
+    retryMs = Math.min(retryMs * 2, MAX_RETRY_MS);
   }
 }
 
@@ -84,17 +92,22 @@ export function createGateway({ onUnauthorized, onConnected, onStateChanged } = 
 
   async function request(endpoint, args, signal, method = 'POST') {
     if (lifetime.signal.aborted) throw closed();
-    const response = await fetch(endpoint, {
-      method, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
-      headers: method === 'GET' ? {} : { 'Content-Type': 'application/json' },
-      ...(method === 'GET' ? {} : { body: JSON.stringify(args ?? {}) }),
-      signal: signal ? anySignal([signal, lifetime.signal]) : lifetime.signal,
-    });
-    if (response.status === 401) onUnauthorized?.();
-    const value = await response.json().catch(() => null);
-    if (!response.ok) throw Object.assign(new Error(value?.message ?? value?.error ?? `HTTP ${response.status}`),
-      { httpStatus: response.status, failureCode: value?.failureCode });
-    return value;
+    const combined = combineSignals([signal, lifetime.signal]);
+    try {
+      const response = await fetch(endpoint, {
+        method, credentials: 'same-origin', cache: 'no-store', redirect: 'error',
+        headers: method === 'GET' ? {} : { 'Content-Type': 'application/json' },
+        ...(method === 'GET' ? {} : { body: JSON.stringify(args ?? {}) }),
+        signal: combined.signal,
+      });
+      if (response.status === 401) onUnauthorized?.();
+      if (!response.ok) {
+        const value = await response.json().catch(() => null);
+        throw Object.assign(new Error(value?.message ?? value?.error ?? `HTTP ${response.status}`),
+          { httpStatus: response.status, failureCode: value?.failureCode });
+      }
+      return response.status === 204 || response.status === 205 ? null : await response.json();
+    } finally { combined.dispose(); }
   }
 
   async function command(method, args = {}, signal) {
@@ -112,6 +125,7 @@ export function createGateway({ onUnauthorized, onConnected, onStateChanged } = 
     const controller = new AbortController();
     if (lifetime.signal.aborted) { port.close(); return () => {}; }
     let subscribed = false, generation = 0;
+    const pending = new Map();
     const send = frame => { if (!controller.signal.aborted) port.postMessage(frame); };
     const emit = (family, payload) => send({ kind: 'event', family, payload });
     const receive = async ({ data: frame }) => {
@@ -128,24 +142,35 @@ export function createGateway({ onUnauthorized, onConnected, onStateChanged } = 
             onUnauthorized,
           });
         }
-      } else if (frame.kind === 'request') {
+      } else if (frame.kind === 'cancel') {
+        pending.get(frame.requestId)?.abort();
+      } else if (frame.kind === 'request' && !pending.has(frame.requestId)) {
+        const call = new AbortController();
+        pending.set(frame.requestId, call);
         try {
+          const value = await command(frame.method, frame.args, call.signal);
+          if (call.signal.aborted) throw call.signal.reason;
           send({ kind: 'reply', requestId: frame.requestId,
-            outcome: { status: 'ok', value: await command(frame.method, frame.args, controller.signal) } });
+            outcome: { status: 'ok', value } });
         } catch (error) {
           send({ kind: 'reply', requestId: frame.requestId, outcome: { status: 'failed', failure: {
-            code: 'gateway-command-failed', message: error.message,
+            code: call.signal.aborted ? 'cancelled' : error instanceof SyntaxError ? 'gateway-malformed-reply' : 'gateway-command-failed',
+            message: error.message,
             ...(error.httpStatus ? { httpStatus: error.httpStatus } : {}),
             ...(error.failureCode ? { failureCode: error.failureCode } : {}),
           } } });
-        }
+        } finally { pending.delete(frame.requestId); }
       }
     };
     const listener = event => { void receive(event); };
     const cleanup = () => {
+      if (controller.signal.aborted) return;
       controller.abort(); streams.delete(controller);
+      for (const call of pending.values()) call.abort();
+      pending.clear();
       lifetime.signal.removeEventListener('abort', cleanup);
       port.removeEventListener('message', listener);
+      port.removeEventListener('close', cleanup);
       if (!streams.size && !lifetime.signal.aborted) updateState('reconnecting');
     };
     lifetime.signal.addEventListener('abort', cleanup, { once: true });

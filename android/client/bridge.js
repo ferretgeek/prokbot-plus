@@ -298,7 +298,7 @@ window.__grokbotAndroid = Object.freeze({
 
 addEventListener('pagehide', () => { for (const dispose of ports) dispose(); ports.clear(); gateway.close(); });
 // The Host lists unnamed desktop clients as Macs; report this device once per session.
-void gateway.request('/local/device', { kind: 'desktop', clientKind: 'android', appVersion: androidBoot.appVersion ?? '0.71.2' }, undefined, 'PUT').catch(() => {});
+void gateway.request('/local/device', { kind: 'desktop', clientKind: 'android', appVersion: androidBoot.appVersion }, undefined, 'PUT').catch(() => {});
 void profile.refresh().catch(() => {});
 void voice.refresh();
 applyChrome();

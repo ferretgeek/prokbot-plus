@@ -13,6 +13,8 @@ The official Android app (`ai.x.grok.bot` 1.16.0) carries Google Play tamper pro
 - The interface is the official **desktop** interface, the same one as in the Windows and Mac clients, taken from your own download of the official Windows 0.71.2 installer.
 - It runs inside an Android shell written for this project (`shell/`), which connects to the Host and handles credentials, notifications, files, the back gesture and other phone features.
 
+Android installs the **project's shell**, `dev.grokbot.local`: `versionName` **1.1.0**, `versionCode` **10100**. The Windows renderer remains pinned to **0.71.2**. A shell release does not add support for a newer renderer or change the installed app's identity.
+
 ## Usage
 
 From the repository root:
@@ -25,20 +27,23 @@ The tool downloads and verifies the official `Grok_Bot_0.71.2_Setup.exe` (the sa
 
 | Output | Purpose |
 | --- | --- |
-| `GrokBotLocal-0.71.2-android.apk` | Install it on the phone |
-| `GrokBotLocal-0.71.2-android.patch.json` | Build record: input digests, APK digest, signing certificate fingerprint |
+| `GrokBotLocal-1.1.0-android.apk` | Install it on the phone; the filename uses the shell version |
+| `GrokBotLocal-1.1.0-android.patch.json` | Build record: shell and renderer versions, input digests, APK digest and signing certificate fingerprint |
 
-Copy the APK to the phone and install it (allow "Install unknown apps"), or use `adb install -r`. Open it and enter the Host address and the six-character pairing code.
+The verification report, the patch record and `assets/web/client/build.json` inside the APK use `shell.versionName`, `shell.versionCode` and `rendererVersion` instead of the old ambiguous `version` field. Before writing the outputs, the patcher checks the signed APK's compiled manifest and embedded build record against the pins.
+
+Copy the APK to the phone and install it (allow "Install unknown apps"), or use `adb install -r`. Open it and enter the Host address and the six-character pairing code. A paired phone retries only its original Host origin. If the hostname, scheme, or port changes, get a fresh code from the new Host. Do not uninstall the app to repair pairing.
 
 <p align="center"><img src="../docs/images/android-connect-en.png" alt="First-time pairing on Android: enter the Host address and pairing code" width="240"></p>
 
 | Option | Effect |
 | --- | --- |
 | `--source <file or folder>` | Use a downloaded official installer, `app-64.7z` or an installed original folder |
+| `--shell <file>` | Use another copy of the reviewed shell; its SHA-256, package name and both version fields must match |
 | `--output <folder>` | Output folder, `android/output/` by default |
 | `--signing-key <file>` | Signing key file, `~/.grokbot-local/android-signing.json` by default |
 | `--force` | Overwrite existing output |
-| `--verify-only` | Verify the inputs without building |
+| `--verify-only` | Check the inputs and shell, replay the Windows recipes, then validate the Android entry, bridge injection, CSP, preloads and pinned renderer edits in a temporary directory. No output APK, patch record or signing-key access |
 
 ### Signing key
 
@@ -72,7 +77,8 @@ The first build creates a signing key that belongs only to you (`~/.grokbot-loca
 ## Maintenance
 
 - `client/`: bridge code that runs in the WebView in place of Electron's main process and preload. `patchers/renderer-patches.mjs`: the few changes to the official interface (each file verified by SHA-256, every anchor must be unique).
-- `shell/`: Android shell source (Kotlin, no third-party libraries). After changing it, run `node android/shell/release-shell.mjs` to rebuild `dist/grokbot-android-shell.apk`; it also updates the digest in `patchers/supported.json`. Building needs JDK 17+ and the Android SDK (`ANDROID_HOME`).
+- `shell/`: Android shell source (Kotlin, no third-party libraries). For a new shell release, update `shell/app/build.gradle.kts` and `shell.versionName` / `shell.versionCode` in `patchers/supported.json` together. Increase the code from the previous installed version (the old renderer-numbered shell used 7102). Keep `desktopVersion` and renderer hashes unchanged unless the new Windows input and recipes have been verified.
+- After changing the shell, run `node android/shell/release-shell.mjs`. It checks the compiled manifest before updating `dist/grokbot-android-shell.apk` and its digest. Building needs JDK 17+ and the Android SDK (`ANDROID_HOME`); use `--offline` with a cached Gradle distribution and dependencies. Gradle runs with one worker.
 - Tests: `node --test "android/tests/*.test.mjs"`
 
 ## License and support

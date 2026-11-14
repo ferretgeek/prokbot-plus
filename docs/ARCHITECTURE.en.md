@@ -86,7 +86,7 @@ Upstream ProkBot also added these features, which the original doesn't have:
 | **Per-model context settings** | Set the capacity of each model and when summarization starts, separately for each model |
 | **Admin web page** | All settings are made in the browser. Supports Chinese and English, light and dark themes, and phone screens |
 | **Split deployment** | The Host and the execution computer can run on different machines; see [host/README.en.md](../host/README.en.md#separate-execution-computer) |
-| **Backup and restore** | Back up all data and restore it as a new instance |
+| **Backup and restore** | Back up the selected project’s managed volumes and restore into unused volumes. Images, the instance `.env`, other machines and the OS are not included. Messages written after the snapshot are not covered. |
 
 ## How each part is implemented
 
@@ -385,6 +385,12 @@ After changing code, it's a good idea to also check it for real:
 **ARM release acceptance:** use an authorized, unused ARM64 Linux server, never production volumes. Follow the [install guide](AI-INSTALL.en.md) for a local desktop and record the Host platform, desktop mode and completed build. Pair a client, have a two-turn conversation, create a harmless file on the desktop and see it through VNC. Run `backup` and `update`; verify that both the chat and file survive. Record the machine model, cold start time and desktop responsiveness. An isolated Host core, emulator probe or model test cannot substitute for these results.
 
 ## Where to start for further development
+
+Both README version blocks are generated from `ci/official-snapshot.json` and the actual build pins. Update the snapshot only after checking the live feeds and product identity, then run `node ci/homepage-versions.mjs --write` and `node ci/homepage-versions.mjs`. Neither command changes a patch or signature. Android's app name and code are independently checked in the compiled `AndroidManifest.xml`; its renderer version is not its app version.
+
+Later on November 14, 2026 the Windows x64 and macOS ARM64 feeds published **1.1.0** (build `83d46d618ef4c12afa17edd8e3c29d6caf046d17`). The [public changelog](https://x.ai/changelog/bot) still stopped at 1.0.1 and did not attribute any feature changes to 1.0.3 or 1.1.0. The [vendor deployment guide](https://docs.x.ai/grok-bot/deployment) distinguishes the desktop app from the vendor-managed hosted computer; there is no published mapping to a self-hosted Host or execution image. Run the read-only input check as `node ci/desktop-source-audit.mjs <windows|mac> <stock app.asar> 1.1.0 <verified ASAR SHA-256>`. It neither executes vendor code nor builds or distributes a client.
+
+Observed 1.1.0 originals: Windows full EXE SHA-256 `01ccb10f2144ea0eb787042c54fc4b8ca2c6f43eccb7dabe5fe5eb86fa5ed044` (valid Anysphere Authenticode); Mac full DMG SHA-256 `80b718f4ba9e75d9b240675591fd5f024ecc8aa1913180c50d075fdb5a330d78` (read-only internal version and bundle ID check; no Mac signature check or launch). Of 16 old recipe inputs per platform, 10 paths disappeared and the other 6 changed. The repository snapshot records both original and ASAR hashes as observations, not accepted build inputs.
 
 For an upstream update, first run `node ci/check-inputs.mjs` to see the current inputs. Update the platform's `supported.json` or `manifest.json` and its recipes. Rerun the check and all four test suites, build with your own pinned upstream files, then verify chat and tools from a client. Never distribute upstream programs. Host changes require an image rebuild on the target architecture. The table below maps ownership rather than introducing another version registry.
 

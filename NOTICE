@@ -108,6 +108,11 @@ Public documentation correction (2026-11-14): clarified tested hardware,
 Apple device coverage, version pins and volume-only backup scope. No official
 program or changed release binary is included in that correction.
 
+Client tools update (2026-11-14): separate Android app and renderer versions,
+verify patched inputs in scratch, and publish independently checked client
+tool archives. Official programs and generated clients are not distributed.
+The server implementation is unchanged from the prior default branch.
+
 Third-party components
 ----------------------
 

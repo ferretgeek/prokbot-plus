@@ -1,0 +1,5 @@
+{
+  "schema": "grokbot-bytepatch/v1", "sourceBytes": 10100, "sourceSha256": "60a38f710b8d068949ba7483e745d540077cc6f35a0fdf3fc6c54580eab15885",
+  "targetBytes": 10098, "targetSha256": "617486d14e970b2d550471f863cf7ec862c1e258bef6ceb9ee44dc489e0929e0",
+  "ops": [["copy",0,926],["add","MjA5NzE1MjA="],["copy",934,3],["add","MTA0ODU3NjAw"],["copy",947,138],["add","MjA5NzE1MjA="],["copy",1093,33],["add","MTAw"],["copy",1129,50],["add","MTA0ODU3NjAw"],["copy",1189,1199],["add","MTAw"],["copy",2391,7709]]
+}

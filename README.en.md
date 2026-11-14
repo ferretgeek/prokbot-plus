@@ -7,10 +7,12 @@
 Windows, macOS and iOS patches | [Independently developed Android app (unofficial)](#android-client) | **Linux Host for x86_64 and ARM64** | OpenAI Chat / OpenAI Responses / Anthropic Messages
 
 <p>
-  <img alt="Windows 0.71.2" src="https://img.shields.io/badge/Windows-0.71.2_x64-0078D4?logo=windows&logoColor=white">
-  <img alt="macOS 0.71.2" src="https://img.shields.io/badge/macOS-0.71.2-111111?logo=apple&logoColor=white">
-  <img alt="iOS 1.16.0" src="https://img.shields.io/badge/iOS-1.16.0-111111?logo=apple&logoColor=white">
-  <img alt="Android 9+" src="https://img.shields.io/badge/Android-9%2B-3DDC84?logo=android&logoColor=white">
+<!-- client-badges:start -->
+  <a href="#client-versions"><img alt="Windows official 1.1.0 x64" src="https://img.shields.io/badge/Windows%20official-1.1.0%20x64-0078D4?logo=windows&logoColor=white"></a>
+  <a href="#client-versions"><img alt="macOS official 1.1.0 ARM64" src="https://img.shields.io/badge/macOS%20official-1.1.0%20ARM64-111111?logo=apple&logoColor=white"></a>
+  <a href="#client-versions"><img alt="iOS official 1.25.0" src="https://img.shields.io/badge/iOS%20official-1.25.0-111111?logo=apple&logoColor=white"></a>
+  <a href="#client-versions"><img alt="Android shell 1.1.0" src="https://img.shields.io/badge/Unofficial%20Android-1.1.0-237E55?logo=android&logoColor=white"></a>
+<!-- client-badges:end -->
   <img alt="Host d0a4baa" src="https://img.shields.io/badge/Host-d0a4baa-2496ED?logo=docker&logoColor=white">
   <img alt="Noncommercial License" src="https://img.shields.io/badge/License-Noncommercial-6B7280">
   <a href="https://linux.do"><img alt="LINUX DO" src="https://img.shields.io/badge/Community-LINUX%20DO-F5A623"></a>
@@ -19,6 +21,21 @@ Windows, macOS and iOS patches | [Independently developed Android app (unofficia
 [简体中文](README.md) · **English**
 
 </div>
+
+<a id="client-versions"></a>
+<!-- client-versions:start -->
+**Which version should I install?** Official channels checked on 2026-11-14. Use the input in the right column. A newer vendor release is not a Plus compatibility claim.
+
+| Platform | Latest official release | Input accepted by Plus / shell version |
+| --- | --- | --- |
+| Windows x64 | [1.1.0](https://api2.cursor.sh/updates/api/download/stable/win32-x64-user/sand) | 0.71.2 |
+| macOS ARM64 | [1.1.0](https://api2.cursor.sh/updates/api/download/stable/darwin-arm64/sand) | 0.71.2; no Mac hardware test |
+| iOS | [1.25.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.16.0 (23152); no iPhone or iPad hardware test |
+| Android 9+ (unofficial) | Does not use the official Android APK | Shell **1.1.0** (build 10100), renderer from Windows **0.71.2** |
+| Linux Host / execution desktop | No published mapping to the latest desktop release | Host `d0a4baa`; execution desktop `9d2ac1b` (amd64) |
+
+[Latest ProkBot Plus release](https://github.com/ferretgeek/prokbot-plus/releases/latest) uses the project’s own version number. The upstream ProkBot baseline is `3e9fe8c`.
+<!-- client-versions:end -->
 
 <p align="center">
   <img src="docs/images/windows-chat.png" alt="Windows client: the Bot looks up when to see the red autumn leaves at Fragrant Hills, cites its sources, and also paints a 16:9 watercolor" width="880">
@@ -49,10 +66,10 @@ Plus adds on top of that: **Windows and Android clients**; **two more model APIs
 | --- | --- | --- |
 | Server | Linux x86_64 or ARM64 | x86_64 tested on Ubuntu 24.04 + Docker 29. A native Host on Oracle Ampere A1 with a separate amd64 desktop passed two-turn chat and VNC control tests. Emulating the desktop on a single ARM machine remains experimental. [Choose a deployment](docs/AI-INSTALL.en.md#choose-a-deployment) |
 | Windows client | Windows 10 / 11, x64 | **New in this version.** Portable version and installer, no administrator rights needed |
-| Mac client | Apple Silicon, Grok Bot 0.71.2 | From upstream |
-| iOS client | Grok Bot 1.16.0 (23152) | From upstream. You need your own decrypted IPA and signing certificate |
-| Android client | Android 9 or later | Independently developed, unofficial shell. The `v1.0.0` release has no Android tools. Build the APK on Windows, Mac or Linux from the pinned Windows installer, using the repository source or a later release that explicitly includes the Android tools. |
-| Linux desktop | Not supported | There is no official client for it |
+| Mac client | Apple Silicon, Grok Bot 0.71.2 | No Mac was available for this round. The desktop code shared with Windows was tested, but installation, launch, pairing and chat were not verified on macOS. |
+| iOS client | Grok Bot 1.16.0 (23152) | No iPhone or iPad was available for this round. The patch tool was tested, but signing, installation, pairing and chat were not verified on a device. Installation still requires your own decrypted IPA and signing certificate. |
+| Android client | Android 9 or later | Independently developed, unofficial shell. Build from the pinned Windows input and keep your original signing key. |
+| Linux desktop client | No patch from this project | [The official app is available on Linux](https://docs.x.ai/grok-bot/deployment). It is not the amd64 execution desktop image used by the server. |
 
 ## What's new in this version
 
@@ -167,8 +184,8 @@ See the [CHANGELOG](CHANGELOG.md) and the [technical documentation](docs/ARCHITE
 
 **Published packages and verified limits (November 14, 2026)**
 
-- `v1.0.0` ships four tool packages: x86_64 Host, Windows, Mac and iOS. It has no Android package or ARM64 Host support. The Android shell in the repository is independently developed and unofficial; its actual chat screenshot is retained below.
-- The official Windows x64 and macOS ARM64 stable feeds list **1.0.3**, and the US iOS store lists **1.25.0**. This project still pins Windows/macOS **0.71.2** and iOS **1.16.0 (23152)**. Android uses the pinned Windows installer. The newer official releases have not passed project acceptance. The maintainer has no Mac, iPhone or iPad for this round; Apple hardware installation, pairing and chat have not been tested.
+- Plus distributes platform tools. `v1.0.0` had no Android ZIP; 1.1.0 includes one. The chat screenshot is a real earlier run of the unofficial shell, not a test of the new vendor renderer.
+- See [client versions](#client-versions) for vendor releases versus accepted inputs. Updating client tools does not require an existing Host to be upgraded or reinstalled.
 
 | Deployment mode | Tested minimum | Tested recommendation | Disk | Measured workload and limits |
 | --- | --- | --- | --- | --- |
@@ -208,7 +225,7 @@ The AI first lists what you need to prepare. Then it deploys the server, configu
 
 If you'd rather do it yourself, follow the [AI deployment guide](docs/AI-INSTALL.en.md). It is written for AI, but every step lists the commands and how to check them, so a person can follow it just as well.
 
-[Releases](https://github.com/ferretgeek/prokbot-plus/releases) distributes platform-specific patch tools. `v1.0.0` predates both the ARM64 Host and the Android tools. Use the `main` branch for ARM64, or the [Android guide](android/README.en.md) to build the app. Releases do **not** distribute finished clients containing official program files.
+The [latest release](https://github.com/ferretgeek/prokbot-plus/releases/latest) provides Host, Windows, Mac, iOS and Android tools plus `SHA256SUMS.txt`. Choose your platform ZIP. No vendor binaries, IPAs or finished clients are distributed.
 
 ## Documentation
 

@@ -42,16 +42,18 @@ export function toBytes(value) {
   throw new TypeError('Expected bytes');
 }
 
-/** AbortSignal.any with a fallback for older WebView releases. */
-export function anySignal(signals) {
+/** Older WebViews need explicit listener disposal when a request finishes without aborting. */
+export function combineSignals(signals) {
   const list = signals.filter(Boolean);
-  if (typeof AbortSignal.any === 'function') return AbortSignal.any(list);
+  if (list.length === 1) return { signal: list[0], dispose() {} };
+  if (typeof AbortSignal.any === 'function') return { signal: AbortSignal.any(list), dispose() {} };
+  const aborted = list.find(signal => signal.aborted);
+  if (aborted) return { signal: aborted, dispose() {} };
   const controller = new AbortController();
-  for (const signal of list) {
-    if (signal.aborted) { controller.abort(signal.reason); break; }
-    signal.addEventListener('abort', () => controller.abort(signal.reason), { once: true });
-  }
-  return controller.signal;
+  const dispose = () => { for (const signal of list) signal.removeEventListener('abort', abort); };
+  const abort = event => { dispose(); controller.abort(event.target.reason); };
+  for (const signal of list) signal.addEventListener('abort', abort, { once: true });
+  return { signal: controller.signal, dispose };
 }
 
 export function timeout(ms) {

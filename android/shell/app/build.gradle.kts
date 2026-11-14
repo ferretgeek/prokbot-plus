@@ -11,9 +11,9 @@ android {
         applicationId = "dev.grokbot.local"
         minSdk = 28
         targetSdk = 36
-        // The client follows the official desktop interface version it is built from.
-        versionCode = 7102
-        versionName = "0.71.2"
+        // Project-owned Android release; the Windows renderer is pinned separately.
+        versionCode = 10100
+        versionName = "1.1.0"
     }
 
     buildTypes {

@@ -3,8 +3,8 @@ import { readFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { grokText as localText, setLocaleSource } from './i18n.mjs';
-import { credentialStore, credentialUnavailableText, pair, openTransport } from './connection.mjs';
-import { APP_USER_MODEL_ID, connectWindowChrome, createTray, ensureStartMenuShortcut, initialLink, isWindows,
+import { credentialStore, credentialUnavailableText, finishPairingWindow, pair, verifyDevice, openTransport, restoreConnection, savedConnectionMatches } from './connection.mjs';
+import { APP_USER_MODEL_ID, canRegisterDesktopIntegration, connectWindowChrome, createTray, ensureStartMenuShortcut, initialLink, isWindows,
   windowChrome, windowHandlers } from './platform.mjs';
 import { createGateway } from './gateway.mjs';
 import { createAttachmentHandlers, createAttachmentMediaResolver } from './attachments.mjs';
@@ -18,11 +18,12 @@ import { createSounds } from './sounds.mjs';
 import { mintVoiceCredential, createVoiceAvailability } from './voice.mjs';
 import { externalHttpUrl } from './external-url.mjs';
 import { installExternalLinks } from './external-links.mjs';
-import { auth, boot, theme, language, experiments, createLocalServices } from './local-services.mjs';
+import { auth, boot, theme, language, experiments, createLocalServices, probeLocalMethod } from './local-services.mjs';
 
 const clientRoot = path.dirname(fileURLToPath(import.meta.url));
 const payload = path.join(clientRoot, '../dist');
-const profile = process.env.GROKBOT_LOCAL_DEBUG_PORT && process.env.GROKBOT_LOCAL_TEST_PROFILE
+const isolatedProfile = Boolean(process.env.GROKBOT_LOCAL_DEBUG_PORT && process.env.GROKBOT_LOCAL_TEST_PROFILE);
+const profile = isolatedProfile
   ? path.resolve(process.env.GROKBOT_LOCAL_TEST_PROFILE)
   : path.join(app.getPath('appData'), 'Grok Bot Local');
 app.setPath('userData', profile);
@@ -68,13 +69,13 @@ async function showApp() {
     if (window.isMinimized()) window.restore();
     window.focus(); return;
   }
-  if (!starting) await (config ? showWorkspace() : showConnection());
+  if (!starting) await (transport && config ? showWorkspace() : showConnection());
 }
 function routeLink(url) { const id = agentFromLink(url); if (id) openAgent(id); }
 function openAgent(id) {
   pendingAgent = id;
   if (!mainWindow || mainWindow.isDestroyed()) {
-    if (config && app.isReady()) void showWorkspace();
+    if (transport && config && app.isReady()) void showWorkspace();
     return;
   }
   if (mainWindow.isMinimized()) mainWindow.restore();
@@ -105,9 +106,9 @@ function disposeWorkspace() {
   mainWindow = null;
 }
 function connectionStatus() {
-  return { paired: Boolean(config), connected: Boolean(config), server: config?.address ?? config?.server,
+  return { paired: Boolean(config), connected: Boolean(transport && config), server: config?.address ?? config?.server,
     tailcat: config?.tailcat === true, transportPath: transport?.tunnel?.status.path ?? 'direct',
-    state: config ? gateway?.getState() ?? 'connecting' : 'disconnected',
+    state: transport && config ? gateway?.getState() ?? 'connecting' : 'disconnected',
     profile: config ? accountProfile?.current() ?? null : null, error: connectionError };
 }
 function reportConnection() {
@@ -143,6 +144,7 @@ function updateMenu() {
     { role: 'fileMenu' }, { role: 'editMenu' }, { role: 'viewMenu' }, { role: 'windowMenu' }]));
 }
 async function showWorkspace() {
+  const pairingWindow = connectWindow;
   disposeWorkspace();
   const activeConfig = config;
   const reportFocus = () => {
@@ -183,7 +185,7 @@ async function showWorkspace() {
     command: gateway.command, request: gateway.request, connection: showConnection, openExternal,
     attachmentHandlers: { ...uploads.handlers, ...createAttachmentHandlers({
       command: gateway.command,
-      readStaged: uploads.readStaged,
+      withStaged: uploads.withStaged,
       chooseDestination: async name => {
         const result = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), name) });
         return result.canceled ? null : result.filePath;
@@ -205,7 +207,7 @@ async function showWorkspace() {
       if (image.isEmpty()) throw new Error(localText('无法读取图片。', 'Could not read this image.'));
       return { dataUrl: image.toDataURL(), fileName: path.basename(result.filePaths[0]) };
     },
-    attachment: createAttachmentMediaResolver({ command: gateway.command, readStaged: uploads.readStaged, nativeImage }),
+    attachment: createAttachmentMediaResolver({ command: gateway.command, withStaged: uploads.withStaged, nativeImage }),
   });
   installExternalLinks(win, { openExternal, clipboard, Menu, text: localText });
   win.webContents.on('will-attach-webview', (event, preferences, params) => {
@@ -224,9 +226,13 @@ async function showWorkspace() {
   });
   win.webContents.on('preload-error', (_event, _file, error) => console.error('[preload]', error.message));
   win.webContents.on('render-process-gone', (_event, details) => console.error('[renderer]', details.reason));
+  const workspaceStyle = await readFile(path.join(clientRoot, 'workspace.css'), 'utf8');
+  win.webContents.on('did-finish-load', () => {
+    void win.webContents.insertCSS(workspaceStyle).catch(error => console.error('[workspace-style]', error.message));
+  });
   await win.loadFile(path.join(payload, 'renderer/index.html'));
   updateMenu();
-  connectWindow?.close();
+  finishPairingWindow(pairingWindow, connectWindow, connectionError);
 }
 
 ipcMain.on('grokbot-local:locale', event => { event.returnValue = trusted(event, mainWindow) || trusted(event, connectWindow) ? (clientSettings.language === 'system' ? app.getLocale() : clientSettings.language) : 'en'; });
@@ -251,21 +257,26 @@ ipcMain.handle('grokbot-local:voice-preference', async (event, enabled) => {
 ipcMain.handle('grokbot-local:pair', async (event, args) => {
   requireConnection(event);
   try {
+    const saved = config, editing = args.edit === true, tunneled = args.tailcat === true;
+    if (editing && !savedConnectionMatches(saved, args.server, tunneled))
+      throw new Error(localText('更改 Host 地址需要新的配对码。', 'Enter a new pairing code to change the Host address.'));
     // Check the keychain before consuming a one-use pairing Key.
     if (!safeStorage.isEncryptionAvailable()) throw new Error(credentialUnavailableText());
-    const nextTransport = await openTransport(args.server, args.tailcat === true, { binary: transportBinary });
+    const reuse = editing && tunneled && transport?.tunnel?.status.state === 'ready';
+    const nextTransport = reuse ? transport : await openTransport(args.server, tunneled,
+      { binary: transportBinary, identity: editing && tunneled ? saved.networkIdentity : undefined });
     let next;
     try {
-      if (args.edit === true) {
-        if (!config) throw new Error('Not connected');
-        const response = await fetch(`${nextTransport.server}/connect/status`, { headers: { authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(35000), redirect: 'error' });
-        if (!response.ok) throw new Error(localText('无法验证此 Host 的设备凭据。', 'Could not verify this device with the Host.'));
-        await response.body?.cancel(); next = { ...config, ...nextTransport };
+      if (editing) {
+        if (config !== saved) throw new Error(localText('连接已更改，请重试。', 'Connection changed. Try again.'));
+        await verifyDevice(nextTransport.server, saved);
+        if (config !== saved) throw new Error(localText('连接已更改，请重试。', 'Connection changed. Try again.'));
+        next = { ...saved, ...nextTransport };
       } else next = { ...await pair(nextTransport.server, args.key, fetch, { tunneled: nextTransport.tailcat }), ...nextTransport };
       await store.save(next);
-    } catch (error) { await nextTransport.close(); throw error; }
-    disposeWorkspace(); await transport?.close(); transport = nextTransport; config = next; connectionError = '';
-    setTimeout(() => { void showWorkspace(); }, 200);
+    } catch (error) { if (!reuse) await nextTransport.close(); throw error; }
+    disposeWorkspace(); if (!reuse) await transport?.close(); transport = nextTransport; config = next; connectionError = '';
+    setTimeout(() => { if (config === next && !quitting) void showWorkspace(); }, 200);
     return { ok: true };
   } catch (error) { return { ok: false, error: error.message }; }
 });
@@ -297,7 +308,8 @@ ipcMain.handle('sand:coordinator-port-request', event => {
 app.whenReady().then(async () => {
 setLocaleSource(() => clientSettings.language === 'system' ? app.getLocale() : clientSettings.language);
 await mkdir(profile, { recursive: true, mode: 0o700 });
-app.setAsDefaultProtocolClient('grokbot-local');
+const registerIntegration = await canRegisterDesktopIntegration({ isolatedProfile });
+if (registerIntegration && (!isWindows || !app.getApplicationNameForProtocol('grokbot-local://'))) app.setAsDefaultProtocolClient('grokbot-local');
 // Official update and account network code is never started. Renderer traffic
 // is restricted to the current Host; credentials stay in this main process.
 const restrict = target => target.webRequest.onBeforeRequest((details, callback) => {
@@ -322,15 +334,15 @@ for (const method of names) ipcMain.handle(`dune-rpc:main:m:${method}`, async (e
     return { ok: true, value: await methodCall(method, args) };
   } catch (error) { return { ok: false, failure: { code: 'edge/handler-failed', detail: error.message } }; }
 });
-ipcMain.handle('dune-rpc:main:probe', (event, method) => ({ ok: trusted(event, mainWindow), value: names.has(method) }));
+ipcMain.handle('dune-rpc:main:probe', (event, method) => probeLocalMethod(trusted(event, mainWindow), names, methodCall, method));
 updateMenu();
 app.on('activate', () => {
   if (starting) return;
   if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
-  else if (!connectWindow) void (config ? showWorkspace() : showConnection());
+  else if (!connectWindow) void (transport && config ? showWorkspace() : showConnection());
 });
 if (isWindows) {
-  try { ensureStartMenuShortcut({ app, shell }); }
+  try { if (registerIntegration) ensureStartMenuShortcut({ app, shell }); }
   catch (error) { console.warn('[shortcut]', error.message); }
   tray = createTray({ Tray, Menu, nativeImage, clientRoot, show: () => void showApp(), quit: () => app.quit(), text: localText });
 }
@@ -338,9 +350,8 @@ app.on('before-quit', () => { quitting = true; stopConnection(); void transport?
 // Activate the app for any Keychain prompt, then choose the first window from
 // the saved credentials. Dock activation must not open pairing during loading.
 app.focus();
-try { config = await store.load(); if (config) { transport = await openTransport(config.address ?? config.server, config.tailcat, { identity: config.networkIdentity, binary: transportBinary }); config = { ...config, ...transport }; } }
-catch { connectionError = localText('无法读取设备凭证，请重新配对。', 'Could not read device credentials. Pair again.'); }
-if (config) await showWorkspace();
+({ config, transport, connectionError } = await restoreConnection(store, transportBinary));
+if (transport && config) await showWorkspace();
 else await showConnection();
 starting = false;
 // Windows starts a new process for a link when the client is not running yet.

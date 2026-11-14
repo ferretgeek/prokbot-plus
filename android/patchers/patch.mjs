@@ -15,12 +15,15 @@ import { acquireDesktopSource } from '../../mac/patchers/desktop/download-origin
 import { applicationIcon } from '../../windows/patchers/desktop/pe.mjs';
 import { unpackOriginal } from '../../windows/patchers/desktop/original.mjs';
 import { readZip, writeZip, createEntry, entryBytes, signApk, verifyApk, createSigningIdentity, certificateFingerprint } from './apk.mjs';
-import { RENDERER_PATCHES, patchRendererFile } from './renderer-patches.mjs';
+import { RENDERER_PATCHES, applyPinnedRendererPatch } from './renderer-patches.mjs';
+import { checkBuildOutput, writeBuildOutput } from './output.mjs';
+import { verifyShellVersion, verifyClientVersions } from './shell-version.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const androidRoot = path.resolve(here, '..');
 const repo = path.resolve(androidRoot, '..');
 const windowsDesktop = path.join(repo, 'windows/patchers/desktop');
+const sharedAssets = ['i18n.mjs', 'external-url.mjs', 'connectors.mjs', 'workspace.css', 'workspace-keys.cjs'];
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 async function hashFile(filename) {
   const hash = createHash('sha256');
@@ -29,7 +32,7 @@ async function hashFile(filename) {
 }
 const exists = async filename => { try { await stat(filename); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; } };
 
-export const BRIDGE_TAGS = '<script src="../client/boot-data.js"></script>\n    <script type="module" src="../client/bridge.js"></script>\n    <link rel="stylesheet" href="../client/android.css">\n    ';
+export const BRIDGE_TAGS = '<script src="../client/boot-data.js"></script>\n    <script src="../client/desktop/workspace-keys.js"></script>\n    <script type="module" src="../client/bridge.js"></script>\n    <link rel="stylesheet" href="../client/android.css">\n    <link rel="stylesheet" href="../client/desktop/workspace.css">\n    ';
 const MODULE_ANCHOR = '<script type="module" crossorigin src="./assets/index-';
 const FRAME_ANCHOR = 'frame-src sand-html-preview: sand-canvas: sand-mcp-app:;';
 
@@ -62,6 +65,69 @@ export function wrapVncPreload(source) {
     `})(window.__grokbotVncPreload.require, window.__grokbotVncPreload.process);\n`;
 }
 
+export async function readPinnedShell(filename, pin) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of createReadStream(filename)) {
+    size += chunk.length;
+    if (size > 16 * 1024 * 1024) throw new Error('Android 外壳 APK 超出大小限制。');
+    chunks.push(chunk);
+  }
+  const bytes = Buffer.concat(chunks, size), digest = sha(bytes);
+  if (digest !== pin.sha256) throw new Error('Android 外壳 APK 摘要不匹配，请使用与 android/dist/ 完全相同的外壳。');
+  const { entries } = readZip(bytes);
+  const manifest = verifyShellVersion(entries, pin);
+  return { entries, manifest, sha256: digest };
+}
+
+// extractAll buffers the entire ASAR. Stage individual reviewed members instead; include existing
+// recipe destinations so the shared replayer still detects collisions with a declared new file.
+export async function stageAndroidArchive(asar, archive, unpacked, recipes, verifyOnly, patches = RENDERER_PATCHES) {
+  const manifest = JSON.parse(await readFile(path.join(recipes, 'manifest.json'), 'utf8'));
+  const members = new Set(asar.listPackage(archive).map(name => name.replaceAll('\\', '/').replace(/^\//, '')));
+  const needed = new Set(['dist/renderer/index.html', 'dist/electron-preload/preload.cjs', 'dist/electron-preload/preload-vnc.cjs',
+    ...patches.map(patch => `dist/renderer/${patch.file}`)]);
+  for (const file of manifest.files) {
+    needed.add(file.path);
+    if (file.source !== null) needed.add(file.source ?? file.path);
+  }
+  if (!verifyOnly) for (const name of members) if (name.startsWith('dist/renderer/')) needed.add(name);
+  for (const name of needed) {
+    if (typeof name !== 'string' || name.includes('\\') || path.win32.parse(name).root || name.split('/').some(p => !p || p === '.' || p === '..'))
+      throw new Error(`Invalid ASAR member path: ${name}`);
+    if (!members.has(name)) continue; // A recipe can create an input for a later step.
+    const member = path.normalize(name), target = path.join(unpacked, member), info = asar.statFile(archive, member, false);
+    if ('link' in info) throw new Error(`Unexpected link in Android inputs: ${name}`);
+    if ('files' in info) { await mkdir(target, { recursive: true }); continue; }
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, asar.extractFile(archive, member, false));
+  }
+  await applyReleaseRecipes(unpacked, recipes);
+  return manifest.files.length;
+}
+
+// Build and verify replay exactly the same transformations, in scratch. Only a build packages the results.
+export async function verifyStagedRenderer(dist, build, patches = RENDERER_PATCHES) {
+  const pinned = async (name, digest) => {
+    const bytes = await readFile(path.join(dist, name));
+    if (sha(bytes) !== digest) throw new Error(`${name} 与支持的版本不一致。`);
+    return bytes.toString('utf8');
+  };
+  const index = 'renderer/index.html';
+  const patchedHtml = androidIndexHtml(await pinned(index, build.rendererIndexSha256));
+  await writeFile(path.join(dist, index), patchedHtml);
+  const preload = await pinned('electron-preload/preload.cjs', build.preloadSha256);
+  const vncPreload = await pinned('electron-preload/preload-vnc.cjs', build.vncPreloadSha256);
+  for (const patch of patches) {
+    const file = path.join(dist, 'renderer', patch.file);
+    await writeFile(file, applyPinnedRendererPatch(patch, await readFile(file)));
+  }
+  for (const file of [path.join(androidRoot, 'client/bridge.js'), path.join(androidRoot, 'client/android.css'),
+    ...sharedAssets.map(name => path.join(repo, 'mac/clients/desktop', name))])
+    if (!(await stat(file)).isFile()) throw new Error(`Missing Android bridge input: ${path.basename(file)}`);
+  return { preload, vncPreload };
+}
+
 async function listFiles(root, prefix = '') {
   const result = [];
   for (const item of await readdir(path.join(root, prefix), { withFileTypes: true })) {
@@ -92,74 +158,72 @@ async function main() {
   const arg = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : null; };
   const supported = JSON.parse(await readFile(path.join(windowsDesktop, 'supported.json'), 'utf8'));
   const build = JSON.parse(await readFile(path.join(here, 'supported.json'), 'utf8'));
+  if (build.desktopVersion !== supported.version) throw new Error('Android renderer pin does not match the Windows source version.');
+  const { versionName, versionCode } = build.shell;
+  if (!/^\d+\.\d+\.\d+$/.test(versionName) || !Number.isSafeInteger(versionCode) || versionCode <= 0)
+    throw new Error('Invalid Android shell version pin.');
+  const versions = { shell: { versionName, versionCode }, rendererVersion: build.desktopVersion };
+  const base = `GrokBotLocal-${versionName}-android`, apkName = `${base}.apk`, reportName = `${base}.patch.json`;
   if (args.includes('--help')) {
     console.log(`node android/patchers/patch.mjs [--source <Grok_Bot_${supported.version}_Setup.exe | app-64.7z | 安装目录>] [--output <目录>]
     [--signing-key <文件>] [--shell <外壳 APK>] [--force] [--verify-only]
-省略 --source 时自动下载并校验官方 ${supported.version} Windows x64 安装包（界面与 Android 共用）。
+自开发 Android 外壳 ${versionName}（versionCode ${versionCode}）；Windows renderer ${build.desktopVersion}。省略 --source 时自动下载并校验该版 Windows x64 安装包。
+--shell 只接受与发行清单的 SHA-256、包名和版本完全相符的外壳副本。
+--verify-only 在临时目录验证原包、外壳、Windows recipe、Android 入口和界面补丁；不生成 APK，不读取签名密钥。
 签名密钥默认保存在 ~/.grokbot-local/android-signing.json；升级 App 时必须使用同一个密钥，请备份。
-默认输出到 android/output/。`);
+默认输出到 android/output/：${apkName} 和 ${reportName}。`);
     return;
   }
   const startedAt = performance.now();
-  const outputRoot = path.resolve(arg('--output') ?? path.join(androidRoot, 'output'));
-  const apkName = `GrokBotLocal-${supported.version}-android.apk`;
-  const apkPath = path.join(outputRoot, apkName);
-  const manifestPath = path.join(outputRoot, `GrokBotLocal-${supported.version}-android.patch.json`);
-  const signingPath = path.resolve(arg('--signing-key') ?? path.join(os.homedir(), '.grokbot-local', 'android-signing.json'));
   const shellPath = path.resolve(arg('--shell') ?? path.join(repo, build.shell.path));
-  const customShell = Boolean(arg('--shell'));
+  const verifyOnly = args.includes('--verify-only');
+  const checkedShell = verifyOnly ? await readPinnedShell(shellPath, build.shell) : null;
 
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'grokbot-android-patch-'));
   try {
-    const source = await acquireDesktopSource({ source: arg('--source'), cacheDirectory: path.join(androidRoot, '.cache'), supported,
+    const source = await acquireDesktopSource({ source: arg('--source'), cacheDirectory: verifyOnly ? path.join(temporary, 'download') : path.join(androidRoot, '.cache'), supported,
       onDownload: ({ version }) => console.error(`正在下载 Grok Bot ${version} Windows x64 安装包（Android 客户端使用其中的界面）…`) });
     const app = await unpackOriginal(source, temporary, supported);
     const originalExe = path.join(app, 'Grok Bot.exe'), originalAsar = path.join(app, 'resources/app.asar');
-    const [exeSha256, asarSha256] = await Promise.all([hashFile(originalExe), hashFile(originalAsar)]);
+    const exeSha256 = await hashFile(originalExe), asarSha256 = await hashFile(originalAsar);
     if (exeSha256 !== supported.exeSha256 || asarSha256 !== supported.asarSha256)
       throw new Error(`不支持此发行包。仅支持未经修改的 Grok Bot ${supported.version} Windows ${supported.architecture}；程序或 ASAR 摘要不匹配。`);
-    const shellBytes = await readFile(shellPath);
-    if (!customShell && sha(shellBytes) !== build.shell.sha256) throw new Error('Android 外壳 APK 摘要不匹配，请重新获取 android/dist/。');
-    console.log(JSON.stringify({ verified: true, version: supported.version, asarSha256, shellSha256: sha(shellBytes) }));
-    if (args.includes('--verify-only')) return;
-    if (!args.includes('--force')) for (const target of [apkPath, manifestPath])
-      if (await exists(target)) throw new Error(`输出已存在，不会覆盖（可加 --force）：${target}`);
+    const shell = checkedShell ?? await readPinnedShell(shellPath, build.shell);
 
     let asar;
     try { asar = createRequire(path.join(repo, 'mac/patchers/desktop/package.json'))('@electron/asar'); }
     catch { throw new Error('缺少 @electron/asar；执行 npm install --prefix mac/patchers/desktop。'); }
     const unpacked = path.join(temporary, 'app');
-    asar.extractAll(originalAsar, unpacked);
-    await applyReleaseRecipes(unpacked, path.join(windowsDesktop, 'recipes'));
+    const windowsRecipes = await stageAndroidArchive(asar, originalAsar, unpacked, path.join(windowsDesktop, 'recipes'), verifyOnly);
     const dist = path.join(unpacked, 'dist');
-    const indexHtml = await readFile(path.join(dist, 'renderer/index.html'), 'utf8');
-    const preload = await readFile(path.join(dist, 'electron-preload/preload.cjs'), 'utf8');
-    const vncPreload = await readFile(path.join(dist, 'electron-preload/preload-vnc.cjs'), 'utf8');
-    for (const [label, value, expected] of [['index.html', indexHtml, build.rendererIndexSha256],
-      ['preload.cjs', preload, build.preloadSha256], ['preload-vnc.cjs', vncPreload, build.vncPreloadSha256]])
-      if (sha(Buffer.from(value)) !== expected) throw new Error(`${label} 与支持的版本不一致。`);
+    const { preload, vncPreload } = await verifyStagedRenderer(dist, build);
+    const checks = { windowsRecipes, androidRendererPatches: RENDERER_PATCHES.length };
+    if (verifyOnly) {
+      console.log(JSON.stringify({ verified: true, ...versions, packageName: shell.manifest.packageName, asarSha256, shellSha256: shell.sha256, checks }));
+      return;
+    }
+    const outputRoot = path.resolve(arg('--output') ?? path.join(androidRoot, 'output'));
+    const apkPath = path.join(outputRoot, apkName), manifestPath = path.join(outputRoot, reportName);
+    const signingPath = path.resolve(arg('--signing-key') ?? path.join(os.homedir(), '.grokbot-local', 'android-signing.json'));
+    const force = args.includes('--force');
+    await checkBuildOutput({ source, shell: shellPath, key: signingPath, targets: [apkPath, manifestPath], force });
 
     const files = new Map();
     const add = (name, bytes) => { if (files.has(name)) throw new Error(`重复的文件：${name}`); files.set(name, Buffer.from(bytes)); };
     const rendererFiles = await listFiles(path.join(dist, 'renderer'));
-    for (const patch of RENDERER_PATCHES)
-      if (!rendererFiles.includes(patch.file)) throw new Error(`缺少界面文件：${patch.file}`);
     for (const name of rendererFiles) {
-      const original = name === 'index.html' ? null : await readFile(path.join(dist, 'renderer', name));
-      const bytes = name === 'index.html' ? androidIndexHtml(indexHtml) : patchRendererFile(name, original) ?? original;
-      add(`assets/web/renderer/${name}`, bytes);
+      add(`assets/web/renderer/${name}`, await readFile(path.join(dist, 'renderer', name)));
     }
     for (const name of await listFiles(path.join(androidRoot, 'client'))) add(`assets/web/client/${name}`, await readFile(path.join(androidRoot, 'client', name)));
-    for (const name of ['i18n.mjs', 'external-url.mjs', 'connectors.mjs'])
-      add(`assets/web/client/desktop/${name}`, await readFile(path.join(repo, 'mac/clients/desktop', name)));
+    for (const name of sharedAssets)
+      add(`assets/web/client/desktop/${name.replace(/\.cjs$/, '.js')}`, await readFile(path.join(repo, 'mac/clients/desktop', name)));
     add('assets/web/client/official-preload.js', wrapPreload(preload));
     add('assets/web/client/vnc-preload.js', wrapVncPreload(vncPreload));
     const icon = applicationIcon(await readFile(originalExe)).png;
     add('assets/web/client/icon.png', icon);
     const builtAt = new Date().toISOString();
-    add('assets/web/client/build.json', JSON.stringify({ version: supported.version, sourceAsarSha256: asarSha256, builtAt }));
+    add('assets/web/client/build.json', JSON.stringify({ ...versions, sourceAsarSha256: asarSha256, builtAt }));
 
-    const shell = readZip(shellBytes);
     const placeholder = await readFile(path.join(androidRoot, 'shell/app/src/main/res/drawable-nodpi/app_icon.png'));
     let iconReplaced = false;
     const entries = [];
@@ -177,14 +241,14 @@ async function main() {
     const identity = await loadSigningIdentity(signingPath);
     const apk = signApk(writeZip(entries), identity);
     const certificate = verifyApk(apk);
-    await mkdir(outputRoot, { recursive: true });
-    await writeFile(apkPath, apk);
-    const manifest = { builtAt, output: apkPath, version: supported.version, packageName: 'dev.grokbot.local',
-      source, originalAsarSha256: asarSha256, shellSha256: sha(shellBytes), apkSha256: sha(apk), bytes: apk.length,
+    const installed = verifyClientVersions(readZip(apk).entries, build);
+    const manifest = { builtAt, output: apkPath, ...versions, packageName: installed.packageName, checks,
+      source, originalAsarSha256: asarSha256, shellSha256: shell.sha256, apkSha256: sha(apk), bytes: apk.length,
       files: files.size, signing: { key: signingPath, created: identity.created, certificateSha256: certificateFingerprint(identity.certificate),
         subject: certificate.subject.replace(/\n/g, ', '), scheme: 'v2' },
       timings: { totalSeconds: Number(((performance.now() - startedAt) / 1000).toFixed(3)) } };
-    await writeFile(manifestPath, JSON.stringify(manifest, null, 2));
+    await writeBuildOutput(outputRoot, [{ target: apkPath, bytes: apk },
+      { target: manifestPath, bytes: JSON.stringify(manifest, null, 2) }], force);
     console.log(JSON.stringify(manifest, null, 2));
     if (identity.created) console.error(`已生成新的签名密钥：${signingPath}\n请备份这个文件。以后升级 App 必须使用同一个密钥，否则需要先卸载旧版（会清除配对）。`);
   } finally {

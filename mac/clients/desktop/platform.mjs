@@ -3,6 +3,8 @@
 // buttons drawn by the title-bar overlay, a notification-area icon and a Start menu
 // shortcut that carries the toast identity.
 import path from 'node:path';
+import { linkSync, lstatSync, mkdtempSync, rmdirSync, unlinkSync } from 'node:fs';
+import { lstat, readFile } from 'node:fs/promises';
 
 export const isWindows = process.platform === 'win32';
 export const APP_USER_MODEL_ID = 'dev.grokbot.local';
@@ -69,16 +71,47 @@ export function windowHandlers(win, background, { platform = process.platform, w
   };
 }
 
+/** A side-by-side install shares userData, but the legacy install keeps the OS registrations. */
+export async function canRegisterDesktopIntegration({ isolatedProfile, platform = process.platform, execPath = process.execPath }) {
+  if (isolatedProfile) return false;
+  if (platform !== 'win32') return true;
+  const directory = path.dirname(execPath), file = path.join(directory, '.grokbot-installation.json');
+  let stat;
+  try { stat = await lstat(file); }
+  catch (error) { return error.code === 'ENOENT'; } // Portable build: no installer receipt.
+  if (!stat.isFile() || stat.size > 4 * 1024 * 1024) return false;
+  try {
+    const receipt = JSON.parse(await readFile(file, 'utf8'));
+    return receipt.format === 1 && receipt.appId === APP_USER_MODEL_ID &&
+      receipt.directory?.toLowerCase() === directory.toLowerCase() && !Object.hasOwn(receipt, 'sideBySideOf');
+  } catch { return false; }
+}
+
 /** Windows delivers toasts only for an app with a Start menu shortcut carrying its AppUserModelID. */
 export function ensureStartMenuShortcut({ app, shell, execPath = process.execPath }) {
   const link = path.join(app.getPath('appData'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', SHORTCUT_NAME);
+  const stat = lstatSync(link, { throwIfNoEntry: false });
+  if (stat) {
+    if (!stat.isFile()) return false;
+    let current;
+    try { current = shell.readShortcutLink(link); } catch { return false; }
+    if (typeof current?.target !== 'string' || path.resolve(current.target).toLowerCase() !== execPath.toLowerCase() ||
+        current.appUserModelId === APP_USER_MODEL_ID) return false;
+    if (!shell.writeShortcutLink(link, 'update', { appUserModelId: APP_USER_MODEL_ID })) throw new Error('Could not update the Start menu shortcut');
+    return true;
+  }
   const options = { target: execPath, cwd: path.dirname(execPath), description: 'Grok Bot Local',
     icon: execPath, iconIndex: 0, appUserModelId: APP_USER_MODEL_ID };
-  let current = null;
-  try { current = shell.readShortcutLink(link); } catch {}
-  if (current && path.resolve(current.target).toLowerCase() === execPath.toLowerCase() && current.appUserModelId === APP_USER_MODEL_ID) return false;
-  if (!shell.writeShortcutLink(link, current ? 'replace' : 'create', options)) throw new Error('Could not write the Start menu shortcut');
-  return true;
+  // Electron's create mode overwrites. Publish the finished link only if the destination is still free.
+  const stage = mkdtempSync(path.join(path.dirname(link), '.grokbot-link-')), pending = path.join(stage, SHORTCUT_NAME);
+  try {
+    if (!shell.writeShortcutLink(pending, 'create', options)) throw new Error('Could not create the Start menu shortcut');
+    try { linkSync(pending, link); } catch (error) { if (error.code === 'EEXIST') return false; throw error; }
+    return true;
+  } finally {
+    try { unlinkSync(pending); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    rmdirSync(stage);
+  }
 }
 
 export function createTray({ Tray, Menu, nativeImage, clientRoot, show, quit, text }) {

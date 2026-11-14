@@ -1,0 +1,8 @@
+/* Wide tables can use the row beyond the prose cap. Keep room for hover actions. */
+@media (min-width: 600px) {
+  [role="log"] .sand-message:has(.sand-message-prose table) {
+    box-sizing: border-box;
+    width: max-content;
+    max-width: max(80%, calc(100% - 8rem)) !important;
+  }
+}

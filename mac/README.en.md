@@ -16,6 +16,8 @@ Automatically downloads and verifies the 0.71.2 Apple Silicon original, then gen
 
 To use an existing `.app` or `.dmg`, add `--source "/path/to/Grok Bot.app"`.
 
+`--verify-only` replays the fixed recipes in temporary storage without building a client. A supplied DMG must match the full archive SHA-256, and the Mac tool verifies the input app's signature. No Mac hardware was available for this round: installation, launch, pairing and chat on macOS were not tested. See the [version table](../README.en.md#client-versions) for accepted inputs versus official releases.
+
 For local graphical control, add `--identity auto` to sign with an existing certificate.
 
 ## License and support
