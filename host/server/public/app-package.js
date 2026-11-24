@@ -1,8 +1,8 @@
-import { t, html, locale } from './i18n.js';
+import { t, html, localizedText } from './i18n.js';
 import { $, node, dialog } from './ui.js';
 import { icon } from './icons.js';
 
-export const appCopy = value => typeof value === 'string' ? value : value?.[locale] ?? value?.en ?? '';
+export const appCopy = (value, fallback = '') => localizedText(value, fallback);
 
 export function createAppPackage({ api, act, toast, onSave }) {
   const root = document.createElement('div');

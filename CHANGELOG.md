@@ -4,6 +4,10 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## Unreleased
+
+- **技能页本地化 / Skills page localization**：为 `Skills` 目录和 `bundledSkills` 增加可选的 `localizedName` / `localizedDescription` 字段，补齐内置技能（`learn-from-demonstration`、`export-bot-template`）的中英文文案，并把应用包里已有的双语附带技能文案透传到技能目录；旧版 `skill-catalog.json` 升级启动时会自动回填未改名的内置技能和应用附带技能翻译，不改动版本摘要、启用状态或用户自定义编辑。管理页「技能」列表、编辑弹窗标题和「分享 → 发布技能」下拉框均按浏览器语言显示。Added optional `localizedName` and `localizedDescription` metadata to the `Skills` catalog and `bundledSkills`, localized built-in Host skills (`learn-from-demonstration`, `export-bot-template`), and forwarded bilingual bundled skill copy from app packages into `skill-catalog.json`. Existing Hosts upgrading from earlier releases automatically backfill translations for unmodified built-in and app-bundled skills on startup without changing revision hashes, enabled state, or custom edits. The admin Skills list, editor dialog title, and Sharing skill picker now render localized titles and descriptions for the browser locale.
+
 ## ProkBot Plus 1.10.0 (2026-11-24)
 
 新增 Linux 桌面客户端（x64 / ARM64），由 @jun9100 贡献（[#16](https://github.com/ferretgeek/prokbot-plus/pull/16)），发布多了第七个工具包 `prokbot-plus-linux.zip`。Linux 客户端在本机执行命令要配合这一版的 Host。Windows 和 Mac 共用的主进程只加了 Linux 分支，和 iOS、Android、网页版一样不用重新生成。Adds a Linux desktop client for x64 and ARM64, contributed by @jun9100 (#16), and a seventh tool package, `prokbot-plus-linux.zip`. Local commands from the Linux client need this release's Host. The main process Windows and Mac share only gains Linux branches, so like iOS, Android and the web client they need no rebuild.

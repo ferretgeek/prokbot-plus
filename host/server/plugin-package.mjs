@@ -86,8 +86,13 @@ export const pluginDigest = pkg => digest(JSON.stringify({ ...pkg, kind: 'grokbo
 export function bundledSkills(pkg, enabled) {
   return pkg.skills.map(skill => {
     const prefix = posix.dirname(skill.path), pathPrefix = prefix === '.' ? '' : prefix + '/';
+    const name = typeof skill.name === 'string' ? skill.name : skill.name.en;
+    const description = typeof skill.description === 'string' ? skill.description : skill.description.en;
     return { id: `p-${pkg.id.slice(0, 20)}-${skill.id.slice(0, 20)}-${digest(`${pkg.id}/${skill.id}`).slice(0, 8)}`,
-      name: skill.name.en, description: skill.description.en, enabled,
+      name, description,
+      ...(typeof skill.name === 'object' && skill.name ? { localizedName: skill.name } : {}),
+      ...(typeof skill.description === 'object' && skill.description ? { localizedDescription: skill.description } : {}),
+      enabled,
       requiresTools: skill.requiresTools.map(tool => `mcp.${pkg.id}.${tool}`),
       files: pkg.files.filter(file => file.path.startsWith(pathPrefix)).map(file => ({ ...file, path: file.path.slice(pathPrefix.length) })) };
   });
