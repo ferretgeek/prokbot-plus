@@ -516,8 +516,9 @@ export class Models {
     if (this.syncInFlight && !force) {
       if (!resyncIfStale) return this.syncInFlight;
       const targetRevision = this.configRevision;
-      return this.syncInFlight.catch(() => {}).then(() => {
-        if (this.closed) {
+      return this.syncInFlight.catch(() => {}).then(async () => {
+        // The switch may have been turned off while the earlier sync was running.
+        if (this.closed || !(await this.getSyncSettings()).autoSync) {
           return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, effortsDetected: 0, providerEfforts: 0, providers: {} };
         }
         if (this.syncInFlight && this.syncInFlight.configRevision >= targetRevision) {

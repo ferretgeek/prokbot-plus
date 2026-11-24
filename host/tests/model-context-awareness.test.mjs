@@ -2007,3 +2007,44 @@ test('Clear markers survive >256 models during sync without evicting earlier per
   const pubAfterFollowUp = await syncModels.publicConfig();
   assert.equal(pubAfterFollowUp.profiles.find(p => p.id === 'prof-2').effectiveContext.contextWindowTokens, 262_144);
 });
+
+test('A follow-up sync is skipped when auto-sync is turned off while the earlier sync runs', async t => {
+  const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-resync-off-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  let started;
+  const startedPromise = new Promise(resolve => { started = resolve; });
+  const requestedHosts = [];
+  const models = new Models(dir, {
+    autoSync: true,
+    fetchImpl: async url => {
+      const host = new URL(String(url)).host;
+      requestedHosts.push(host);
+      if (host === 'p1.example') { started(); await gate; }
+      return new Response(JSON.stringify({ data: [{ id: host === 'p1.example' ? 'm1' : 'm2', context_window: 131_072 }] }), { status: 200 });
+    },
+  });
+  t.after(() => models.close());
+  const providers = [
+    { id: 'p1', name: 'P1', apiFormat: 'openai', baseUrl: 'https://p1.example/v1', apiKey: 'sk-1' },
+    { id: 'p2', name: 'P2', apiFormat: 'openai', baseUrl: 'https://p2.example/v1', apiKey: 'sk-2' },
+  ];
+  const profile = (id, providerId, model, mode) => ({ id, name: id, providerId, model, efforts: [], effortsMode: mode,
+    contextWindowTokens: mode === 'auto' ? 0 : 64_000, summaryThresholdTokens: mode === 'auto' ? 0 : 48_000, contextMode: mode });
+  models.autoSync = false;
+  await models.save({ version: 1, migrateLegacyRouting: true, providers,
+    profiles: [profile('prof-1', 'p1', 'm1', 'auto'), profile('prof-2', 'p2', 'm2', 'manual')],
+    defaultRoute: { profileId: 'prof-1', effort: 'default', fallbacks: [] }, botRoutes: {} });
+  const first = models.syncAllProviders({ onlyAuto: true });
+  await startedPromise;
+  await models.save({ version: 1, providers: providers.map(({ apiKey, ...provider }) => provider),
+    profiles: [profile('prof-1', 'p1', 'm1', 'auto'), profile('prof-2', 'p2', 'm2', 'auto')],
+    defaultRoute: { profileId: 'prof-1', effort: 'default', fallbacks: [] }, botRoutes: {} });
+  const followUp = models.syncAllProviders({ onlyAuto: true, resyncIfStale: true });
+  await models.saveSyncSettings({ autoSync: false });
+  release();
+  await first;
+  assert.equal((await followUp).synced, 0);
+  assert.deepEqual(requestedHosts, ['p1.example']);
+});

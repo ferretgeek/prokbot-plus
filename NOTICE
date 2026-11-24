@@ -264,6 +264,29 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-24)
       mid-turn SendToUser updates so clients consistently display working state.
     - Contributed by @jun9100 (GitHub pull request #18).
 
+21. Model context and reasoning-effort sync with overflow self-healing.
+    - host/runtime/model-specs.mjs (new), model-context-cache.mjs (new),
+      model-policy.mjs, model-routing.mjs, model-session.mjs, model-errors.mjs,
+      config.mjs and host-extensions.mjs: per-profile contextMode and
+      effortsMode ("auto" | "manual", manual when omitted, including legacy
+      model.env); auto profiles follow the context window (at least 1024) and
+      reasoning efforts reported by the provider's /models and the ceiling
+      observed in comparison-style or repeated overflow errors, kept for 30
+      days; route efforts outside the reported list step down to the nearest
+      supported level, never to none; the admin service and the Host runtime
+      write separate files (model-context-cache.json and
+      model-context-observed.json); input-limit errors are recognised in more
+      provider formats, and rate-limit errors are no longer taken for them.
+    - host/server/models.mjs, index.mjs, public/model.js, public/locales-en.js
+      and host/tools/host-admin.mjs: startup, save-triggered and 6-hour
+      background /models sync only for providers with an auto profile, behind
+      an admin switch (on by default); an optional Codex client-version probe
+      (off by default); POST /admin/api/model/resolve (rate-limited),
+      sync-contexts, PUT sync-settings and POST observed/clear; built-in
+      reference values shown only as suggestions; host-admin model-set saves
+      manual only when --context or --efforts is given.
+    - Contributed by @jun9100 (GitHub pull request #19).
+
 Third-party components
 ----------------------
 
