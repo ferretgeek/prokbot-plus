@@ -92,10 +92,7 @@ function candidateIds(id) {
 // Explicit rules ordered from most specific to broader published families.
 // Only published, documented models are listed; unknown future versions stay null.
 const CONTEXT_SPEC_RULES = [
-  // Explicit 1M suffix on Claude models (e.g. claude-sonnet-4-5-1m)
-  { family: 'claude-1m', match: /^claude-(?:opus|sonnet|haiku)-4(?:[.-][0-7])?-1m$/, tokens: 1_000_000 },
-
-  // Anthropic Claude 4.6 / 4.7 (1M GA context window)
+  // Anthropic Claude 4.6 / 4.7 (1M GA context window; older 4.x 1M aliases require a beta header we do not send)
   { family: 'claude-4.6+', match: /^claude-(?:opus|sonnet)-4[.-][67]$/, tokens: 1_000_000 },
   { family: 'claude-4.6+', match: /^claude-4[.-][67]-(?:opus|sonnet)$/, tokens: 1_000_000 },
 
@@ -108,8 +105,9 @@ const CONTEXT_SPEC_RULES = [
   { family: 'gpt-5.4-mini', match: /^gpt-5\.4-(?:mini|nano)$/, tokens: 400_000 },
   { family: 'gpt-5.4', match: /^gpt-5\.4(?:-pro|-codex|-chat)?$/, tokens: 1_050_000 },
 
-  // OpenAI GPT-5 / 5.1 / 5.2 / 5.3 (400K context window; intentionally excludes unpublished 5.5+/5.6-*)
-  { family: 'gpt-5', match: /^gpt-5(?:\.[123])?(?:-(?:mini|nano|pro|chat|codex|codex-mini|codex-max))?$/, tokens: 400_000 },
+  // OpenAI GPT-5 chat-latest (128K) before general GPT-5 / 5.1 / 5.2 / 5.3 (400K)
+  { family: 'gpt-5-chat', match: /^gpt-5(?:\.[123])?-chat$/, tokens: 128_000 },
+  { family: 'gpt-5', match: /^gpt-5(?:\.[123])?(?:-(?:mini|nano|pro|codex|codex-mini|codex-max))?$/, tokens: 400_000 },
 
   // OpenAI GPT-4.1 family (1,047,576 tokens)
   { family: 'gpt-4.1', match: /^gpt-4\.1(?:-(?:mini|nano))?$/, tokens: 1_047_576 },
@@ -129,7 +127,9 @@ const CONTEXT_SPEC_RULES = [
   // Google Gemini 1.5 / 2.0 / 2.5 / 3.x
   { family: 'gemini-1.5-pro', match: /^gemini-1\.5-pro(?:-\d{3})?$/, tokens: 2_097_152 },
   { family: 'gemini-1.5-flash', match: /^gemini-1\.5-flash(?:-8b)?(?:-\d{3})?$/, tokens: 1_048_576 },
-  { family: 'gemini-2.x', match: /^gemini-2\.[05]-(?:pro|flash|flash-lite)(?:-thinking)?(?:-\d{3})?$/, tokens: 1_048_576 },
+  { family: 'gemini-2.0-thinking-exp', match: /^gemini-2\.0-flash-thinking-exp(?:-1219)?$/, tokens: 32_768 },
+  { family: 'gemini-2.x', match: /^gemini-2\.0-(?:pro|flash|flash-lite)(?:-\d{3})?$/, tokens: 1_048_576 },
+  { family: 'gemini-2.x', match: /^gemini-2\.5-(?:pro|flash|flash-lite)(?:-thinking)?(?:-\d{3})?$/, tokens: 1_048_576 },
   { family: 'gemini-3.x', match: /^gemini-3(?:\.\d)?-(?:pro|flash|flash-lite)(?:-thinking)?$/, tokens: 1_048_576 },
 
   // DeepSeek official V3 / R1 / Chat / Reasoner (128K)
@@ -142,15 +142,17 @@ const CONTEXT_SPEC_RULES = [
   { family: 'grok-4', match: /^grok-4(?:-0709|-heavy)?$/, tokens: 256_000 },
   { family: 'grok-code-fast', match: /^grok-code-fast(?:-\d+)?$/, tokens: 256_000 },
   { family: 'grok-3', match: /^grok-3(?:-(?:mini|fast|mini-fast))?$/, tokens: 131_072 },
-  { family: 'grok-2', match: /^grok-2(?:-(?:vision|1212))?$/, tokens: 131_072 },
+  { family: 'grok-2-vision', match: /^grok-2-vision(?:-\d{4})?$/, tokens: 32_768 },
+  { family: 'grok-2', match: /^grok-2(?:-1212)?$/, tokens: 131_072 },
 
   // Alibaba Qwen / QwQ
   { family: 'qwen-long', match: /^qwen-(?:long|turbo|plus)$/, tokens: 1_000_000 },
   { family: 'qwen3-coder-plus', match: /^qwen3-coder-(?:plus|flash)$/, tokens: 1_000_000 },
   { family: 'qwen3-coder-480b', match: /^qwen3-coder-480b(?:-a35b)?(?:-instruct)?$/, tokens: 262_144 },
-  { family: 'qwen3', match: /^qwen3-(?:max|plus|turbo|235b|32b|30b|14b|8b|4b)(?:-[a-z0-9.-]+)?$/, tokens: 131_072 },
+  { family: 'qwen3-32k', match: /^qwen3-(?:32b|14b|8b|4b)(?:-[a-z0-9.-]+)?$/, tokens: 32_768 },
+  { family: 'qwen3', match: /^qwen3-(?:max|plus|turbo|235b|30b)(?:-[a-z0-9.-]+)?$/, tokens: 131_072 },
   { family: 'qwen2.5', match: /^qwen-?2\.5(?:-(?:coder|vl|max|plus|turbo|72b|32b|14b|7b)(?:-[a-z0-9.-]+)?)?$/, tokens: 131_072 },
-  { family: 'qwen-max', match: /^qwen-max$/, tokens: 131_072 },
+  { family: 'qwen-max', match: /^qwen-max$/, tokens: 32_768 },
   { family: 'qwq', match: /^qwq-(?:32b|plus)$/, tokens: 131_072 },
 
   // Moonshot Kimi
@@ -161,10 +163,11 @@ const CONTEXT_SPEC_RULES = [
   { family: 'moonshot-v1', match: /^moonshot-v1-8k$/, tokens: 8_192 },
 
   // Zhipu GLM
-  { family: 'glm-4.6+', match: /^glm-(?:4\.[67]|5)(?:-(?:air|airx|flash|flashx|plus|v|thinking))?$/, tokens: 200_000 },
-  { family: 'glm-4.5', match: /^glm-4\.5(?:-(?:air|airx|flash|x|v))?$/, tokens: 128_000 },
+  { family: 'glm-4.6+', match: /^glm-(?:4\.[67]|5)(?:-(?:air|flash|flashx|plus|v|thinking))?$/, tokens: 200_000 },
+  { family: 'glm-4.5', match: /^glm-4\.5(?:-(?:air|flash|x|v))?$/, tokens: 128_000 },
   { family: 'glm-4-long', match: /^glm-4-long$/, tokens: 1_000_000 },
-  { family: 'glm-4', match: /^glm-4(?:-(?:plus|air|airx|flash|flashx|0520))?$/, tokens: 128_000 },
+  { family: 'glm-4-airx', match: /^glm-4-airx$/, tokens: 8_192 },
+  { family: 'glm-4', match: /^glm-4(?:-(?:plus|air|flash|flashx|0520))?$/, tokens: 128_000 },
 
   // MiniMax
   { family: 'minimax-m1', match: /^minimax-m1(?:-40k|-80k)?$/, tokens: 1_000_000 },
@@ -179,7 +182,9 @@ const CONTEXT_SPEC_RULES = [
   // Meta Llama & Mistral
   { family: 'llama-4', match: /^llama-4-(?:scout|maverick)(?:-[a-z0-9.-]+)?$/, tokens: 256_000 },
   { family: 'llama-3.x', match: /^llama-3\.[123]-[a-z0-9.-]+$/, tokens: 131_072 },
-  { family: 'codestral', match: /^codestral(?:-\d{4})?$/, tokens: 256_000 },
+  { family: 'codestral-2405', match: /^codestral-2405$/, tokens: 32_768 },
+  { family: 'codestral', match: /^codestral(?:-25\d{2}|-latest)?$/, tokens: 256_000 },
+  { family: 'mistral-small-32k', match: /^mistral-small-(?:2402|2409|2501)$/, tokens: 32_768 },
   { family: 'mistral', match: /^(?:mistral-(?:large|medium|small)|pixtral-(?:large|12b))(?:-v\d+|-\d{4})?$/, tokens: 128_000 },
 ];
 
@@ -203,18 +208,18 @@ export function referenceContextWindow(model) {
 }
 
 /**
- * Parse a positive safe integer token count from an API catalog field (accepts
- * integers or clean numeric strings such as "128000").
+ * Parse a positive safe integer token count (>= 1024) from an API catalog field
+ * (accepts integers or clean numeric strings such as "128000").
  */
 export function parseReportedCapacity(value) {
   if (typeof value === 'number') {
-    return Number.isSafeInteger(value) && value > 0 && value <= 100_000_000 ? value : undefined;
+    return Number.isSafeInteger(value) && value >= 1_024 && value <= 100_000_000 ? value : undefined;
   }
   if (typeof value === 'string') {
     const cleaned = value.trim();
-    if (/^\d{1,9}$/.test(cleaned)) {
+    if (/^\d{4,9}$/.test(cleaned)) {
       const parsed = Number(cleaned);
-      return Number.isSafeInteger(parsed) && parsed > 0 && parsed <= 100_000_000 ? parsed : undefined;
+      return Number.isSafeInteger(parsed) && parsed >= 1_024 && parsed <= 100_000_000 ? parsed : undefined;
     }
   }
   return undefined;

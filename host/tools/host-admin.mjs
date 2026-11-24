@@ -137,7 +137,13 @@ async function efforts(config) {
   try {
     const { models } = await api('/admin/api/model/catalog', 'POST', config);
     const entry = models.find(item => item.id === config.model);
-    if (entry) return { efforts: entry.efforts, contextWindowTokens: entry.contextWindowTokens, source: entry.source };
+    if (entry) {
+      return {
+        efforts: entry.efforts,
+        contextWindowTokens: entry.contextSource === 'provider' ? entry.contextWindowTokens : 0,
+        source: entry.source,
+      };
+    }
     console.error(`提示：模型列表中没有 ${config.model}，改用内置参考值`);
   } catch (error) { console.error(`提示：读取模型列表失败（${error.message}），改用内置参考值`); }
   return { efforts: effortLevels(config.model), source: 'reference' };
@@ -173,7 +179,9 @@ switch (command) {
     break;
   case 'model-catalog': {
     const { models } = await api('/admin/api/model/catalog', 'POST', await loginForModel({ listing: true }));
-    for (const item of models) console.log(`${item.id}\t${item.efforts.join(',') || '-'}\t${item.contextWindowTokens ?? ''}`);
+    for (const item of models) {
+      console.log(`${item.id}\t${item.efforts.join(',') || '-'}\t${item.contextSource === 'provider' ? item.contextWindowTokens : ''}`);
+    }
     break;
   }
   case 'model-set': {
@@ -183,9 +191,25 @@ switch (command) {
     if (effort !== 'default' && !levels.efforts.includes(effort))
       fail(`${base.model} 支持的思考强度为 [${levels.efforts.join(', ') || '无'}]；可用 --efforts 手动指定`);
     const contextWindowTokens = Number(options.context ?? levels.contextWindowTokens ?? 0);
-    const config = { ...base, contextWindowTokens, policy: { mode: 'manual', effort, classifierModel: 'jev-latest',
-      models: [{ id: base.model, efforts: levels.efforts, ...(contextWindowTokens ? { contextWindowTokens } : {}) }],
-      routes: Object.fromEntries(['routine', 'reasoning', 'expert'].map(tier => [tier, { model: base.model, effort: 'auto' }])) } };
+    const config = {
+      ...base,
+      contextWindowTokens,
+      ...(options.context !== undefined ? { contextMode: 'manual' } : {}),
+      ...(options.efforts !== undefined ? { effortsMode: 'manual' } : {}),
+      policy: {
+        mode: 'manual',
+        effort,
+        classifierModel: 'jev-latest',
+        models: [{
+          id: base.model,
+          efforts: levels.efforts,
+          ...(options.efforts !== undefined ? { effortsMode: 'manual' } : {}),
+          ...(contextWindowTokens ? { contextWindowTokens } : options.context !== undefined ? { contextWindowTokens: 0 } : {}),
+          ...(options.context !== undefined ? { contextMode: 'manual' } : {}),
+        }],
+        routes: Object.fromEntries(['routine', 'reasoning', 'expert'].map(tier => [tier, { model: base.model, effort: 'auto' }])),
+      },
+    };
     console.log(`测试 ${config.apiFormat} ${config.baseUrl} ${config.model} effort=${effort}（可用：${levels.efforts.join(',') || '无'}）`);
     const tested = await api('/admin/api/model/test', 'POST', config);
     if (tested?.ok !== true) fail('模型测试未确认成功，配置未保存');

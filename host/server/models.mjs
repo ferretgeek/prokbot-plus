@@ -1,6 +1,6 @@
-import { catalogContextPolicy, defaultPolicy, effortLevels, parseModelPolicy, resolveModelCapabilities, summaryThresholdFor, validatePolicy, EFFORTS } from '../runtime/model-policy.mjs';
+import { defaultPolicy, effortLevels, parseModelPolicy, resolveModelCapabilities, summaryThresholdFor, validatePolicy } from '../runtime/model-policy.mjs';
 import { extractProviderContextWindow, extractProviderEfforts, normalizeModelId } from '../runtime/model-specs.mjs';
-import { contextCacheFilePath, contextEntryKey, readContextCache, recordCatalogSync, resolveEffectiveContext, resolveEffectiveEfforts } from '../runtime/model-context-cache.mjs';
+import { clearObservedCache, contextCacheFilePath, contextEntryKey, DEFAULT_SYNC_SETTINGS, readContextCache, recordCatalogSync, resolveEffectiveContext, resolveEffectiveEfforts, updateSyncSettings } from '../runtime/model-context-cache.mjs';
 import { createModelRouter } from '../runtime/model-router.mjs';
 import { anthropicEndpoint, anthropicHeaders } from '../runtime/anthropic-messages.mjs';
 import { createModelSession } from '../runtime/model-session.mjs';
@@ -151,14 +151,14 @@ export class Models {
           contextWindowTokens: profile.contextWindowTokens ?? 0,
           summaryThresholdTokens: profile.summaryThresholdTokens ?? 0,
           contextSource: (profile.contextWindowTokens ?? 0) > 0 ? 'manual' : 'unknown',
-          contextMode: profile.contextMode ?? ((profile.contextWindowTokens ?? 0) > 0 ? 'manual' : 'auto'),
+          contextMode: profile.contextMode ?? 'manual',
         };
       const effectiveEfforts = provider
         ? resolveEffectiveEfforts({ ...profile, apiFormat: provider.apiFormat, baseUrl: provider.baseUrl }, { cache })
         : {
           efforts: [...(profile.efforts ?? [])],
           effortsSource: (profile.efforts?.length ?? 0) > 0 ? 'manual' : 'unknown',
-          effortsMode: profile.effortsMode ?? ((profile.efforts?.length ?? 0) > 0 ? 'manual' : 'auto'),
+          effortsMode: profile.effortsMode ?? 'manual',
         };
       return { ...profile, effectiveContext, effectiveEfforts };
     });
@@ -166,15 +166,47 @@ export class Models {
     for (const provider of routing.providers ?? []) {
       if (cache.providers?.[provider.id]) providerSync[provider.id] = cache.providers[provider.id];
     }
+    const syncSettings = { ...DEFAULT_SYNC_SETTINGS, ...(cache.settings ?? {}) };
     return {
       ...pub,
       profiles,
       ...summary,
-      contextSync: { updatedAt: cache.updatedAt, providers: providerSync },
+      contextSync: { updatedAt: cache.updatedAt, providers: providerSync, ...syncSettings },
       hasApiKey: Boolean(apiKey), hasJevApiKey: Boolean(jevApiKey),
       configured: isConfiguredModelRouting(routing),
       reload: await this.reloadStatus(),
     };
+  }
+  async getSyncSettings() {
+    const cache = await readContextCache(this.contextCachePath);
+    return { ...DEFAULT_SYNC_SETTINGS, ...(cache.settings ?? {}) };
+  }
+  async saveSyncSettings(input = {}) {
+    check(input && typeof input === 'object' && !Array.isArray(input), 400, '同步设置无效');
+    for (const field of ['autoSync', 'codexManifestProbe']) {
+      check(input[field] === undefined || typeof input[field] === 'boolean', 400, `Invalid ${field}`);
+    }
+    await updateSyncSettings(this.contextCachePath, {
+      autoSync: input.autoSync,
+      codexManifestProbe: input.codexManifestProbe,
+    });
+    return this.publicConfig();
+  }
+  async clearObserved(input = {}) {
+    check(input && typeof input === 'object' && !Array.isArray(input), 400, '参数无效');
+    if (input.profileId) {
+      const current = await this.current();
+      const profile = (current.routing?.profiles ?? []).find(item => item.id === input.profileId);
+      const provider = profile ? (current.routing?.providers ?? []).find(item => item.id === profile.providerId) : undefined;
+      check(profile && provider, 404, '模型档案不存在');
+      const key = contextEntryKey({ apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, model: profile.model });
+      await clearObservedCache(this.contextCachePath, { keys: [key] });
+    } else if (input.apiFormat && input.baseUrl && input.model) {
+      await clearObservedCache(this.contextCachePath, { keys: [contextEntryKey(input)] });
+    } else {
+      await clearObservedCache(this.contextCachePath);
+    }
+    return this.publicConfig();
   }
   async reloadStatus() {
     const request = await readJson(join(this.dataDir, 'model-reload-request.json'), null);
@@ -201,13 +233,24 @@ export class Models {
     } catch (error) { check(false, 400, error.message); }
     check(policy.mode !== 'adaptive' || (input.jevApiKey || previous.jevApiKey), 400, '请填写 Jev API Key');
     const providerId = active?.providerId ?? 'default', profileId = active?.profileId ?? 'default';
+    const rawPolicyModel = Array.isArray(input.policy?.models) ? input.policy.models.find(item => item?.id === model) : undefined;
     const capability = policy.models.find(item => item.id === model) ?? { efforts: effortLevels(model) };
+    const explicitContext = own(input, 'contextWindowTokens') || own(rawPolicyModel ?? {}, 'contextWindowTokens') || own(rawPolicyModel ?? {}, 'summaryThresholdTokens');
+    const explicitEfforts = own(rawPolicyModel ?? {}, 'efforts');
+    const contextMode = own(input, 'contextMode') ? input.contextMode
+      : own(rawPolicyModel ?? {}, 'contextMode') ? rawPolicyModel.contextMode
+        : explicitContext ? 'manual' : undefined;
+    const effortsMode = own(input, 'effortsMode') ? input.effortsMode
+      : own(rawPolicyModel ?? {}, 'effortsMode') ? rawPolicyModel.effortsMode
+        : explicitEfforts ? 'manual' : undefined;
     const providers = (previous.routing.providers ?? []).filter(item => item.id !== providerId);
     providers.push({ id: providerId, name: active?.providerName ?? '默认服务', apiFormat, baseUrl, apiKey });
     const profiles = (previous.routing.profiles ?? []).filter(item => item.id !== profileId);
     profiles.push({ id: profileId, name: active?.profileName ?? '默认模型', providerId, model,
-      efforts: capability.efforts, contextWindowTokens: capability.contextWindowTokens ?? contextWindowTokens,
-      summaryThresholdTokens: capability.summaryThresholdTokens ?? 0 });
+      efforts: capability.efforts, ...(effortsMode ? { effortsMode } : {}),
+      contextWindowTokens: capability.contextWindowTokens ?? contextWindowTokens,
+      summaryThresholdTokens: capability.summaryThresholdTokens ?? 0,
+      ...(contextMode ? { contextMode } : {}) });
     let routing;
     try {
       routing = validateModelRouting({ version: 1, providers, profiles,
@@ -261,10 +304,27 @@ export class Models {
   save(input) {
     const pending = this.tail.then(async () => {
       const config = await this.validated(input);
+      if (own(input, 'contextSync') && input.contextSync && typeof input.contextSync === 'object') {
+        const { autoSync, codexManifestProbe } = input.contextSync;
+        if (typeof autoSync === 'boolean' || typeof codexManifestProbe === 'boolean') {
+          await updateSyncSettings(this.contextCachePath, { autoSync, codexManifestProbe });
+        }
+      }
       await this.write(config);
+      const providersById = new Map((config.routing?.providers ?? []).map(item => [item.id, item]));
+      const keysToClear = (config.routing?.profiles ?? []).map(profile => {
+        const provider = providersById.get(profile.providerId);
+        return provider ? contextEntryKey({ apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, model: profile.model }) : null;
+      }).filter(Boolean);
+      if (keysToClear.length) {
+        await clearObservedCache(this.contextCachePath, { keys: keysToClear }).catch(() => {});
+      }
       const request = { revision: randomUUID(), requestedAt: new Date().toISOString() };
       await writePrivate(join(this.dataDir, 'model-reload-request.json'), `${JSON.stringify(request)}\n`);
-      if (this.autoSync) void this.syncAllProviders().catch(() => {});
+      if (this.autoSync) {
+        const syncSettings = await this.getSyncSettings();
+        if (syncSettings.autoSync) void this.syncAllProviders().catch(() => {});
+      }
       return this.publicConfig();
     });
     this.tail = pending.catch(() => {});
@@ -277,7 +337,7 @@ export class Models {
     const route = modelRouteForAgent(config.routing);
     return { config, route: direct ? { ...route, fallbacks: [] } : route };
   }
-  async catalog(input = {}) {
+  async catalog(input = {}, { persist, clearObserved = false } = {}) {
     const previous = await this.current();
     let provider;
     if (input.provider) {
@@ -290,6 +350,8 @@ export class Models {
       const { route } = await this.routeFor(input, { profileId: input.profileId, direct: true });
       provider = route;
     }
+    const syncSettings = await this.getSyncSettings();
+    const allowCodexProbe = input.codexManifestProbe === true || syncSettings.codexManifestProbe === true;
     const anthropic = provider.apiFormat === 'anthropic';
     const fetcher = this.fetchImpl ?? globalThis.fetch;
     const baseEndpoint = anthropic ? anthropicEndpoint(provider.baseUrl, 'models') : `${provider.baseUrl}/models`;
@@ -351,9 +413,9 @@ export class Models {
       }
     }
 
-    // Best-effort Codex-manifest enrichment for gateways (such as Sub2API) whose bare
+    // Optional Codex-manifest enrichment (off by default) for self-hosted gateways whose bare
     // GET /models omits context_window / supported_reasoning_levels unless client_version is passed.
-    if (!anthropic && models.length > 0 && models.length < MAX_MODELS && !models.some(item => item.contextSource === 'provider')) {
+    if (!anthropic && allowCodexProbe && models.length > 0 && models.length < MAX_MODELS && !models.some(item => item.contextSource === 'provider')) {
       try {
         const manifestUrl = new URL(baseEndpoint);
         if (!manifestUrl.searchParams.has('client_version')) {
@@ -408,10 +470,18 @@ export class Models {
       apiFormat: provider.apiFormat,
       baseUrl: provider.baseUrl,
     };
-    await recordCatalogSync(this.contextCachePath, cacheProvider, models, { status: 'ok' }).catch(() => {});
+    const savedProvider = (previous.routing?.providers ?? []).find(item => item.id === cacheProvider.id);
+    const isSavedMatch = Boolean(
+      savedProvider &&
+      savedProvider.apiFormat === cacheProvider.apiFormat &&
+      savedProvider.baseUrl === cacheProvider.baseUrl,
+    );
+    if (persist === true || (persist !== false && isSavedMatch)) {
+      await recordCatalogSync(this.contextCachePath, cacheProvider, models, { status: 'ok', clearObserved }).catch(() => {});
+    }
     return { models };
   }
-  async syncAllProviders({ force = false } = {}) {
+  async syncAllProviders({ force = false, clearObserved = false } = {}) {
     if (this.closed) return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, effortsDetected: 0, providerEfforts: 0, providers: {} };
     if (this.syncInFlight && !force) return this.syncInFlight;
     const run = (async () => {
@@ -427,7 +497,7 @@ export class Models {
         while (queue.length && !this.closed) {
           const provider = queue.shift();
           try {
-            const { models } = await this.catalog({ provider });
+            const { models } = await this.catalog({ provider }, { persist: true, clearObserved });
             const detected = models.filter(item => item.contextWindowTokens > 0).length;
             const reported = models.filter(item => item.contextSource === 'provider' && item.contextWindowTokens > 0).length;
             const effortsCount = models.filter(item => item.efforts?.length > 0).length;
@@ -499,10 +569,15 @@ export class Models {
       check(input.profiles.length <= 128, 400, '单次最多识别 128 个模型');
       const previous = await this.current();
       const providersById = new Map((previous.routing?.providers ?? []).map(item => [item.id, item]));
+      const draftProviderIds = new Set();
       if (Array.isArray(input.providers)) {
         for (const draft of input.providers) {
           try {
             const validated = validateModelProvider(draft, { previous: previous.routing });
+            const saved = providersById.get(validated.id);
+            if (!saved || saved.apiFormat !== validated.apiFormat || saved.baseUrl !== validated.baseUrl) {
+              draftProviderIds.add(validated.id);
+            }
             providersById.set(validated.id, validated);
           } catch { /* Draft provider without key yet: fall back to saved/specs. */ }
         }
@@ -517,7 +592,7 @@ export class Models {
             const provider = providersById.get(providerId);
             if (!provider?.baseUrl || !provider?.apiKey) continue;
             try {
-              const { models } = await this.catalog({ provider });
+              const { models } = await this.catalog({ provider }, { persist: !draftProviderIds.has(providerId) });
               liveByProvider.set(providerId, new Map(models.map(item => [item.id, item])));
             } catch { /* Unreachable upstream must not block built-in spec resolution. */ }
           }

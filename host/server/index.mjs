@@ -170,7 +170,9 @@ export async function createSelfHostServer(options = {}) {
   const modelContextSyncIntervalMs = options.modelContextSyncIntervalMs ?? 6 * 60 * 60_000;
   const modelContextSyncTimer = options.modelAutoSync !== false && modelContextSyncIntervalMs > 0
     ? setInterval(() => {
-      void models.syncAllProviders().catch(error => console.warn(`[models] periodic context sync failed: ${error.message}`));
+      void models.getSyncSettings().then(syncSettings => {
+        if (syncSettings.autoSync) return models.syncAllProviders();
+      }).catch(error => console.warn(`[models] periodic context sync failed: ${error.message}`));
     }, modelContextSyncIntervalMs)
     : null;
   modelContextSyncTimer?.unref();
@@ -473,12 +475,19 @@ export async function createSelfHostServer(options = {}) {
       return sendJson(response, 200, await models.catalog(await jsonBody(request)));
     }
     if (method === "POST" && path === "/admin/api/model/resolve") {
+      limiter.check(`model-resolve:${request.socket.remoteAddress}`, 30);
       return sendJson(response, 200, await models.resolve(await jsonBody(request)));
     }
     if (method === "POST" && path === "/admin/api/model/sync-contexts") {
       limiter.check(`model-sync-contexts:${request.socket.remoteAddress}`, 12);
-      const syncResult = await models.syncAllProviders({ force: true });
+      const syncResult = await models.syncAllProviders({ force: true, clearObserved: true });
       return sendJson(response, 200, { ...(await models.publicConfig()), syncResult });
+    }
+    if (method === "PUT" && path === "/admin/api/model/sync-settings") {
+      return sendJson(response, 200, await models.saveSyncSettings(await jsonBody(request)));
+    }
+    if (method === "POST" && path === "/admin/api/model/observed/clear") {
+      return sendJson(response, 200, await models.clearObserved(await jsonBody(request, 64 * 1024, { allowEmpty: true })));
     }
     if (method === "POST" && path === "/admin/api/model/classify") {
       limiter.check(`classifier-test:${request.socket.remoteAddress}`, 10);
@@ -965,7 +974,9 @@ export async function createSelfHostServer(options = {}) {
       federation.start();
       void network.start(`127.0.0.1:${server.address().port}`).catch(() => {});
       if (options.modelAutoSync !== false) {
-        void models.syncAllProviders().catch(error => console.warn(`[models] startup context sync failed: ${error.message}`));
+        void models.getSyncSettings().then(syncSettings => {
+          if (syncSettings.autoSync) return models.syncAllProviders();
+        }).catch(error => console.warn(`[models] startup context sync failed: ${error.message}`));
       }
       return server.address();
     },

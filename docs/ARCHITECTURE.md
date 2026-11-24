@@ -74,13 +74,13 @@ flowchart LR
 
 | 数据 | 内容 |
 | --- | --- |
-| 卷 `host-data`（`/data`） | 管理员（`auth.json`）、设备、Bot、对话、用量和配置。模型 Key 在 `model.env`，联网在 `web-services.json`，图片在 `media.json` |
+| 卷 `host-data`（`/data`） | 管理员（`auth.json`）、设备、Bot、对话、用量和配置。模型 Key 在 `model.env`，联网在 `web-services.json`，图片在 `media.json`，上游 `/models` 能力缓存与同步开关在 `model-context-cache.json`（由管理服务写入），运行时溢出观测上限在 `model-context-observed.json`（由 Host 运行时写入） |
 | `/data/setup-key` | 初始化码，初始化完成后自动删除 |
 | 卷 `box-home`、`box-workspace` | 执行电脑的家目录和工作区 |
 
 `.env` 里的 `GROKBOT_PUBLIC_URL` 是对外地址：客户端配对时校验地址是否一致，管理接口的 Origin 也以它为准，只能是整个域名或 IP，不能带路径。`TZ` 影响定时任务和用量统计。
 
-管理接口：管理员密码用 scrypt 保存（12–128 位），登录后用 Cookie 会话；非 GET 请求必须带 `x-grokbot-csrf: 1`，带 `Origin` 时必须和对外地址一致；登录、初始化、模型测试按 IP 每分钟限 5 次；配对码 6 位、5 分钟有效、只能用一次，配对后设备拿到独立令牌，可在管理页吊销。`host/tools/host-admin.mjs` 在命令行完成初始化、配置并测试模型、生成配对码和查看状态。
+管理接口：管理员密码用 scrypt 保存（12–128 位），登录后用 Cookie 会话；非 GET 请求必须带 `x-grokbot-csrf: 1`，带 `Origin` 时必须和对外地址一致；登录、初始化、模型测试按 IP 每分钟限 5 次，`/admin/api/model/catalog` 与 `/admin/api/model/resolve` 每分钟限 30 次，`/admin/api/model/sync-contexts` 每分钟限 12 次（另设 `PUT /admin/api/model/sync-settings` 保存同步开关、`POST /admin/api/model/observed/clear` 清除观测上限）；配对码 6 位、5 分钟有效、只能用一次，配对后设备拿到独立令牌，可在管理页吊销。`host/tools/host-admin.mjs` 在命令行完成初始化、配置并测试模型、生成配对码和查看状态。
 
 ### 模型适配层
 
@@ -94,8 +94,10 @@ flowchart LR
 | `host/runtime/openai-responses.mjs` | Responses（`/responses`），无状态调用 |
 | `host/runtime/anthropic-messages.mjs` | Messages，地址写根地址或 `/v1` 都可以 |
 | `host/runtime/model-common.mjs` | SSE 解析、错误归一、图片和文件转换、推理来源标记、可选参数回退 |
-| `host/runtime/model-policy.mjs` | 思考强度档位和各模型的参考档位表 |
-| `host/server/models.mjs` | 保存配置、读取模型列表、连接测试（和正式对话走同一条代码路径） |
+| `host/runtime/model-policy.mjs` | 思考强度档位、参考档位表、含输出预留的 75% 摘要阈值计算及运行时档位降级 |
+| `host/runtime/model-specs.mjs` | 模型 ID 规范化、内置参考上下文规格及多格式 `/models` 字段解析（最低 1024） |
+| `host/runtime/model-context-cache.mjs` | `model-context-cache.json` 与 `model-context-observed.json` 分进程缓存读写，解析 `auto` / `manual` 上下文与档位 |
+| `host/server/models.mjs` | 保存配置、读取与同步上游模型列表、能力解析、连接测试（和正式对话走同一条代码路径） |
 
 | 能力 | OpenAI Chat | OpenAI Responses | Anthropic Messages |
 | --- | --- | --- | --- |
@@ -103,11 +105,12 @@ flowchart LR
 | 多轮推理接续 | 回传同一模型的 `reasoning_content` | `store: false`，回传加密推理 | 回传带签名的思考块 |
 | 图片和文件 | 图片、PDF、文本文件 | 工具结果中带图，PDF | 工具结果中带图，PDF 和文本文档 |
 
-- **思考强度**：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，以及 `default`（不发送）。优先用接口 `/models` 返回的档位，没有时用内置参考表。
+- **思考强度**：`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`，以及 `default`（不发送）。档案支持 `effortsMode`（`auto` / `manual`）；旧档案与命令行 `host-admin model-set --efforts` 默认保留 `manual`。`auto` 模式下优先跟随上游 `/models` 返回的档位，其次匹配内置参考表（`effortLevels` 已通过 `normalizeModelId` 支持带服务商或区域前缀的模型 ID）；若上游列表变化导致已选档位不再受支持，运行时自动降级到最接近的支持档位。
 - **Bot 路由**：服务保存格式、地址和 Key；档案绑定服务、模型 ID、思考强度和上下文策略。单个 Bot 可定义主档案和最多 8 个备用档案，不调用 Jev；子代理继承父 Bot 的路由。Key 只写入私有 `model.env`。
 - **主/备切换**：主模型尚未发出文字或工具调用时，402、408、429、5xx、网络错误或上游 I/O 空闲超时（默认 300 秒）转到下一个备用；Harness 自己还有 150 秒首字停滞超时，多数首字停滞会先由它结束本轮。400、认证错误和调用方取消不触发备用。只有明确的额度耗尽才跳过共用同一 Key 的备用。已经发出文字或工具调用后绝不切换，避免重复输出和工具副作用。
 - **推理来源标记**：不同格式、不同服务商的推理互相读不了。每段推理在 `providerOptions.grokbot` 记下格式和服务 ID，回放时只交给同源的模型。
-- **上下文容量**：只有服务商目录提供容量时才自动带入；未知模型为 `0`，不猜测。手动设置非零容量和摘要阈值会启用自动摘要。
+- **上下文容量与自愈**：档案支持 `contextMode`（`auto` / `manual`）。旧档案、`host-admin model-set --context` 及未提供 `contextMode` 的保存保留 `manual`；`auto` 只跟随上游 `/models` 返回的容量（≥ 1024）和运行时溢出观测上限，**不套用内置表猜测**（内置规格表仅在管理页显示为建议值，用户确认采用后按 `manual` 保存；`host-admin` 不带 `--context` 时也只采用上游返回的值）。摘要阈值按扣除输出预留后的 75% 计算（Anthropic 自动扣除默认 `max_tokens` 64000，例如 200K 模型为 102K）。`auto` 模式下遇到输入超限溢出报错时，会在内存立即下调并仅在出现比较式报错（如 `a + b > c`）或连续两次一致观测后写入 `model-context-observed.json`（保留 30 天，不随定时后台同步覆盖）；`manual` 模式不受观测值压低。可通过管理页清除按钮、手动「同步上游能力」或重新保存配置清除观测上限。
+- **后台同步与开关**：开启管理页的「自动同步上游模型能力」（默认开启）时，管理服务会在启动、保存模型配置和每 6 小时携带服务 API Key 请求上游 `/models` 刷新缓存（缓存仅存 SHA-256 键、容量和档位，不存明文 Key 或地址）；关闭后停止一切后台请求。「附带 Codex 客户端版本参数探测清单」（`?client_version=0.160.0`）默认关闭，仅在管理页明确开启后才会发送。
 - **可选参数回退**：服务商用 400 拒绝某个可选参数（例如 `reasoning.summary`、`max_tokens`）时，去掉它重试一次并在本次会话内记住，日志打印 `[model] … retrying without …`。
 - **已知网关问题**：有的聚合网关用 Responses 格式转发 Claude 时，带工具就返回 `native_thinking_replay_mismatch`。Claude 请用 Anthropic 格式。
 

@@ -43,9 +43,9 @@ const recommendedSummaryThreshold = tokens => {
   return Math.max(1, Math.floor(tokens * 0.75 / 1_000) * 1_000);
 };
 const contextSourceLabels = {
-  provider: '来源：API 目录返回（可手动调整）',
-  reference: '来源：内置模型规格参考（可手动调整）',
-  observed: '来源：运行时溢出观测上限（已持久化，可手动调整）',
+  provider: '来源：API 目录返回（自动同步）',
+  reference: '来源：内置模型规格参考（仅作建议，点击采用后按手动保存）',
+  observed: '来源：运行时溢出观测上限（已持久化，可清除或改用手动模式）',
   manual: '来源：手动设置',
   unknown: '来源：未知（将沿用 Host 默认策略，可手动填写）',
 };
@@ -97,7 +97,12 @@ export function createModelPage({ api, toast, busy, refresh }) {
   panel.innerHTML = html(`<header class="page-header"><h1>对话模型</h1></header>
     <form id="model-form" class="sections">
       <section class="section"><div class="section-head"><h2 class="section-title">模型服务</h2><div class="section-actions"><button id="add-model-provider" class="icon-btn" type="button" aria-label="添加模型服务"></button></div></div><div id="model-providers" class="card"></div></section>
-      <section class="section"><div class="section-head"><h2 class="section-title">模型档案</h2><div class="section-actions"><button id="sync-model-contexts" class="btn btn-sm" type="button" hidden>同步上游能力</button><button id="auto-fill-model-contexts" class="btn btn-sm" type="button" hidden>补全未知上下文</button><button id="add-model-profile" class="icon-btn" type="button" aria-label="添加模型档案"></button></div></div><div id="model-profiles" class="card"></div></section>
+      <section class="section"><div class="section-head"><h2 class="section-title">模型档案</h2><div class="section-actions"><button id="sync-model-contexts" class="btn btn-sm" type="button" hidden>同步上游能力</button><button id="auto-fill-model-contexts" class="btn btn-sm" type="button" hidden>补全未知上下文</button><button id="add-model-profile" class="icon-btn" type="button" aria-label="添加模型档案"></button></div></div><div id="model-profiles" class="card"></div>
+        <details class="disclosure card"><summary class="row"><span class="row-copy"><span class="row-title">上游同步设置</span><span class="row-hint">控制后台 /models 请求与探测方式</span></span></summary>
+          <label class="row"><span class="row-copy"><span class="row-title">自动同步上游模型能力</span><span class="row-hint">在启动、保存配置和每 6 小时携带 API Key 请求 /models，更新「自动」档案。</span></span><input id="model-auto-sync" type="checkbox" role="switch" /></label>
+          <label class="row"><span class="row-copy"><span class="row-title">附带 Codex 客户端版本参数探测清单</span><span class="row-hint">默认关闭。仅当自建网关需要 ?client_version=0.160.0 才会返回上下文和思考档位时开启。</span></span><input id="model-codex-probe" type="checkbox" role="switch" /></label>
+        </details>
+      </section>
       <section class="section"><div class="section-head"><h2 class="section-title">默认路由</h2></div><div id="model-default-route" class="card"></div></section>
       <section class="section"><div class="section-head"><h2 class="section-title">Bot 路由</h2><div class="section-actions"><button id="refresh-model-bots" class="icon-btn" type="button" aria-label="刷新 Bot"></button></div></div><div id="model-bot-routes" class="card"></div></section>
       <p id="legacy-routing-notice" class="hint" role="status" hidden></p>
@@ -110,7 +115,8 @@ export function createModelPage({ api, toast, busy, refresh }) {
   const providerEditor = editor(panel, 'model-provider-editor'), profileEditor = editor(panel, 'model-profile-editor');
   const botEditor = editor(panel, 'model-bot-route-editor');
   let config = emptyRouting(), pendingKeys = new Map(), loaded = false, dirty = false, active = false, agents = [],
-    agentSignature = '', legacyRouting = false, legacyAdaptive = false;
+    agentSignature = '', legacyRouting = false, legacyAdaptive = false,
+    syncSettings = { autoSync: true, codexManifestProbe: false }, routeEffortWarnings = [];
 
   function profileById(id) { return config.profiles.find(profile => profile.id === id); }
   function providerById(id) { return config.providers.find(provider => provider.id === id); }
@@ -169,6 +175,14 @@ export function createModelPage({ api, toast, busy, refresh }) {
     legacyRouting = value.routingMigrated === true;
     // Only an adaptive policy used task-difficulty routing; a single model converts without loss.
     legacyAdaptive = legacyRouting && value.legacyAdaptiveRouting === true;
+    syncSettings = {
+      autoSync: value.contextSync?.autoSync !== false,
+      codexManifestProbe: value.contextSync?.codexManifestProbe === true,
+    };
+    const autoSyncSwitch = $('#model-auto-sync');
+    const codexProbeSwitch = $('#model-codex-probe');
+    if (autoSyncSwitch) autoSyncSwitch.checked = syncSettings.autoSync;
+    if (codexProbeSwitch) codexProbeSwitch.checked = syncSettings.codexManifestProbe;
     config = { version: 1, providers: (value.providers ?? []).map(provider => ({ ...provider })),
       profiles: (value.profiles ?? []).map(profile => {
         const syncedEfforts = profile.effortsMode === 'auto' && Array.isArray(profile.effectiveEfforts?.efforts) && profile.effectiveEfforts.efforts.length
@@ -177,6 +191,23 @@ export function createModelPage({ api, toast, busy, refresh }) {
         return { ...profile, efforts: [...syncedEfforts] };
       }),
       defaultRoute: null, botRoutes: clone(value.botRoutes ?? {}) };
+    routeEffortWarnings = [];
+    const checkRouteEfforts = (route, label) => {
+      if (!route) return;
+      const checkItem = (profileId, effort) => {
+        if (!effort || effort === 'default') return;
+        const prof = profileById(profileId);
+        if (prof && !prof.efforts?.includes(effort)) {
+          routeEffortWarnings.push(`${label}（${prof.name}：${t(levelLabels[effort] ?? effort)}）`);
+        }
+      };
+      checkItem(route.profileId, route.effort);
+      for (const fb of route.fallbacks ?? []) checkItem(fb.profileId, fb.effort);
+    };
+    checkRouteEfforts(value.defaultRoute, t('默认路由'));
+    for (const [id, route] of Object.entries(value.botRoutes ?? {})) {
+      checkRouteEfforts(route, agents.find(agent => agent.id === id)?.name ?? id);
+    }
     config.defaultRoute = value.defaultRoute ? routeCopy(value.defaultRoute) : null;
     config.botRoutes = Object.fromEntries(Object.entries(config.botRoutes)
       .map(([id, route]) => [id, routeCopy(route)]).filter(([, route]) => route));
@@ -285,13 +316,6 @@ export function createModelPage({ api, toast, busy, refresh }) {
       const provider = providerById(profile.providerId), references = profileRouteReferences(profile.id);
       const test = iconButton('pulse', t('测试连接'));
       test.onclick = () => busy(test, () => testProfile(profile)).catch(error => toast(error.message, true));
-      const more = menu(t('{0} 的更多操作', profile.name), [
-        { label: t('编辑'), run: () => showProfile(profile) },
-        { label: t('删除'), danger: true, disabled: references.length > 0, run: trigger => busy(trigger, async () => {
-          if (!await confirmAction({ title: t('删除“{0}”？', profile.name), message: t('请先从 {0} 移除此档案。', references.join('、')), action: t('删除') })) return;
-          config.profiles = config.profiles.filter(item => item.id !== profile.id); markDirty(); render();
-        }) },
-      ]);
       const effEfforts = profile.effectiveEfforts;
       const isEffortsAuto = profile.effortsMode === 'auto';
       const activeEfforts = isEffortsAuto && effEfforts?.efforts?.length ? effEfforts.efforts : profile.efforts;
@@ -302,11 +326,31 @@ export function createModelPage({ api, toast, busy, refresh }) {
       const activeCapacity = isAuto ? (eff?.contextWindowTokens || profile.contextWindowTokens || 0) : (profile.contextWindowTokens || 0);
       const activeThreshold = isAuto ? (eff?.summaryThresholdTokens || profile.summaryThresholdTokens || 0) : (profile.summaryThresholdTokens || 0);
       const modeTag = isAuto ? `（${t(effectiveSourceTags[eff?.contextSource] ?? '自动')}）` : '';
-      const observedNote = !isAuto && eff?.contextSource === 'observed' && eff.contextWindowTokens > 0 && eff.contextWindowTokens < activeCapacity
-        ? ` · ${t('观测上限 {0}', formatTokenCount(eff.contextWindowTokens))}` : '';
+      const observedCap = eff?.observed?.contextWindowTokens;
+      const observedNote = observedCap
+        ? (isAuto
+          ? (eff?.contextSource !== 'observed' ? ` · ${t('观测上限 {0}', formatTokenCount(observedCap))}` : '')
+          : ` · ${t('已记录观测上限 {0}（手动模式不受影响）', formatTokenCount(observedCap))}`)
+        : '';
+      const actionsMenu = menu(t('{0} 的更多操作', profile.name), [
+        { label: t('编辑'), run: () => showProfile(profile) },
+        ...(observedCap ? [{ label: t('清除观测上限'), run: trigger => busy(trigger, async () => {
+          const updated = await api('/admin/api/model/observed/clear', { method: 'POST', body: { profileId: profile.id } });
+          if (!dirty) setConfig(updated);
+          else {
+            if (profile.effectiveContext) delete profile.effectiveContext.observed;
+            renderProfiles();
+          }
+          toast(t('已清除观测上限'));
+        }) }] : []),
+        { label: t('删除'), danger: true, disabled: references.length > 0, run: trigger => busy(trigger, async () => {
+          if (!await confirmAction({ title: t('删除“{0}”？', profile.name), message: t('请先从 {0} 移除此档案。', references.join('、')), action: t('删除') })) return;
+          config.profiles = config.profiles.filter(item => item.id !== profile.id); markDirty(); render();
+        }) },
+      ]);
       profilesRoot.append(item({ icon: 'model', title: profile.name, badges: [badge(profile.model)],
         meta: [`${provider?.name ?? profile.providerId} · ${effortText}`, t('上下文 {0} · 摘要 {1}', `${formatTokenCount(activeCapacity) || t('未知')}${modeTag}`, formatTokenCount(activeThreshold) || t('原策略')) + observedNote],
-        actions: [test, more] }));
+        actions: [test, actionsMenu] }));
     }
   }
   function renderDefaultRoute() {
@@ -317,6 +361,9 @@ export function createModelPage({ api, toast, busy, refresh }) {
     }
     if (!config.defaultRoute) config.defaultRoute = { profileId: config.profiles[0].id, effort: 'default', fallbacks: [] };
     routeEditor(defaultRoot, config.defaultRoute, route => { config.defaultRoute = route; markDirty(); renderDefaultRoute(); });
+    if (routeEffortWarnings.length) {
+      defaultRoot.append(node('p', 'hint', t('部分路由所选思考强度已不在上游支持列表中，已重置为模型默认；未重新保存前，运行时会自动降级：{0}', routeEffortWarnings.join('、'))));
+    }
     defaultRoot.append(node('p', 'hint', t('仅在主模型未输出任何内容时，才会按顺序尝试备用模型。')));
   }
   function knownBots() {
@@ -386,8 +433,8 @@ export function createModelPage({ api, toast, busy, refresh }) {
     if (!config.providers.length) return;
     const current = entry ? clone(entry) : { id: uid('profile'), name: '', providerId: config.providers[0].id, model: '', efforts: [],
       effortsMode: 'auto', contextWindowTokens: defaultContextWindowTokens, summaryThresholdTokens: defaultSummaryThresholdTokens, contextMode: 'auto' };
-    const initialContextMode = current.contextMode ?? (current.contextWindowTokens > 0 ? 'manual' : 'auto');
-    const initialEffortsMode = current.effortsMode ?? ((current.efforts?.length ?? 0) > 0 ? 'manual' : 'auto');
+    const initialContextMode = current.contextMode ?? 'manual';
+    const initialEffortsMode = current.effortsMode ?? 'manual';
     const { form: editForm, title, body, submit, dialog } = profileEditor;
     body.replaceChildren(); editForm.reset(); title.textContent = t(entry ? '编辑模型档案' : '添加模型档案');
     const name = formField(body, 'name', '名称'), providerId = formSelect(body, 'providerId', '模型服务');
@@ -429,13 +476,25 @@ export function createModelPage({ api, toast, busy, refresh }) {
       : (shownCapacity > 0 ? 'manual' : 'unknown');
     const sourceHint = node('p', 'hint', t(contextSourceLabels[initialSource] ?? contextSourceLabels.unknown));
     sourceHint.setAttribute('role', 'status');
-    body.append(autoModeLine, contextFields, sourceHint, node('p', 'hint', t('支持 1M、400K、128K。输入模型 ID 或同步模型后自动识别上下文容量并按 75% 计算摘要阈值。')));
+    const suggestionRow = node('div', 'inline-field'); suggestionRow.hidden = true;
+    const suggestionHint = node('span', 'hint');
+    const applySuggestionBtn = node('button', 'btn btn-sm', t('采用建议')); applySuggestionBtn.type = 'button';
+    suggestionRow.append(suggestionHint, applySuggestionBtn);
+    const observedRow = node('div', 'inline-field');
+    const observedCap = current.effectiveContext?.observed?.contextWindowTokens;
+    observedRow.hidden = !observedCap;
+    const observedHint = node('span', 'hint', observedCap ? t('当前存在运行时溢出观测上限：{0}', formatTokenCount(observedCap)) : '');
+    const clearObservedBtn = node('button', 'btn btn-sm', t('清除观测上限')); clearObservedBtn.type = 'button';
+    observedRow.append(observedHint, clearObservedBtn);
+    body.append(autoModeLine, contextFields, sourceHint, suggestionRow, observedRow,
+      node('p', 'hint', t('支持 1M、400K、128K。输入模型 ID 或同步模型后自动识别上下文容量并按 75% 计算摘要阈值。')));
     let closed = false;
     let catalogModels = new Map();
+    let pendingSuggestion = null;
     let thresholdCustom = Boolean(current.summaryThresholdTokens && current.contextWindowTokens &&
       current.summaryThresholdTokens !== recommendedSummaryThreshold(current.contextWindowTokens));
-    let contextManual = initialContextMode === 'manual' && Boolean(current.contextWindowTokens > 0 || current.summaryThresholdTokens > 0);
-    let effortsManual = initialEffortsMode === 'manual' && Boolean(entry && (current.efforts?.length ?? 0) > 0);
+    let contextManual = initialContextMode === 'manual';
+    let effortsManual = initialEffortsMode === 'manual';
     let contextAutoFilled = initialContextMode === 'auto' && shownCapacity > 0;
     let lastModelId = current.model.trim();
     let lastResolvedModelId = '';
@@ -455,30 +514,71 @@ export function createModelPage({ api, toast, busy, refresh }) {
     const setEffortsSource = (source) => {
       effortsSourceHint.textContent = t(contextSourceLabels[source] ?? contextSourceLabels.unknown);
     };
+    const showSuggestion = (spec) => {
+      if (spec && spec.contextSource === 'reference' && Number.isSafeInteger(spec.contextWindowTokens) && spec.contextWindowTokens > 0) {
+        pendingSuggestion = spec;
+        suggestionHint.textContent = t('参考建议：{0}（{1}）', formatTokenCount(spec.contextWindowTokens), spec.matchedFamily || spec.id);
+        suggestionRow.hidden = false;
+      } else {
+        pendingSuggestion = null;
+        suggestionRow.hidden = true;
+      }
+    };
+    applySuggestionBtn.onclick = () => {
+      if (!pendingSuggestion) return;
+      const cap = pendingSuggestion.contextWindowTokens;
+      const thr = pendingSuggestion.summaryThresholdTokens ?? recommendedSummaryThreshold(cap);
+      capacity.value = formatTokenCount(cap);
+      threshold.value = formatTokenCount(thr);
+      autoModeToggle.checked = false;
+      contextManual = true;
+      contextAutoFilled = false;
+      thresholdCustom = false;
+      setContextSource('manual');
+      showSuggestion(null);
+    };
+    clearObservedBtn.onclick = () => busy(clearObservedBtn, async () => {
+      if (entry) {
+        const updated = await api('/admin/api/model/observed/clear', { method: 'POST', body: { profileId: current.id } });
+        if (!dirty) setConfig(updated);
+      }
+      if (current.effectiveContext) delete current.effectiveContext.observed;
+      observedRow.hidden = true;
+      if (autoModeToggle.checked && model.value.trim()) {
+        lastResolvedModelId = '';
+        void lookupModelCapabilities(model.value.trim(), { applyEfforts: false });
+      }
+      toast(t('已清除观测上限'));
+    }).catch(error => toast(error.message, true));
     const applyCapabilities = (spec, { onlyMissingContext = false, applyEfforts = true } = {}) => {
       if (!spec) return;
-      if (applyEfforts && !effortsManual && Array.isArray(spec.efforts)) {
+      if (applyEfforts && effortsModeToggle.checked && !effortsManual && Array.isArray(spec.efforts)) {
         for (const level of levels) editForm.elements[`effort-${level}`].checked = spec.efforts.includes(level);
         setEffortsSource(spec.efforts.length ? (spec.source || 'reference') : 'unknown');
       }
       const currentCapacity = parseTokenCount(capacity.value);
       const hasCapacity = Number.isFinite(currentCapacity) && currentCapacity > 0;
-      if (Number.isSafeInteger(spec.contextWindowTokens) && spec.contextWindowTokens > 0) {
-        if (!contextManual && (!onlyMissingContext || !hasCapacity)) {
+      const isAuthoritative = spec.contextSource === 'provider' || spec.contextSource === 'observed';
+      if (isAuthoritative && Number.isSafeInteger(spec.contextWindowTokens) && spec.contextWindowTokens > 0) {
+        showSuggestion(null);
+        if (autoModeToggle.checked && !contextManual && (!onlyMissingContext || !hasCapacity)) {
           capacity.value = formatTokenCount(spec.contextWindowTokens);
           threshold.value = formatTokenCount(spec.summaryThresholdTokens ?? recommendedSummaryThreshold(spec.contextWindowTokens));
           thresholdCustom = false;
           contextAutoFilled = true;
-          setContextSource(spec.contextSource || 'reference', spec.matchedFamily);
+          setContextSource(spec.contextSource, spec.matchedFamily);
         }
-      } else if (!onlyMissingContext) {
-        if (contextAutoFilled && !contextManual) {
-          capacity.value = '';
-          threshold.value = '';
-          thresholdCustom = false;
-          contextAutoFilled = false;
+      } else {
+        showSuggestion(spec.contextSource === 'reference' ? spec : null);
+        if (!onlyMissingContext && autoModeToggle.checked && !contextManual) {
+          if (contextAutoFilled) {
+            capacity.value = '';
+            threshold.value = '';
+            thresholdCustom = false;
+            contextAutoFilled = false;
+          }
           setContextSource('unknown');
-        } else {
+        } else if (!autoModeToggle.checked) {
           setContextSource(hasCapacity ? 'manual' : 'unknown');
         }
       }
@@ -543,6 +643,7 @@ export function createModelPage({ api, toast, busy, refresh }) {
       contextManual = true;
       contextAutoFilled = false;
       autoModeToggle.checked = false;
+      showSuggestion(null);
       cancelPendingResolve();
       const parsed = parseTokenCount(capacity.value);
       if (!Number.isFinite(parsed)) return;
@@ -566,9 +667,10 @@ export function createModelPage({ api, toast, busy, refresh }) {
         lastModelId = trimmed;
         lastResolvedModelId = '';
         inFlightModelId = '';
-        contextManual = false;
-        effortsManual = false;
-        if (!trimmed && contextAutoFilled) {
+        if (autoModeToggle.checked) contextManual = false;
+        if (effortsModeToggle.checked) effortsManual = false;
+        showSuggestion(null);
+        if (!trimmed && contextAutoFilled && autoModeToggle.checked) {
           capacity.value = '';
           threshold.value = '';
           thresholdCustom = false;
@@ -594,15 +696,24 @@ export function createModelPage({ api, toast, busy, refresh }) {
         void lookupModelCapabilities(model.value);
       }, 350);
     };
-    providerId.onchange = () => { catalogModels = new Map(); catalogSelect.hidden = true; catalogSelect.replaceChildren(); list.replaceChildren(); };
+    providerId.onchange = () => {
+      catalogModels = new Map();
+      catalogSelect.hidden = true;
+      catalogSelect.replaceChildren();
+      list.replaceChildren();
+      lastResolvedModelId = '';
+      cancelPendingResolve();
+      const trimmed = model.value.trim();
+      if (trimmed) void lookupModelCapabilities(trimmed);
+    };
     catalogSelect.onchange = () => {
       if (!catalogSelect.value) return;
       const nextId = catalogSelect.value.trim();
       model.value = catalogSelect.value;
       lastModelId = nextId;
       lastResolvedModelId = '';
-      contextManual = false;
-      effortsManual = false;
+      if (autoModeToggle.checked) contextManual = false;
+      if (effortsModeToggle.checked) effortsManual = false;
       cancelPendingResolve();
       void lookupModelCapabilities(nextId);
     };
@@ -679,6 +790,30 @@ export function createModelPage({ api, toast, busy, refresh }) {
   setIcon($('#add-model-profile'), 'plus', '添加模型档案');
   $('#add-model-provider').onclick = () => showProvider();
   $('#add-model-profile').onclick = () => showProfile();
+  const autoSyncSwitch = $('#model-auto-sync');
+  const codexProbeSwitch = $('#model-codex-probe');
+  for (const [toggle, key] of [[autoSyncSwitch, 'autoSync'], [codexProbeSwitch, 'codexManifestProbe']]) {
+    if (!toggle) continue;
+    toggle.onchange = async () => {
+      const nextValue = toggle.checked;
+      autoSyncSwitch.disabled = true;
+      codexProbeSwitch.disabled = true;
+      try {
+        const result = await api('/admin/api/model/sync-settings', { method: 'PUT', body: { [key]: nextValue } });
+        syncSettings = {
+          autoSync: result.contextSync?.autoSync !== false,
+          codexManifestProbe: result.contextSync?.codexManifestProbe === true,
+        };
+        toast(t('配置已保存'));
+      } catch (error) {
+        toggle.checked = !nextValue;
+        toast(error.message, true);
+      } finally {
+        autoSyncSwitch.disabled = false;
+        codexProbeSwitch.disabled = false;
+      }
+    };
+  }
   const syncContextsBtn = $('#sync-model-contexts');
   if (syncContextsBtn) {
     syncContextsBtn.onclick = () => busy(syncContextsBtn, async () => {
@@ -710,6 +845,7 @@ export function createModelPage({ api, toast, busy, refresh }) {
       if (spec && spec.contextWindowTokens > 0) {
         live.contextWindowTokens = spec.contextWindowTokens;
         live.summaryThresholdTokens = spec.summaryThresholdTokens || recommendedSummaryThreshold(spec.contextWindowTokens);
+        if (spec.contextSource === 'reference') live.contextMode = 'manual';
         if (!live.efforts.length && spec.efforts?.length) live.efforts = [...spec.efforts];
         updated++;
       }

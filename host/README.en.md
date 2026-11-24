@@ -24,6 +24,14 @@ Settings in the instance `.env` file tune the Host container (applied to both si
 
 - `GROKBOT_BLOB_DB_QUICK_CHECK_MAX_BYTES`: Byte threshold for fast-opening large `conversation-blobs.db` files, defaulting to `33554432` (32 MiB). When a database exceeds this size and has no pending recovery marker, open runs a structural probe to avoid startup stalls and then runs `PRAGMA quick_check(1)` off the main event loop in a worker thread using `node:sqlite`; if corruption is found, a `.quickcheck-required` marker is written so the next open falls back to the stock full quarantine and salvage flow. Note that `quick_check(1)` only stops after reporting the first error and still scans the entire file for healthy large databases; the verified stamp tracks `(size, mtimeMs)`, which WAL checkpoints update, so active large databases will typically rescan in the background on cold restarts. Set this to `infinity` to restore the original synchronous `quick_check` on every open.
 
+## Model capability sync and cache
+
+Each model profile can choose `auto` or `manual` independently. Existing profiles upgraded from earlier releases and configurations saved through `host-admin.mjs` remain `manual` by default and never silently apply built-in context-window guesses.
+
+- **Cache files**: the admin service writes upstream `/models` context limits (≥ 1024), supported reasoning efforts, and sync switches to `/data/model-context-cache.json`; the Host runtime writes learned overflow ceilings to `/data/model-context-observed.json` (kept for 30 days, persisted only on comparison errors such as `a + b > c` or two consistent observations). Both files are keyed by SHA-256 digests of format, base URL, and model ID, without plaintext API keys or URLs.
+- **Manual mode and self-healing**: `manual` profiles are never clamped by observed ceilings. `auto` context mode uses only upstream `/models` values and runtime observed ceilings (built-in reference values appear only as suggestions in the admin UI until explicitly applied as `manual`). Observed ceilings can be cleared via "Clear observed ceiling", manual "Sync upstream", or re-saving the configuration.
+- **Background sync switches**: under "Upstream sync settings" on the admin Model page, "Auto-sync upstream model capabilities" (on by default) fetches `/models` with your API key at startup, on save, and every 6 hours—turning it off stops all background requests; "Probe Codex client manifest parameter" (`?client_version=0.160.0`) is off by default and sent only when explicitly enabled.
+
 ## Offline builds
 
 By default the build downloads the originals from pinned sources and verifies them strictly; versions are in `recipes/host/manifest.json`. With the originals already at hand:

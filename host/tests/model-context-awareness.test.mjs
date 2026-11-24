@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:http';
 import os from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { promisify } from 'node:util';
 
 import {
   extractProviderContextWindow,
@@ -13,6 +17,7 @@ import {
 } from '../runtime/model-specs.mjs';
 import {
   catalogContextPolicy,
+  clampSupportedEffort,
   effortLevels,
   resolveModelCapabilities,
   summaryThresholdFor,
@@ -20,6 +25,7 @@ import {
 import {
   createHarnessModelErrorMapper,
   isInputTokenLimitError,
+  parseContextLimitDetailsFromError,
   parseContextLimitFromError,
 } from '../runtime/model-errors.mjs';
 import {
@@ -29,10 +35,23 @@ import {
 } from '../runtime/model-session.mjs';
 import { createInference } from '../runtime/host-extensions.mjs';
 import { loadModelConfig } from '../runtime/config.mjs';
-import { contextCacheFilePath, readContextCache, recordCatalogSync, resolveEffectiveContext, resolveEffectiveEfforts } from '../runtime/model-context-cache.mjs';
+import {
+  contextCacheFilePath,
+  invalidateContextCache,
+  observedCacheFilePath,
+  persistObservedCeiling,
+  readContextCache,
+  readContextCacheSync,
+  recordCatalogSync,
+  resolveEffectiveContext,
+  resolveEffectiveEfforts,
+} from '../runtime/model-context-cache.mjs';
 import { validateModelRouting } from '../runtime/model-routing.mjs';
 import { ModelRequestError } from '../runtime/model-common.mjs';
 import { Models } from '../server/models.mjs';
+
+const exec = promisify(execFile);
+const hostAdminCli = fileURLToPath(new URL('../tools/host-admin.mjs', import.meta.url));
 
 // createSelfHostServer loads Connectors and the MCP SDK from host/server/node_modules, which release packages do not include.
 const dependencies = existsSync(new URL('../server/node_modules/@modelcontextprotocol/sdk/package.json', import.meta.url));
@@ -59,6 +78,9 @@ test('Layer 1: extractProviderContextWindow reads OpenAI, OpenRouter, vLLM, Gemi
   assert.equal(extractProviderContextWindow({ contextWindow: 16_384 }), 16_384);
   assert.equal(extractProviderContextWindow({ context_length: 'not-a-number' }), undefined);
   assert.equal(extractProviderContextWindow({ context_length: 0 }), undefined);
+  assert.equal(parseReportedCapacity(1), undefined);
+  assert.equal(parseReportedCapacity(1_023), undefined);
+  assert.equal(parseReportedCapacity(1_024), 1_024);
   assert.equal(parseReportedCapacity(100_000_001), undefined);
 });
 
@@ -166,27 +188,34 @@ test('Layer 2: normalizeModelId, referenceContextWindow, effortLevels, and catal
     ['openai/gpt-4o-2024-11-20', 128_000],
     ['o3-mini', 200_000],
     ['gpt-5.2', 400_000],
+    ['gpt-5-chat-latest', 128_000],
     ['gpt-5.4', 1_050_000],
     ['gpt-5.4-mini', 400_000],
     ['claude-3-7-sonnet-20250219', 200_000],
     ['claude-sonnet-4-5-20250929', 200_000],
     ['claude-opus-4-6', 1_000_000],
     ['anthropic/claude-sonnet-4-7:extended', 1_000_000],
-    ['claude-sonnet-4-5-1m', 1_000_000],
     ['google/gemini-2.5-pro-preview-06-05', 1_048_576],
+    ['gemini-2.0-flash-thinking-exp-1219', 32_768],
     ['gemini-3-flash', 1_048_576],
     ['deepseek-chat', 128_000],
     ['deepseek-ai/DeepSeek-R1-0528', 128_000],
     ['x-ai/grok-4-fast-reasoning', 2_000_000],
     ['grok-4', 256_000],
     ['grok-3-mini', 131_072],
+    ['grok-2-vision', 32_768],
     ['qwen/qwen3-coder-plus', 1_000_000],
     ['qwen3-235b-a22b', 131_072],
+    ['qwen3-8b', 32_768],
+    ['qwen-max', 32_768],
     ['moonshotai/kimi-k2-thinking', 262_144],
     ['z-ai/glm-4.6', 200_000],
+    ['glm-4-airx', 8_192],
     ['minimax/minimax-m2.5', 204_800],
     ['doubao-seed-1-6-thinking', 256_000],
     ['meta-llama/llama-3.3-70b-instruct:free', 131_072],
+    ['codestral-2405', 32_768],
+    ['mistral-small-2501', 32_768],
   ];
   for (const [id, expectedTokens] of expectations) {
     const policy = catalogContextPolicy(id);
@@ -194,6 +223,13 @@ test('Layer 2: normalizeModelId, referenceContextWindow, effortLevels, and catal
     assert.equal(policy.summaryThresholdTokens, summaryThresholdFor(expectedTokens));
     assert.equal(policy.contextSource, 'reference');
   }
+
+  // Claude 4.5 1M aliases require a beta header we do not send, so never guess 1M
+  assert.equal(referenceContextWindow('claude-sonnet-4-5-1m'), null);
+
+  // Anthropic deducts default 64K max_tokens output reserve before computing 75% threshold
+  assert.equal(summaryThresholdFor(200_000, { apiFormat: 'anthropic', model: 'claude-sonnet-4-6' }), 102_000);
+  assert.equal(summaryThresholdFor(1_000_000, { apiFormat: 'anthropic', model: 'claude-opus-4-6' }), 702_000);
 
   // Provider-reported capacity always overrides built-in reference
   const overridden = catalogContextPolicy('claude-opus-4-6', 200_000);
@@ -367,13 +403,14 @@ test('Layer 4: createModelSession self-heals unknown (0) and overestimated conte
   assert.equal(response2.supportsSelfSummary, true);
   assert.equal(response2.earlyCompactionContextTokenThreshold, 49_000);
 
-  // Case B: profile configured at 1M (e.g. Claude 4.6 spec) on a 200K relay -> clamps down to 200K / 150K
+  // Case B: auto profile with 1M provider window on a 200K relay -> clamps down to 200K / 150K
   const ceilingsB = new Map();
   let callsB = 0;
   const sessionB = createModelSession({
     ...baseCfg,
     profileId: 'claude-relay',
     model: 'claude-opus-4-6',
+    contextMode: 'auto',
     contextWindowTokens: 1_000_000,
     summaryThresholdTokens: 750_000,
     observedCeilings: ceilingsB,
@@ -403,7 +440,7 @@ test('Layer 4: createModelSession self-heals unknown (0) and overestimated conte
   assert.equal(responseB2.earlyCompactionContextTokenThreshold, 150_000);
 });
 
-test('Review #1 & #2: Anthropic exceed context limit detection, output-token non-poisoning, grouped integers, and tightened pattern #4', async () => {
+test('Anthropic overflow parsing, output-token & TPM exclusions, grouped integers, and tightened ceiling patterns', async () => {
   class InputTokenLimitError extends Error {}
   class ConnectError extends Error {}
   class ActionRequiredError extends Error {}
@@ -434,6 +471,7 @@ test('Review #1 & #2: Anthropic exceed context limit detection, output-token non
     'max_completion_tokens (32768) exceeds the maximum number of tokens allowed (16384).',
     'Requested output tokens (16384) exceeds the maximum number of tokens allowed (8192).',
     'Requested completion tokens (16384) exceeds the maximum number of tokens allowed (8192).',
+    'Context window limit of 8192 output tokens exceeded for request (prompt 120000 tokens).',
   ];
   for (const msg of outputErrors) {
     const err = new ModelRequestError(msg, { status: 400, code: 'invalid_request_error' });
@@ -442,6 +480,18 @@ test('Review #1 & #2: Anthropic exceed context limit detection, output-token non
     const mapped = mapError(err);
     assert.ok(mapped instanceof NonRetriableError, `output error should map to NonRetriableError: ${msg}`);
   }
+
+  // 413 TPM / rate-limit errors mentioning "input exceeds maximum tokens per minute" must NOT match input token limit
+  const tpmErr = new ModelRequestError('Your input exceeds the maximum tokens per minute', { status: 413 });
+  assert.equal(isInputTokenLimitError(tpmErr), false);
+  assert.equal(parseContextLimitFromError(tpmErr.message), undefined);
+  assert.ok(mapError(tpmErr) instanceof NonRetriableError);
+
+  // Comparison a + b > c parses reserve for output-aware threshold adjustment
+  assert.deepEqual(
+    parseContextLimitDetailsFromError('input length and max_tokens exceed context limit: 140000 + 64000 > 200000'),
+    { limit: 200_000, reserve: 64_000, isComparison: true },
+  );
 
   // Output-token error in a live session must not poison observedCeilings
   const ceilings = new Map();
@@ -490,7 +540,7 @@ test('Review #1 & #2: Anthropic exceed context limit detection, output-token non
   assert.equal(parseContextLimitFromError('input length and max_tokens exceed context window: 190000 + 20000 > 200000'), 200_000);
 });
 
-test('Review #3: progressive snapshot stripping fixes o1-preview/o1-mini 128K and splits doubao-1.5 rules', () => {
+test('Progressive snapshot stripping fixes o1-preview/o1-mini 128K and splits doubao-1.5 rules', () => {
   const specs = [
     ['o1-preview', 128_000],
     ['o1-preview-2024-09-12', 128_000],
@@ -521,7 +571,7 @@ test('Review #3: progressive snapshot stripping fixes o1-preview/o1-mini 128K an
   assert.equal(referenceContextWindow('doubao-1.5-lite'), null);
 });
 
-test('Review #4, #5, #8: observedCeilingKey isolation, equal-window compaction self-healing, TTL expiry, and cap eviction', async () => {
+test('Observed ceiling key isolation, equal-window reserve clamping, TTL expiry, and cap eviction', async () => {
   // Finding #4: observedCeilingKey scopes by (apiFormat, baseUrl, model), NOT profileId
   const ceilings = new Map();
   let calls = 0;
@@ -586,7 +636,7 @@ test('Review #4, #5, #8: observedCeilingKey isolation, equal-window compaction s
   assert.equal((await resDiffUrl.extendedUsage).maxTokens, 128_000);
   assert.equal((await resDiffUrl.response).earlyCompactionContextTokenThreshold, 96_000);
 
-  // Finding #5a: configuredWindow === observedLimit with summaryThresholdTokens === 0 must activate compaction
+  // configuredWindow === observedLimit with summaryThresholdTokens === 0 in auto mode activates compaction
   const eqCeilings = new Map();
   let eqCalls = 0;
   const sessionEqZero = createModelSession({
@@ -594,6 +644,7 @@ test('Review #4, #5, #8: observedCeilingKey isolation, equal-window compaction s
     apiFormat: 'openai',
     apiKey: 'test-key',
     model: 'claude-sonnet-4-5',
+    contextMode: 'auto',
     contextWindowTokens: 200_000,
     summaryThresholdTokens: 0,
     observedCeilings: eqCeilings,
@@ -617,15 +668,43 @@ test('Review #4, #5, #8: observedCeilingKey isolation, equal-window compaction s
   });
   assert.deepEqual(sessionEqZero.getLocalContextPolicy(), {
     contextWindowTokens: 200_000,
-    summaryThresholdTokens: 150_000,
+    summaryThresholdTokens: 135_000,
   });
   const resEq2 = sessionEqZero.getExecutor([{ role: 'user', content: 'compacted' }]).stream({}, 'eq-2', []);
   for await (const _p of resEq2.fullStream) { /* consume */ }
   const respEq2 = await resEq2.response;
   assert.equal(respEq2.supportsSelfSummary, true);
-  assert.equal(respEq2.earlyCompactionContextTokenThreshold, 150_000);
+  assert.equal(respEq2.earlyCompactionContextTokenThreshold, 135_000);
 
-  // Finding #5b: configuredWindow === observedLimit with threshold > summaryThresholdFor(observedLimit) clamps threshold down
+  // configuredWindow === observedLimit with 140000 + 64000 > 200000 clamps 150K down to 102K
+  const reserveCeilings = new Map();
+  const sessionReserve = createModelSession({
+    baseUrl: 'https://relay.example/v1',
+    apiFormat: 'openai',
+    apiKey: 'test-key',
+    model: 'claude-sonnet-4-5',
+    contextMode: 'auto',
+    contextWindowTokens: 200_000,
+    summaryThresholdTokens: 150_000,
+    observedCeilings: reserveCeilings,
+    fetchImpl: async () => new Response(JSON.stringify({
+      error: {
+        type: 'invalid_request_error',
+        message: 'input length and max_tokens exceed context limit: 140000 + 64000 > 200000',
+      },
+    }), { status: 400, headers: { 'content-type': 'application/json' } }),
+  });
+  await assert.rejects(async () => {
+    for await (const _p of sessionReserve.getExecutor([{ role: 'user', content: 'huge' }]).stream({}, 'res-1', []).fullStream) {
+      // consume
+    }
+  });
+  assert.deepEqual(sessionReserve.getLocalContextPolicy(), {
+    contextWindowTokens: 200_000,
+    summaryThresholdTokens: 102_000,
+  });
+
+  // configuredWindow === observedLimit with threshold > summaryThresholdFor(observedLimit) clamps threshold down
   const highThreshCeilings = new Map();
   let htCalls = 0;
   const sessionHighThresh = createModelSession({
@@ -633,6 +712,7 @@ test('Review #4, #5, #8: observedCeilingKey isolation, equal-window compaction s
     apiFormat: 'openai',
     apiKey: 'test-key',
     model: 'claude-sonnet-4-5',
+    contextMode: 'auto',
     contextWindowTokens: 200_000,
     summaryThresholdTokens: 190_000,
     observedCeilings: highThreshCeilings,
@@ -656,13 +736,14 @@ test('Review #4, #5, #8: observedCeilingKey isolation, equal-window compaction s
     summaryThresholdTokens: 150_000,
   });
 
-  // Finding #5c: configuredWindow === observedLimit with already-strict threshold <= summaryThresholdFor bails out early
+  // configuredWindow === observedLimit with already-strict threshold <= summaryThresholdFor bails out early
   const strictCeilings = new Map();
   const sessionStrict = createModelSession({
     baseUrl: 'https://relay.example/v1',
     apiFormat: 'openai',
     apiKey: 'test-key',
     model: 'claude-sonnet-4-5',
+    contextMode: 'auto',
     contextWindowTokens: 200_000,
     summaryThresholdTokens: 100_000,
     observedCeilings: strictCeilings,
@@ -725,7 +806,7 @@ test('Review #4, #5, #8: observedCeilingKey isolation, equal-window compaction s
   assert.equal(capped.has('synthetic-key-1'), true);
 });
 
-test('Review #9: Models.catalog cancels error bodies, bounds 16 MiB payloads, avoids stack overflow on 150k items, stops cursor cycles, and enforces rate limit', async () => {
+test('Models.catalog cancels error bodies, bounds 16 MiB payloads, caps 2000 items, stops cursor cycles, and enforces rate limits', async () => {
   const dir = await mkdtemp(join(os.tmpdir(), 'models-catalog-harden-'));
   try {
     const provider = { id: 'p1', name: 'Relay', apiFormat: 'openai', baseUrl: 'https://relay.example/v1', apiKey: 'test-key' };
@@ -804,7 +885,7 @@ test('Review #9: Models.catalog cancels error bodies, bounds 16 MiB payloads, av
   }
 });
 
-test('Review #9: POST /admin/api/model/catalog rate-limits at 30 req/min via createSelfHostServer', { skip: !dependencies && 'run npm ci --prefix host/server' }, async () => {
+test('POST /admin/api/model/catalog and /resolve enforce 30 req/min rate limits via createSelfHostServer', { skip: !dependencies && 'run npm ci --prefix host/server' }, async () => {
   const { createSelfHostServer } = await import('../server/index.mjs');
   const dir = await mkdtemp(join(os.tmpdir(), 'models-catalog-ratelimit-'));
   try {
@@ -832,12 +913,27 @@ test('Review #9: POST /admin/api/model/catalog rate-limits at 30 req/min via cre
         });
         assert.equal(res.status, 404, `request ${i + 1} should pass rate limiter before 404`);
       }
-      const blocked = await fetch(`${base}/admin/api/model/catalog`, {
+      const blockedCatalog = await fetch(`${base}/admin/api/model/catalog`, {
         method: 'POST',
         headers,
         body: JSON.stringify({ providerId: 'nonexistent-provider' }),
       });
-      assert.equal(blocked.status, 429, '31st model catalog request within window must be rate-limited (429)');
+      assert.equal(blockedCatalog.status, 429, '31st model catalog request within window must be rate-limited (429)');
+
+      for (let i = 0; i < 30; i++) {
+        const res = await fetch(`${base}/admin/api/model/resolve`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ model: 'deepseek-chat' }),
+        });
+        assert.equal(res.status, 200, `resolve request ${i + 1} should pass rate limiter`);
+      }
+      const blockedResolve = await fetch(`${base}/admin/api/model/resolve`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model: 'deepseek-chat' }),
+      });
+      assert.equal(blockedResolve.status, 429, '31st model resolve request within window must be rate-limited (429)');
     } finally {
       await app.close();
     }
@@ -846,534 +942,7 @@ test('Review #9: POST /admin/api/model/catalog rate-limits at 30 req/min via cre
   }
 });
 
-test('Review #6, #7, #10: model.js guards dialog close, preserves manual edits & non-zero capacity, clears stale auto-fill, and re-validates bulk backfill snapshots', async () => {
-  class FakeElement {
-    constructor(tag) {
-      this.tagName = String(tag).toUpperCase();
-      this.id = '';
-      this.name = '';
-      this.type = '';
-      this.value = '';
-      this.checked = false;
-      this.disabled = false;
-      this.hidden = false;
-      this.open = false;
-      this.className = '';
-      this.textContent = '';
-      this.innerHTML = '';
-      this.title = '';
-      this.placeholder = '';
-      this.style = {};
-      this.offsetWidth = 100;
-      this.offsetHeight = 100;
-      this.dataset = {};
-      this.attributes = new Map();
-      this.children = [];
-      this.listeners = new Map();
-      this.classList = { contains: (name) => this.className.split(/\s+/).includes(name) };
-    }
-    append(...nodes) {
-      for (const n of nodes) {
-        if (n && typeof n === 'object') {
-          n.parentNode = this;
-          this.children.push(n);
-        }
-      }
-    }
-    replaceChildren(...nodes) {
-      this.children = [];
-      this.append(...nodes);
-    }
-    remove() {
-      if (this.parentNode) {
-        this.parentNode.children = this.parentNode.children.filter((c) => c !== this);
-        this.parentNode = null;
-      }
-    }
-    closest() { return null; }
-    showPopover() {}
-    hidePopover() { this.remove(); }
-    getBoundingClientRect() { return { top: 0, right: 100, bottom: 20, left: 0 }; }
-    setAttribute(k, v) { this.attributes.set(k, String(v)); }
-    getAttribute(k) { return this.attributes.get(k) ?? null; }
-    hasAttribute(k) { return this.attributes.has(k); }
-    addEventListener(type, fn, opts) {
-      const list = this.listeners.get(type) ?? [];
-      list.push({ fn, once: Boolean(opts?.once) });
-      this.listeners.set(type, list);
-    }
-    dispatch(type) {
-      const list = this.listeners.get(type) ?? [];
-      this.listeners.set(type, list.filter((item) => !item.once));
-      for (const item of list) item.fn({ type, target: this });
-    }
-    focus() {}
-    reset() {}
-    reportValidity() { return true; }
-    showModal() { this.open = true; }
-    close() {
-      if (!this.open) return;
-      this.open = false;
-      this.dispatch('close');
-    }
-    descendants() {
-      const out = [];
-      const walk = (el) => {
-        if (!Array.isArray(el?.children)) return;
-        for (const child of el.children) {
-          out.push(child);
-          walk(child);
-        }
-      };
-      walk(this);
-      return out;
-    }
-    get elements() {
-      const map = {};
-      for (const el of this.descendants()) {
-        if (el.name) map[el.name] = el;
-      }
-      return map;
-    }
-    querySelector(sel) { return this.querySelectorAll(sel)[0] ?? null; }
-    querySelectorAll(sel) {
-      const all = this.descendants();
-      if (sel.startsWith('#')) return all.filter((el) => el.id === sel.slice(1));
-      if (sel.startsWith('[name=')) {
-        const name = sel.slice(6, -1).replace(/^["']|["']$/g, '');
-        return all.filter((el) => el.name === name);
-      }
-      if (sel === '[role=status]') return all.filter((el) => el.getAttribute?.('role') === 'status');
-      return all.filter((el) => el.tagName === sel.toUpperCase());
-    }
-  }
-
-  const byId = new Map();
-  const makeTracked = (tag, id) => {
-    const el = new FakeElement(tag);
-    el.id = id;
-    byId.set(id, el);
-    return el;
-  };
-  const panel = new FakeElement('section');
-  panel.setAttribute('data-panel', 'model');
-  const form = makeTracked('form', 'model-form');
-  for (const [tag, id] of [
-    ['div', 'model-providers'],
-    ['div', 'model-profiles'],
-    ['div', 'model-default-route'],
-    ['div', 'model-bot-routes'],
-    ['button', 'add-model-provider'],
-    ['button', 'add-model-profile'],
-    ['button', 'auto-fill-model-contexts'],
-    ['button', 'refresh-model-bots'],
-    ['button', 'refresh-routing'],
-    ['p', 'legacy-routing-notice'],
-    ['p', 'model-error'],
-    ['span', 'model-apply-title'],
-    ['div', 'routing-log'],
-  ]) {
-    form.append(makeTracked(tag, id));
-  }
-  panel.append(form);
-
-  const prevDoc = globalThis.document;
-  const prevNav = globalThis.navigator;
-  const prevOption = globalThis.Option;
-  const prevNodeFilter = globalThis.NodeFilter;
-  const prevInnerWidth = globalThis.innerWidth;
-  const prevInnerHeight = globalThis.innerHeight;
-  globalThis.NodeFilter = { SHOW_TEXT: 4 };
-  globalThis.innerWidth = 1024;
-  globalThis.innerHeight = 768;
-  globalThis.Option = class FakeOption {
-    constructor(text = '', value = '') {
-      this.text = text;
-      this.value = value;
-    }
-  };
-  Object.defineProperty(globalThis, 'navigator', {
-    value: { language: 'zh-CN', languages: ['zh-CN'] },
-    configurable: true,
-    writable: true,
-  });
-  globalThis.document = {
-    documentElement: { lang: '' },
-    body: new FakeElement('body'),
-    createElement: (tag) => {
-      if (tag === 'template') {
-        return { innerHTML: '', content: { querySelectorAll: () => [] } };
-      }
-      return new FakeElement(tag);
-    },
-    createTreeWalker: () => ({ nextNode: () => false }),
-    querySelector: (sel) => {
-      if (sel === '[data-panel=model]') return panel;
-      if (sel.startsWith('#')) {
-        const id = sel.slice(1);
-        return byId.get(id) ?? panel.querySelector(sel);
-      }
-      return panel.querySelector(sel);
-    },
-    querySelectorAll: (sel) => panel.querySelectorAll(sel),
-  };
-
-  try {
-    const { createModelPage } = await import('../server/public/model.js');
-    const toasts = [];
-    let apiHandler = async () => ({});
-    const apiCalls = [];
-    const page = createModelPage({
-      api: (path, opts) => {
-        apiCalls.push({ path, body: opts?.body });
-        return apiHandler(path, opts);
-      },
-      toast: (msg, err) => toasts.push({ msg, err: Boolean(err) }),
-      busy: async (_ctrl, work) => work(),
-      refresh: async () => {},
-    });
-
-    const baseConfig = {
-      version: 1,
-      configured: true,
-      providers: [
-        { id: 'prov-1', name: 'OpenAI', apiFormat: 'openai', baseUrl: 'https://api.openai.com/v1', hasApiKey: true },
-      ],
-      profiles: [
-        { id: 'prof-existing', name: 'Existing', providerId: 'prov-1', model: 'claude-opus-4-6', efforts: ['high'], contextWindowTokens: 200_000, summaryThresholdTokens: 0 },
-      ],
-      defaultRoute: { profileId: 'prof-existing', effort: 'default', fallbacks: [] },
-      botRoutes: {},
-    };
-    page.status({ model: baseConfig, host: { agents: [] } }, false);
-
-    const dialog = panel.querySelector('#model-profile-editor');
-    const addBtn = byId.get('add-model-profile');
-    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
-
-    // --- Finding #6a: Dialog close guard prevents stale resolve/catalog from mutating reopened dialog ---
-    let resolveFirst;
-    apiHandler = (path) => {
-      if (path === '/admin/api/model/resolve') {
-        return new Promise((r) => { resolveFirst = r; });
-      }
-      return Promise.resolve({ models: [] });
-    };
-    addBtn.onclick();
-    assert.equal(dialog.open, true);
-    const form1 = dialog.querySelector('form');
-    form1.elements.model.value = 'gpt-5.2';
-    form1.elements.model.onchange();
-    dialog.close();
-    // Reopen dialog for a fresh profile while first resolve is still in flight
-    addBtn.onclick();
-    const form2 = dialog.querySelector('form');
-    resolveFirst({
-      model: {
-        id: 'gpt-5.2',
-        efforts: ['low', 'high'],
-        contextWindowTokens: 400_000,
-        summaryThresholdTokens: 300_000,
-        contextSource: 'reference',
-        matchedFamily: 'gpt-5',
-      },
-    });
-    await flush();
-    assert.equal(form2.elements.contextWindowTokens.value, '', 'stale resolve from closed dialog must not touch reopened dialog');
-    assert.equal(form2.elements['effort-high'].checked, false);
-
-    // Catalog close guard: close dialog while /catalog is in flight -> no toast & no DOM update
-    let resolveCatalog;
-    apiHandler = (path) => {
-      if (path === '/admin/api/model/catalog') {
-        return new Promise((r) => { resolveCatalog = r; });
-      }
-      return Promise.resolve({});
-    };
-    const syncBtn = form2.descendants().find((el) => el.tagName === 'BUTTON' && el.textContent.includes('同步模型'));
-    toasts.length = 0;
-    syncBtn.onclick();
-    dialog.close();
-    resolveCatalog({ models: [{ id: 'gpt-5.2', efforts: ['high'], contextWindowTokens: 400_000, summaryThresholdTokens: 300_000, contextSource: 'provider' }] });
-    await flush();
-    assert.equal(toasts.length, 0, 'stale catalog response after dialog close must not toast');
-
-    // --- Finding #6b: Manual edits to capacity/threshold/efforts cancel in-flight resolve and survive ---
-    let resolveManualRace;
-    apiHandler = () => new Promise((r) => { resolveManualRace = r; });
-    addBtn.onclick();
-    const formManual = dialog.querySelector('form');
-    formManual.elements.model.value = 'gpt-5.2';
-    formManual.elements.model.onchange();
-    formManual.elements.contextWindowTokens.value = '256K';
-    formManual.elements.contextWindowTokens.oninput();
-    resolveManualRace({
-      model: {
-        id: 'gpt-5.2',
-        efforts: ['low', 'high'],
-        contextWindowTokens: 400_000,
-        summaryThresholdTokens: 300_000,
-        contextSource: 'reference',
-        matchedFamily: 'gpt-5',
-      },
-    });
-    await flush();
-    assert.equal(formManual.elements.contextWindowTokens.value, '256K', 'manual capacity edit must not be overwritten by in-flight resolve');
-    assert.equal(formManual.elements.summaryThresholdTokens.value, '192K');
-    dialog.close();
-
-    // Effort checkbox manual edit cancels in-flight resolve
-    let resolveEffortRace;
-    apiHandler = () => new Promise((r) => { resolveEffortRace = r; });
-    addBtn.onclick();
-    const formEffort = dialog.querySelector('form');
-    formEffort.elements.model.value = 'gpt-5.2';
-    formEffort.elements.model.onchange();
-    formEffort.elements['effort-high'].checked = true;
-    formEffort.elements['effort-high'].onchange();
-    resolveEffortRace({
-      model: {
-        id: 'gpt-5.2',
-        efforts: ['low'],
-        contextWindowTokens: 400_000,
-        summaryThresholdTokens: 300_000,
-        contextSource: 'reference',
-        matchedFamily: 'gpt-5',
-      },
-    });
-    await flush();
-    assert.equal(formEffort.elements['effort-high'].checked, true, 'manual effort edit must not be overwritten by in-flight resolve');
-    assert.equal(formEffort.elements['effort-low'].checked, false);
-    dialog.close();
-
-    // --- Finding #7a: Switching from known auto-filled model to unknown model clears auto-filled values & family hint ---
-    apiCalls.length = 0;
-    apiHandler = async (_path, opts) => {
-      if (opts?.body?.model === 'gpt-5.2') {
-        return {
-          model: {
-            id: 'gpt-5.2',
-            efforts: ['low', 'high'],
-            contextWindowTokens: 400_000,
-            summaryThresholdTokens: 300_000,
-            contextSource: 'reference',
-            matchedFamily: 'gpt-5',
-          },
-        };
-      }
-      return {
-        model: {
-          id: opts?.body?.model,
-          efforts: [],
-          contextWindowTokens: 0,
-          summaryThresholdTokens: 0,
-          contextSource: 'unknown',
-        },
-      };
-    };
-    addBtn.onclick();
-    const formUnknown = dialog.querySelector('form');
-    const statusHint = formUnknown.querySelector('[role=status]');
-    formUnknown.elements.model.value = 'gpt-5.2';
-    formUnknown.elements.model.onchange();
-    await flush();
-    assert.equal(formUnknown.elements.contextWindowTokens.value, '400K');
-    assert.equal(formUnknown.elements.summaryThresholdTokens.value, '300K');
-    assert.match(statusHint.textContent, /gpt-5/);
-    // Deduplicate onchange when trimmed ID already resolved
-    const callsAfterFirst = apiCalls.length;
-    formUnknown.elements.model.onchange();
-    await flush();
-    assert.equal(apiCalls.length, callsAfterFirst, 'duplicate onchange for already-resolved ID must not re-fetch');
-    // Now switch to unknown model -> auto-filled values and stale family hint must clear
-    formUnknown.elements.model.value = 'private-unknown-v9';
-    formUnknown.elements.model.onchange();
-    await flush();
-    assert.equal(formUnknown.elements.contextWindowTokens.value, '', 'auto-filled capacity must clear for unknown model');
-    assert.equal(formUnknown.elements.summaryThresholdTokens.value, '', 'auto-filled threshold must clear for unknown model');
-    assert.doesNotMatch(statusHint.textContent, /gpt-5/);
-    assert.match(statusHint.textContent, /未知/);
-    // Manual capacity entered on unknown model stays and updates hint to manual when switching to another unknown model
-    formUnknown.elements.contextWindowTokens.value = '64K';
-    formUnknown.elements.contextWindowTokens.oninput();
-    formUnknown.elements.model.value = 'private-unknown-v10';
-    formUnknown.elements.model.onchange();
-    await flush();
-    assert.equal(formUnknown.elements.contextWindowTokens.value, '64K', 'manual capacity must be preserved on unknown model');
-    assert.match(statusHint.textContent, /手动/);
-    dialog.close();
-
-    // --- Finding #7b: onlyMissingContext: true must NEVER overwrite non-zero capacity when threshold is 0 ---
-    // Open the existing profile (200K capacity, 0 threshold) via its menu's Edit action
-    const profilesRoot = byId.get('model-profiles');
-    const menuTrigger = profilesRoot.descendants().find((el) => el.getAttribute?.('aria-haspopup') === 'menu');
-    menuTrigger.dispatch('click');
-    const editMenuItem = document.body.descendants().find((el) => el.getAttribute?.('role') === 'menuitem' && el.textContent === '编辑');
-    editMenuItem.dispatch('click');
-    const formEdit = dialog.querySelector('form');
-    assert.equal(formEdit.elements.contextWindowTokens.value, '200K');
-    assert.equal(formEdit.elements.summaryThresholdTokens.value, '');
-    apiHandler = async (path) => {
-      if (path === '/admin/api/model/catalog') {
-        return {
-          models: [{
-            id: 'claude-opus-4-6',
-            efforts: ['none', 'low', 'medium', 'high', 'max'],
-            contextWindowTokens: 1_000_000,
-            summaryThresholdTokens: 750_000,
-            contextSource: 'provider',
-          }],
-        };
-      }
-      return {};
-    };
-    const editSyncBtn = formEdit.descendants().find((el) => el.tagName === 'BUTTON' && el.textContent.includes('同步模型'));
-    editSyncBtn.onclick();
-    await flush();
-    assert.equal(formEdit.elements.contextWindowTokens.value, '200K', 'onlyMissingContext must not overwrite non-zero capacity');
-    assert.equal(formEdit.elements.summaryThresholdTokens.value, '', 'onlyMissingContext must not overwrite intentional empty threshold');
-    assert.equal(formEdit.elements['effort-high'].checked, true);
-    assert.equal(formEdit.elements['effort-low'].checked, false, 'existing manual efforts must not be overwritten by sync');
-    dialog.close();
-
-    // --- Finding #10: Bulk backfill snapshots re-lookup live profiles after await ---
-    page.status({
-      model: {
-        version: 1,
-        configured: true,
-        providers: baseConfig.providers,
-        profiles: [
-          { id: 'prof-mutated', name: 'Mutated', providerId: 'prov-1', model: 'gpt-5.2', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0 },
-          { id: 'prof-intact', name: 'Intact', providerId: 'prov-1', model: 'deepseek-chat', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0 },
-        ],
-        defaultRoute: { profileId: 'prof-mutated', effort: 'default', fallbacks: [] },
-        botRoutes: {},
-      },
-      host: { agents: [] },
-    }, false);
-    // Reload clean config via page.load()
-    apiHandler = async (path) => {
-      if (path === '/admin/api/model') {
-        return {
-          version: 1,
-          configured: true,
-          providers: baseConfig.providers,
-          profiles: [
-            { id: 'prof-mutated', name: 'Mutated', providerId: 'prov-1', model: 'gpt-5.2', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0 },
-            { id: 'prof-intact', name: 'Intact', providerId: 'prov-1', model: 'deepseek-chat', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0 },
-          ],
-          defaultRoute: { profileId: 'prof-mutated', effort: 'default', fallbacks: [] },
-          botRoutes: {},
-        };
-      }
-      return {};
-    };
-    await page.load();
-
-    let resolveBackfill;
-    apiHandler = (path) => {
-      if (path === '/admin/api/model/resolve') {
-        return new Promise((r) => { resolveBackfill = r; });
-      }
-      return Promise.resolve({});
-    };
-    const autoFillBtn = byId.get('auto-fill-model-contexts');
-    const backfillDone = autoFillBtn.onclick();
-
-    // While /admin/api/model/resolve is in flight, user edits prof-mutated to a different model ('custom-local') and saves it!
-    const mutatedMenu = byId.get('model-profiles').descendants().find((el) => el.getAttribute?.('aria-haspopup') === 'menu');
-    mutatedMenu.dispatch('click');
-    const editMutatedItem = document.body.descendants().find((el) => el.getAttribute?.('role') === 'menuitem' && el.textContent === '编辑');
-    editMutatedItem.dispatch('click');
-    const formMut = dialog.querySelector('form');
-    formMut.elements.model.value = 'custom-local';
-    formMut.elements.model.oninput();
-    formMut.onsubmit({ preventDefault() {} });
-    await flush();
-
-    // Now resolve the bulk backfill with specs for [gpt-5.2, deepseek-chat]
-    resolveBackfill({
-      models: [
-        { id: 'gpt-5.2', efforts: ['high'], contextWindowTokens: 400_000, summaryThresholdTokens: 300_000, contextSource: 'reference' },
-        { id: 'deepseek-chat', efforts: [], contextWindowTokens: 128_000, summaryThresholdTokens: 96_000, contextSource: 'reference' },
-      ],
-    });
-    await backfillDone;
-    await flush();
-
-    // Save the page form to inspect the exact serialized payload sent to PUT /admin/api/model
-    let savedPayload;
-    apiHandler = async (path, opts) => {
-      if (path === '/admin/api/model' && opts?.method === 'PUT') {
-        savedPayload = opts.body;
-        return { ...opts.body, configured: true };
-      }
-      return {};
-    };
-    form.onsubmit({ preventDefault() {}, submitter: new FakeElement('button') });
-    await flush();
-
-    assert.ok(savedPayload, 'saving form should submit serialized profiles');
-    const mutatedOut = savedPayload.profiles.find((p) => p.id === 'prof-mutated');
-    const intactOut = savedPayload.profiles.find((p) => p.id === 'prof-intact');
-    assert.equal(mutatedOut.model, 'custom-local');
-    assert.equal(mutatedOut.contextWindowTokens, 0, 'profile whose model changed during backfill must NOT inherit old model capacity');
-    assert.equal(intactOut.model, 'deepseek-chat');
-    assert.equal(intactOut.contextWindowTokens, 128_000, 'untouched profile must still be backfilled');
-    assert.equal(intactOut.summaryThresholdTokens, 96_000);
-
-    // --- Upstream efforts sync in model.js: setConfig hydrates auto efforts ---
-    apiHandler = async (path) => {
-      if (path === '/admin/api/model') {
-        return {
-          version: 1,
-          configured: true,
-          providers: baseConfig.providers,
-          profiles: [
-            {
-              id: 'prof-luna-ui',
-              name: 'Luna UI',
-              providerId: 'prov-1',
-              model: 'gpt-5.6-luna',
-              efforts: ['max'],
-              effortsMode: 'auto',
-              contextWindowTokens: 0,
-              summaryThresholdTokens: 0,
-              contextMode: 'auto',
-              effectiveContext: { contextWindowTokens: 272_000, summaryThresholdTokens: 204_000, contextSource: 'provider', contextMode: 'auto' },
-              effectiveEfforts: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'], effortsSource: 'provider', effortsMode: 'auto' },
-            },
-          ],
-          defaultRoute: { profileId: 'prof-luna-ui', effort: 'max', fallbacks: [] },
-          botRoutes: {},
-        };
-      }
-      return {};
-    };
-    await page.load();
-    let savedAutoPayload;
-    apiHandler = async (path, opts) => {
-      if (path === '/admin/api/model' && opts?.method === 'PUT') {
-        savedAutoPayload = opts.body;
-        return { ...opts.body, configured: true };
-      }
-      return {};
-    };
-    form.onsubmit({ preventDefault() {}, submitter: new FakeElement('button') });
-    await flush();
-    assert.deepEqual(savedAutoPayload.profiles[0].efforts, ['low', 'medium', 'high', 'xhigh', 'max']);
-    assert.equal(savedAutoPayload.profiles[0].effortsMode, 'auto');
-  } finally {
-    globalThis.document = prevDoc;
-    globalThis.Option = prevOption;
-    globalThis.NodeFilter = prevNodeFilter;
-    globalThis.innerWidth = prevInnerWidth;
-    globalThis.innerHeight = prevInnerHeight;
-    Object.defineProperty(globalThis, 'navigator', { value: prevNav, configurable: true, writable: true });
-  }
-});
-
-test('Auto-sync: background sync, auto-follow mode, persisted observed ceilings, and upstream-first resolve', async t => {
+test('Auto-sync: background sync, no built-in guesses in auto mode, 2-strike/comparison persistence, and manual/periodic clearing', async t => {
   const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-auto-ctx-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
@@ -1393,7 +962,7 @@ test('Auto-sync: background sync, auto-follow mode, persisted observed ceilings,
     throw new Error('ECONNREFUSED');
   };
 
-  // 1. Validate contextMode normalization & persistence in model-routing
+  // 1. Legacy profiles omitting contextMode / effortsMode stay manual (never silently switched to auto)
   const validated = validateModelRouting({
     version: 1,
     providers: [
@@ -1401,10 +970,11 @@ test('Auto-sync: background sync, auto-follow mode, persisted observed ceilings,
       { id: 'p-b', name: 'Offline B', apiFormat: 'openai', baseUrl: 'https://offline-b.example/v1', apiKey: 'sk-secret-b' },
     ],
     profiles: [
-      { id: 'auto-custom', name: 'Auto Custom', providerId: 'p-a', model: 'custom-private-x', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
-      { id: 'auto-known', name: 'Auto Known', providerId: 'p-a', model: 'claude-sonnet-4-6', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0 },
+      { id: 'auto-custom', name: 'Auto Custom', providerId: 'p-a', model: 'custom-private-x', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+      { id: 'auto-known', name: 'Auto Known', providerId: 'p-a', model: 'claude-sonnet-4-6', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
       { id: 'manual-lock', name: 'Manual Lock', providerId: 'p-a', model: 'custom-private-x', efforts: [], contextWindowTokens: 128_000, summaryThresholdTokens: 96_000 },
-      { id: 'offline-spec', name: 'Offline Spec', providerId: 'p-b', model: 'deepseek-chat', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0 },
+      { id: 'offline-auto', name: 'Offline Auto', providerId: 'p-b', model: 'deepseek-chat', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+      { id: 'legacy-zero', name: 'Legacy Zero', providerId: 'p-b', model: 'deepseek-chat', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0 },
     ],
     defaultRoute: { profileId: 'auto-custom', effort: 'default', fallbacks: [] },
     botRoutes: {},
@@ -1412,7 +982,9 @@ test('Auto-sync: background sync, auto-follow mode, persisted observed ceilings,
   assert.equal(validated.profiles.find(p => p.id === 'auto-custom').contextMode, 'auto');
   assert.equal(validated.profiles.find(p => p.id === 'auto-known').contextMode, 'auto');
   assert.equal(validated.profiles.find(p => p.id === 'manual-lock').contextMode, 'manual');
-  assert.equal(validated.profiles.find(p => p.id === 'offline-spec').contextMode, 'auto');
+  assert.equal(validated.profiles.find(p => p.id === 'offline-auto').contextMode, 'auto');
+  assert.equal(validated.profiles.find(p => p.id === 'legacy-zero').contextMode, 'manual');
+  assert.equal(validated.profiles.find(p => p.id === 'legacy-zero').effortsMode, 'manual');
 
   // 2. Sync all configured providers directly via Models and verify cache privacy + publicConfig
   const models = new Models(dir, {
@@ -1431,21 +1003,21 @@ test('Auto-sync: background sync, auto-follow mode, persisted observed ceilings,
   assert.equal(rawCacheText.includes('sk-secret-a'), false, 'cache must never store API keys');
   assert.equal(rawCacheText.includes('relay-a.example'), false, 'cache must hash provider URLs');
 
-  // publicConfig exposes effectiveContext for every profile without breaking manual lock
+  // publicConfig exposes effectiveContext for every profile without breaking manual lock or guessing in auto mode
   const pub = await models.publicConfig();
   const byId = new Map(pub.profiles.map(p => [p.id, p]));
   assert.equal(byId.get('auto-custom').effectiveContext.contextWindowTokens, 512_000);
   assert.equal(byId.get('auto-custom').effectiveContext.summaryThresholdTokens, 384_000);
   assert.equal(byId.get('auto-custom').effectiveContext.contextSource, 'provider');
-  // Upstream provider-reported 300K overrides 1M static reference spec for auto-known!
   assert.equal(byId.get('auto-known').effectiveContext.contextWindowTokens, 300_000);
   assert.equal(byId.get('auto-known').effectiveContext.contextSource, 'provider');
-  // Manual lock stays 128K despite upstream 512K
   assert.equal(byId.get('manual-lock').effectiveContext.contextWindowTokens, 128_000);
   assert.equal(byId.get('manual-lock').effectiveContext.contextSource, 'manual');
-  // Offline provider falls back cleanly to built-in reference spec (128K)
-  assert.equal(byId.get('offline-spec').effectiveContext.contextWindowTokens, 128_000);
-  assert.equal(byId.get('offline-spec').effectiveContext.contextSource, 'reference');
+  // Auto mode NEVER falls back to built-in reference table when upstream is unreachable/omitted
+  assert.equal(byId.get('offline-auto').effectiveContext.contextWindowTokens, 0);
+  assert.equal(byId.get('offline-auto').effectiveContext.contextSource, 'unknown');
+  assert.equal(byId.get('legacy-zero').effectiveContext.contextWindowTokens, 0);
+  assert.equal(byId.get('legacy-zero').effectiveContext.contextMode, 'manual');
   assert.equal(pub.contextSync.providers['p-a'].status, 'ok');
   assert.equal(pub.contextSync.providers['p-b'].status, 'error');
 
@@ -1454,7 +1026,7 @@ test('Auto-sync: background sync, auto-follow mode, persisted observed ceilings,
   const batchRes = await models.resolve({
     profiles: [
       { id: 'auto-custom', providerId: 'p-a', model: 'custom-private-x' },
-      { id: 'offline-spec', providerId: 'p-b', model: 'deepseek-chat' },
+      { id: 'offline-auto', providerId: 'p-b', model: 'deepseek-chat' },
     ],
     preferUpstream: true,
   });
@@ -1463,10 +1035,10 @@ test('Auto-sync: background sync, auto-follow mode, persisted observed ceilings,
   assert.equal(batchRes.models[1].contextWindowTokens, 128_000);
   assert.equal(batchRes.models[1].contextSource, 'reference');
 
-  // 4. Runtime loadModelConfig -> createInference -> createModelSession picks up 640K dynamically without restart!
+  // 4. Runtime loadModelConfig -> createInference -> createModelSession picks up 640K dynamically without restart
   const loaded = await loadModelConfig({ env: { GROKBOT_MODEL_ENV: join(dir, 'model.env'), GROKBOT_DATA_DIR: dir } });
   assert.equal(loaded.dataDirectory, dir);
-  const sseOk = () => new Response(
+  const sseOkResp = () => new Response(
     `data: ${JSON.stringify({ id: 'chat_ok', model: 'custom-private-x', choices: [{ index: 0, delta: { content: 'OK' }, finish_reason: 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } })}\n\ndata: [DONE]\n\n`,
     { status: 200, headers: { 'content-type': 'text/event-stream' } },
   );
@@ -1477,14 +1049,14 @@ test('Auto-sync: background sync, auto-follow mode, persisted observed ceilings,
     InputTokenLimitError: StubErr,
     Code: { ResourceExhausted: 8, Unavailable: 14, Internal: 13 },
   };
-  let failWithOverflow = false;
+  let overflowErrorMsg = null;
   const inference = createInference(loaded, stubLib, {}, {
     fetchImpl: async () => {
-      if (failWithOverflow) {
-        return new Response(JSON.stringify({ error: { code: 'context_length_exceeded', message: 'This model maximum context length is 200000 tokens.' } }),
+      if (overflowErrorMsg) {
+        return new Response(JSON.stringify({ error: { code: 'context_length_exceeded', message: overflowErrorMsg } }),
           { status: 400, headers: { 'content-type': 'application/json' } });
       }
-      return sseOk();
+      return sseOkResp();
     },
   });
 
@@ -1496,20 +1068,28 @@ test('Auto-sync: background sync, auto-follow mode, persisted observed ceilings,
   assert.equal(resp1.supportsSelfSummary, true);
   assert.equal(resp1.earlyCompactionContextTokenThreshold, 480_000);
 
-  // Turn 2: upstream throws overflow citing real ceiling 200K -> persisted to /data/model-context-cache.json!
-  failWithOverflow = true;
-  const s2 = inference.port.createSession(() => {}, {});
-  const r2 = s2.getExecutor([{ role: 'user', content: 'huge' }]).stream({}, 'turn-2', []);
-  await assert.rejects(async () => { for await (const _ of r2.fullStream) {} });
-  // Give async persistence a tick to flush
+  // Turn 2a: single non-comparison overflow heals in-memory WITHOUT writing 30-day disk cache yet
+  overflowErrorMsg = 'This model maximum context length is 200000 tokens.';
+  const s2a = inference.port.createSession(() => {}, {});
+  const r2a = s2a.getExecutor([{ role: 'user', content: 'huge' }]).stream({}, 'turn-2a', []);
+  await assert.rejects(async () => { for await (const _ of r2a.fullStream) {} });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.deepEqual(s2a.getLocalContextPolicy(), { contextWindowTokens: 200_000, summaryThresholdTokens: 150_000 });
+  assert.equal(Object.values((await readContextCache(cachePath)).observed).length, 0,
+    'single non-comparison overflow must not persist to 30-day disk cache yet');
+
+  // Turn 2b: second consistent observation (200K again) persists to model-context-observed.json!
+  const s2b = inference.port.createSession(() => {}, {});
+  const r2b = s2b.getExecutor([{ role: 'user', content: 'huge-again' }]).stream({}, 'turn-2b', []);
+  await assert.rejects(async () => { for await (const _ of r2b.fullStream) {} });
   await new Promise(resolve => setTimeout(resolve, 60));
   const diskAfterOverflow = await readContextCache(cachePath);
   const persistedEntries = Object.values(diskAfterOverflow.observed);
   assert.equal(persistedEntries.length, 1);
   assert.equal(persistedEntries[0].contextWindowTokens, 200_000);
 
-  // Turn 3: simulate container restart (brand-new session with empty in-memory observedCeilings Map!)
-  failWithOverflow = false;
+  // Turn 3: simulate container restart (empty in-memory observedCeilings Map) -> persisted 200K ceiling survives!
+  overflowErrorMsg = null;
   const freshSession = createModelSession({
     baseUrl: 'https://relay-a.example/v1',
     apiKey: 'sk-secret-a',
@@ -1520,28 +1100,183 @@ test('Auto-sync: background sync, auto-follow mode, persisted observed ceilings,
     summaryThresholdTokens: 0,
     observedCeilings: new Map(),
     contextCachePath: cachePath,
-    fetchImpl: async () => sseOk(),
+    fetchImpl: async () => sseOkResp(),
   });
   const r3 = freshSession.getExecutor([{ role: 'user', content: 'after restart' }]).stream({}, 'turn-3', []);
   for await (const _ of r3.fullStream) {}
   const resp3 = await r3.response;
   assert.equal(resp3.earlyCompactionContextTokenThreshold, 150_000, 'persisted 200K ceiling must survive restart and clamp to 150K');
 
-  // Turn 4: later upstream /models sync reports expanded 1M window -> newer syncedAt supersedes older disk observed ceiling!
+  // Turn 4: periodic background sync (clearObserved: false) MUST NOT wipe out the 30-day observed ceiling
   await recordCatalogSync(cachePath,
     { id: 'p-a', apiFormat: 'openai', baseUrl: 'https://relay-a.example/v1' },
     [{ id: 'custom-private-x', contextWindowTokens: 1_000_000, contextSource: 'provider', efforts: [] }],
     { now: Date.now() + 10_000 });
-  const expanded = resolveEffectiveContext(
+  const stillClamped = resolveEffectiveContext(
     { apiFormat: 'openai', baseUrl: 'https://relay-a.example/v1', model: 'custom-private-x', contextMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0 },
     { cache: await readContextCache(cachePath), observedCeilings: new Map() },
   );
-  assert.equal(expanded.contextWindowTokens, 1_000_000);
-  assert.equal(expanded.summaryThresholdTokens, 750_000);
-  assert.equal(expanded.contextSource, 'provider');
+  assert.equal(stillClamped.contextWindowTokens, 200_000);
+  assert.equal(stillClamped.contextSource, 'observed');
+
+  // Manual sync (clearObserved: true) or clearObserved API clears the observed ceiling
+  await models.syncAllProviders({ force: true, clearObserved: true });
+  const clearedAfterManualSync = await models.publicConfig();
+  const autoCustomCleared = clearedAfterManualSync.profiles.find(p => p.id === 'auto-custom');
+  assert.equal(autoCustomCleared.effectiveContext.contextWindowTokens, 640_000);
+  assert.equal(autoCustomCleared.effectiveContext.contextSource, 'provider');
+  assert.equal(autoCustomCleared.effectiveContext.observed, undefined);
 });
 
-test('Codex manifest enrichment: Sub2API /models?client_version=0.160.0 supplies context_window, reasoning levels, and region-prefix matching', async t => {
+test('Manual mode immunity, comparison-form immediate persistence, clearObserved, and re-save clearing', async t => {
+  const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-manual-immunity-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const models = new Models(dir, {
+    fetchImpl: async () => new Response(JSON.stringify({ data: [{ id: 'relay-model', context_window: 500_000 }] }), { status: 200 }),
+  });
+  t.after(() => models.close());
+
+  await models.save({
+    version: 1,
+    migrateLegacyRouting: true,
+    providers: [{ id: 'p1', name: 'Relay', apiFormat: 'openai', baseUrl: 'https://relay.example/v1', apiKey: 'sk-1' }],
+    profiles: [
+      { id: 'manual-128k', name: 'Manual', providerId: 'p1', model: 'relay-model', efforts: ['low'], effortsMode: 'manual', contextWindowTokens: 128_000, summaryThresholdTokens: 96_000, contextMode: 'manual' },
+      { id: 'auto-500k', name: 'Auto', providerId: 'p1', model: 'other-model', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+    ],
+    defaultRoute: { profileId: 'manual-128k', effort: 'low', fallbacks: [] },
+    botRoutes: {},
+  });
+
+  // 1. Manual 128K receives an 8192 overflow error -> manual mode is NOT clamped and does NOT record an observed ceiling
+  const manualCeilings = new Map();
+  const cachePath = contextCacheFilePath(dir);
+  const manualSession = createModelSession({
+    baseUrl: 'https://relay.example/v1',
+    apiFormat: 'openai',
+    apiKey: 'sk-1',
+    model: 'relay-model',
+    contextMode: 'manual',
+    contextWindowTokens: 128_000,
+    summaryThresholdTokens: 96_000,
+    observedCeilings: manualCeilings,
+    contextCachePath: cachePath,
+    fetchImpl: async () => new Response(JSON.stringify({
+      error: { message: 'prompt is too long: 10000 tokens > 8192 maximum' },
+    }), { status: 400, headers: { 'content-type': 'application/json' } }),
+  });
+  await assert.rejects(async () => {
+    for await (const _ of manualSession.getExecutor([{ role: 'user', content: 'x' }]).stream({}, 'm-1', []).fullStream) {}
+  });
+  assert.equal(manualCeilings.size, 0);
+  assert.deepEqual(manualSession.getLocalContextPolicy(), { contextWindowTokens: 128_000, summaryThresholdTokens: 96_000 });
+
+  // Even if an observed ceiling exists on disk (e.g. from an earlier auto session), manual mode ignores it (day 29 included)
+  await persistObservedCeiling(cachePath, { apiFormat: 'openai', baseUrl: 'https://relay.example/v1', model: 'relay-model' }, {
+    contextWindowTokens: 8_192,
+    observedAt: Date.now() - 28 * 24 * 60 * 60 * 1000,
+  });
+  const pubManual = await models.publicConfig();
+  const manualProf = pubManual.profiles.find(p => p.id === 'manual-128k');
+  assert.equal(manualProf.effectiveContext.contextWindowTokens, 128_000);
+  assert.equal(manualProf.effectiveContext.summaryThresholdTokens, 96_000);
+  assert.equal(manualProf.effectiveContext.contextSource, 'manual');
+  assert.equal(manualProf.effectiveContext.observed.contextWindowTokens, 8_192);
+
+  // 2. Comparison-form error (a + b > c) on an auto profile persists immediately on 1st hit
+  const autoCeilings = new Map();
+  const autoSession = createModelSession({
+    baseUrl: 'https://relay.example/v1',
+    apiFormat: 'openai',
+    apiKey: 'sk-1',
+    model: 'other-model',
+    contextMode: 'auto',
+    contextWindowTokens: 0,
+    summaryThresholdTokens: 0,
+    observedCeilings: autoCeilings,
+    contextCachePath: cachePath,
+    fetchImpl: async () => new Response(JSON.stringify({
+      error: { message: 'prompt is too long: 40000 tokens > 32768 maximum' },
+    }), { status: 400, headers: { 'content-type': 'application/json' } }),
+  });
+  await assert.rejects(async () => {
+    for await (const _ of autoSession.getExecutor([{ role: 'user', content: 'x' }]).stream({}, 'a-1', []).fullStream) {}
+  });
+  await new Promise(resolve => setTimeout(resolve, 60));
+  let pubAuto = (await models.publicConfig()).profiles.find(p => p.id === 'auto-500k');
+  assert.equal(pubAuto.effectiveContext.contextWindowTokens, 32_768);
+  assert.equal(pubAuto.effectiveContext.contextSource, 'observed');
+
+  // 3. clearObserved(profileId) clears both disk and in-memory effective check
+  await models.clearObserved({ profileId: 'auto-500k' });
+  pubAuto = (await models.publicConfig()).profiles.find(p => p.id === 'auto-500k');
+  assert.equal(pubAuto.effectiveContext.contextWindowTokens, 0);
+  assert.equal(pubAuto.effectiveContext.observed, undefined);
+  // In-memory map in autoSession also ignores cleared entry on next resolve
+  const resolvedAfterClear = resolveEffectiveContext(
+    { apiFormat: 'openai', baseUrl: 'https://relay.example/v1', model: 'other-model', contextMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0 },
+    { cache: await readContextCache(cachePath), observedCeilings: autoCeilings },
+  );
+  assert.equal(resolvedAfterClear.contextWindowTokens, 0);
+
+  // 4. Re-saving config via Models.save() clears observed ceilings for saved profiles
+  await persistObservedCeiling(cachePath, { apiFormat: 'openai', baseUrl: 'https://relay.example/v1', model: 'other-model' }, {
+    contextWindowTokens: 32_768,
+    observedAt: Date.now() + 1_000,
+  });
+  await models.save({
+    version: 1,
+    providers: [{ id: 'p1', name: 'Relay', apiFormat: 'openai', baseUrl: 'https://relay.example/v1' }],
+    profiles: [
+      { id: 'manual-128k', name: 'Manual', providerId: 'p1', model: 'relay-model', efforts: ['low'], effortsMode: 'manual', contextWindowTokens: 128_000, summaryThresholdTokens: 96_000, contextMode: 'manual' },
+      { id: 'auto-500k', name: 'Auto', providerId: 'p1', model: 'other-model', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+    ],
+    defaultRoute: { profileId: 'manual-128k', effort: 'low', fallbacks: [] },
+    botRoutes: {},
+  });
+  const afterResave = (await models.publicConfig()).profiles.find(p => p.id === 'auto-500k');
+  assert.equal(afterResave.effectiveContext.observed, undefined);
+});
+
+test('Cache resilience: split cross-process files never clobber each other, and damaged JSON files are cached by mtime/size', async t => {
+  const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-cache-split-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const cachePath = contextCacheFilePath(dir);
+  const observedPath = observedCacheFilePath(cachePath);
+
+  // 1. Concurrent catalog sync (writes model-context-cache.json) and observed persist (writes model-context-observed.json)
+  await Promise.all([
+    recordCatalogSync(
+      cachePath,
+      { id: 'p1', apiFormat: 'openai', baseUrl: 'https://relay.example/v1' },
+      [{ id: 'model-a', contextWindowTokens: 256_000, contextSource: 'provider', efforts: ['low', 'high'], source: 'provider' }],
+    ),
+    persistObservedCeiling(
+      cachePath,
+      { apiFormat: 'openai', baseUrl: 'https://relay.example/v1', model: 'model-b' },
+      { contextWindowTokens: 32_768, observedAt: Date.now() },
+    ),
+  ]);
+  const combined = await readContextCache(cachePath);
+  assert.equal(Object.keys(combined.catalog).length, 1);
+  assert.equal(Object.keys(combined.observed).length, 1);
+  assert.equal(JSON.parse(await readFile(cachePath, 'utf8')).observed, undefined, 'catalog file must not contain observed');
+  assert.equal(JSON.parse(await readFile(observedPath, 'utf8')).catalog, undefined, 'observed file must not contain catalog');
+
+  // 2. Damaged JSON cache files return empty safely and are cached by (mtimeMs, size)
+  await writeFile(cachePath, '{broken json', 'utf8');
+  await writeFile(observedPath, '{broken observed', 'utf8');
+  invalidateContextCache(cachePath);
+  const firstRead = readContextCacheSync(cachePath);
+  const secondRead = readContextCacheSync(cachePath);
+  assert.deepEqual(firstRead.catalog, {});
+  assert.deepEqual(firstRead.observed, {});
+  assert.deepEqual(secondRead.catalog, {});
+  assert.deepEqual(secondRead.observed, {});
+});
+
+test('Codex manifest probe is OFF by default, only runs when enabled, and draft providers never pollute shared cache', async t => {
   const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-codex-manifest-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
@@ -1556,13 +1291,11 @@ test('Codex manifest enrichment: Sub2API /models?client_version=0.160.0 supplies
             {
               slug: 'deepseek-v4.1-flash',
               context_window: 1_000_000,
-              max_context_window: 1_000_000,
               supported_reasoning_levels: [],
             },
             {
               slug: 'gpt-5.6-terra',
               context_window: 272_000,
-              max_context_window: 872_000,
               supported_reasoning_levels: [
                 { effort: 'low' }, { effort: 'medium' }, { effort: 'high' },
                 { effort: 'xhigh' }, { effort: 'max' }, { effort: 'ultra' },
@@ -1571,88 +1304,82 @@ test('Codex manifest enrichment: Sub2API /models?client_version=0.160.0 supplies
             {
               slug: 'kimi-k3.1-pro',
               context_window: 272_000,
-              max_context_window: 272_000,
               supported_reasoning_levels: [{ effort: 'none' }],
-            },
-            {
-              slug: 'only-max-window-model',
-              max_context_window: 872_000,
             },
           ],
         }), { status: 200, headers: { 'content-type': 'application/json' } });
       }
       return new Response(JSON.stringify({
         data: [
-          { id: 'deepseek-v4.1-flash', type: 'model', display_name: 'deepseek-v4.1-flash', created_at: '2024-01-01T00:00:00Z' },
-          { id: 'gpt-5.6-terra', type: 'model', display_name: 'gpt-5.6-terra', created_at: '2024-01-01T00:00:00Z' },
-          { id: 'kimi-k3.1-pro', type: 'model', display_name: 'kimi-k3.1-pro', created_at: '2024-01-01T00:00:00Z' },
+          { id: 'deepseek-v4.1-flash' },
+          { id: 'gpt-5.6-terra' },
+          { id: 'kimi-k3.1-pro' },
         ],
       }), { status: 200, headers: { 'content-type': 'application/json' } });
     },
   });
+  t.after(() => models.close());
 
   const provider = { id: 'sub2api', name: 'Sub2API', apiFormat: 'openai', baseUrl: 'https://sub2api.example/v1', apiKey: 'test-sub2api-key' };
-  const res = await models.catalog({ provider });
-  assert.equal(fetchedUrls.length, 2, 'should automatically probe ?client_version= when bare /models omits context limits');
+
+  // Draft provider (not yet saved) must NOT send client_version and must NOT write to model-context-cache.json
+  await models.catalog({ provider });
+  assert.equal(fetchedUrls.length, 1, 'Codex client_version probe must be off by default');
+  assert.equal(existsSync(contextCacheFilePath(dir)), false, 'draft provider catalog must not write shared cache');
+
+  // Draft provider in resolve() must also not write to shared cache
+  await models.resolve({
+    providers: [{ ...provider, id: 'draft-p', baseUrl: 'https://draft.example/v1' }],
+    profiles: [{ id: 'p-draft', providerId: 'draft-p', model: 'gpt-5.6-terra' }],
+    preferUpstream: true,
+  });
+  assert.equal(existsSync(contextCacheFilePath(dir)), false, 'draft provider in resolve must not write shared cache');
+
+  // Save provider, enable codexManifestProbe explicitly, and sync
+  await models.save({
+    version: 1,
+    migrateLegacyRouting: true,
+    providers: [provider],
+    profiles: [{ id: 'p1', name: 'P1', providerId: 'sub2api', model: 'kimi-k3.1-pro', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' }],
+    defaultRoute: { profileId: 'p1', effort: 'default', fallbacks: [] },
+    botRoutes: {},
+  });
+  await models.saveSyncSettings({ codexManifestProbe: true });
+  fetchedUrls.length = 0;
+
+  const res = await models.catalog({ providerId: 'sub2api' });
+  assert.equal(fetchedUrls.length, 2, 'should probe ?client_version= when explicitly enabled');
   assert.match(fetchedUrls[1], /client_version=0\.160\.0/);
 
   const byId = new Map(res.models.map(item => [item.id, item]));
-  // deepseek-v4.1-flash gets 1M/750K from manifest and keeps built-in deepseek-v4 efforts when manifest levels are []
   assert.equal(byId.get('deepseek-v4.1-flash').contextWindowTokens, 1_000_000);
-  assert.equal(byId.get('deepseek-v4.1-flash').summaryThresholdTokens, 750_000);
   assert.equal(byId.get('deepseek-v4.1-flash').contextSource, 'provider');
-  assert.deepEqual(byId.get('deepseek-v4.1-flash').efforts, ['none', 'low', 'high', 'max']);
-
-  // gpt-5.6-terra adopts safe context_window (272K) and filters supported_reasoning_levels (ignoring unsupported 'ultra')
-  assert.equal(byId.get('gpt-5.6-terra').contextWindowTokens, 272_000);
-  assert.equal(byId.get('gpt-5.6-terra').summaryThresholdTokens, 204_000);
-  assert.equal(byId.get('gpt-5.6-terra').contextSource, 'provider');
   assert.deepEqual(byId.get('gpt-5.6-terra').efforts, ['low', 'medium', 'high', 'xhigh', 'max']);
 
-  // Model with only max_context_window falls back cleanly to 872K / 654K
-  assert.equal(byId.get('only-max-window-model').contextWindowTokens, 872_000);
-  assert.equal(byId.get('only-max-window-model').summaryThresholdTokens, 654_000);
-  assert.equal(byId.get('only-max-window-model').contextSource, 'provider');
-
-  // Region-prefixed model (cn:kimi-k3.1-pro) matches cached upstream kimi-k3.1-pro in both resolveEffectiveContext and Models.resolve
-  assert.equal(normalizeModelId('cn:kimi-k3.1-pro'), 'kimi-k3.1-pro');
   const cache = await readContextCache(contextCacheFilePath(dir));
   const resolvedAuto = resolveEffectiveContext(
     { apiFormat: 'openai', baseUrl: 'https://sub2api.example/v1', model: 'cn:kimi-k3.1-pro', contextMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0 },
     { cache },
   );
   assert.equal(resolvedAuto.contextWindowTokens, 272_000);
-  assert.equal(resolvedAuto.summaryThresholdTokens, 204_000);
   assert.equal(resolvedAuto.contextSource, 'provider');
-
-  // Non-Codex gateway returning 400 on ?client_version= must gracefully preserve bare /models without failing
-  const plainModels = new Models(dir, {
-    fetchImpl: async (url) => {
-      if (String(url).includes('client_version=')) {
-        return new Response('unsupported query', { status: 400 });
-      }
-      return new Response(JSON.stringify({ data: [{ id: 'deepseek-chat' }] }), { status: 200 });
-    },
-  });
-  const plainRes = await plainModels.catalog({
-    provider: { id: 'plain', name: 'Plain', apiFormat: 'openai', baseUrl: 'https://plain.example/v1', apiKey: 'test-key' },
-  });
-  assert.equal(plainRes.models.length, 1);
-  assert.equal(plainRes.models[0].id, 'deepseek-chat');
-  assert.equal(plainRes.models[0].contextWindowTokens, 128_000);
 });
 
-test('HTTP endpoint: POST /admin/api/model/sync-contexts syncs upstream catalogs and returns updated effectiveContext', { skip: !dependencies && 'run npm ci --prefix host/server' }, async t => {
+test('HTTP endpoints: autoSync toggle stops all background requests and sync-contexts updates effectiveContext', { skip: !dependencies && 'run npm ci --prefix host/server' }, async t => {
   const { createSelfHostServer } = await import('../server/index.mjs');
   const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-sync-http-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
+  let catalogFetchCount = 0;
   const app = await createSelfHostServer({
     dataDir: dir,
     hostDataDir: join(dir, 'host-data'),
-    modelFetch: async () => new Response(JSON.stringify({
-      data: [{ id: 'custom-sync-model', context_window: 384_000 }],
-    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+    modelFetch: async () => {
+      catalogFetchCount++;
+      return new Response(JSON.stringify({
+        data: [{ id: 'custom-sync-model', context_window: 384_000 }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
     modelAutoSync: true,
     modelContextSyncIntervalMs: 0,
     rateLimit: { check() {} },
@@ -1670,15 +1397,30 @@ test('HTTP endpoint: POST /admin/api/model/sync-contexts syncs upstream catalogs
   const cookie = setupRes.headers.get('set-cookie').split(';')[0];
   const headers = { cookie, 'content-type': 'application/json', 'x-grokbot-csrf': '1' };
 
+  // Turn OFF background autoSync via API
+  const toggleRes = await fetch(`${base}/admin/api/model/sync-settings`, {
+    method: 'PUT',
+    headers,
+    body: JSON.stringify({ autoSync: false }),
+  });
+  assert.equal(toggleRes.status, 200);
+  const togglePub = await toggleRes.json();
+  assert.equal(togglePub.contextSync.autoSync, false);
+  assert.equal(togglePub.contextSync.codexManifestProbe, false);
+
+  catalogFetchCount = 0;
   await app.models.save({
     version: 1,
     migrateLegacyRouting: true,
     providers: [{ id: 'p-sync', name: 'Sync Relay', apiFormat: 'openai', baseUrl: 'https://sync.example/v1', apiKey: 'test-key' }],
-    profiles: [{ id: 'prof-sync', name: 'Auto Profile', providerId: 'p-sync', model: 'custom-sync-model', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' }],
+    profiles: [{ id: 'prof-sync', name: 'Auto Profile', providerId: 'p-sync', model: 'custom-sync-model', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' }],
     defaultRoute: { profileId: 'prof-sync', effort: 'default', fallbacks: [] },
     botRoutes: {},
   });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(catalogFetchCount, 0, 'save must not trigger background /models when autoSync is disabled');
 
+  // Explicit manual sync still works when triggered by admin
   const syncRes = await fetch(`${base}/admin/api/model/sync-contexts`, {
     method: 'POST',
     headers,
@@ -1693,43 +1435,29 @@ test('HTTP endpoint: POST /admin/api/model/sync-contexts syncs upstream catalogs
   assert.equal(payload.profiles[0].effectiveContext.contextSource, 'provider');
 });
 
-test('Upstream reasoning effort sync: effortsMode, effort-only catalog caching, region-prefix matching, publicConfig effectiveEfforts, and runtime session sync', async t => {
+test('Upstream reasoning effort sync and runtime clamping when upstream drops selected effort', async t => {
   const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-efforts-sync-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
   const models = new Models(dir, {
-    fetchImpl: async (url) => {
-      const href = String(url);
-      if (href.includes('client_version=')) {
-        return new Response(JSON.stringify({
-          models: [
-            {
-              slug: 'gpt-5.6-luna',
-              context_window: 272_000,
-              supported_reasoning_levels: [
-                { effort: 'low' }, { effort: 'medium' }, { effort: 'high' }, { effort: 'xhigh' }, { effort: 'max' },
-              ],
-            },
-            {
-              slug: 'kimi-k3.1-pro',
-              context_window: 272_000,
-              supported_reasoning_levels: [{ effort: 'none' }],
-            },
-            {
-              slug: 'effort-only-custom',
-              supported_reasoning_efforts: ['low', 'high'],
-            },
-          ],
-        }), { status: 200, headers: { 'content-type': 'application/json' } });
-      }
-      return new Response(JSON.stringify({
-        data: [
-          { id: 'gpt-5.6-luna' },
-          { id: 'kimi-k3.1-pro' },
-          { id: 'effort-only-custom' },
-        ],
-      }), { status: 200, headers: { 'content-type': 'application/json' } });
-    },
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [
+        {
+          id: 'gpt-5.6-luna',
+          context_window: 272_000,
+          supported_reasoning_levels: [{ effort: 'low' }, { effort: 'medium' }, { effort: 'high' }],
+        },
+        {
+          id: 'kimi-k3.1-pro',
+          context_window: 272_000,
+          supported_reasoning_levels: [{ effort: 'none' }],
+        },
+        {
+          id: 'effort-only-custom',
+          supported_reasoning_efforts: ['low', 'high'],
+        },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
   });
   t.after(() => models.close());
 
@@ -1737,87 +1465,170 @@ test('Upstream reasoning effort sync: effortsMode, effort-only catalog caching, 
     version: 1,
     providers: [{ id: 'p-sub', name: 'Sub2API', apiFormat: 'openai-responses', baseUrl: 'https://sub2api.example/v1', apiKey: 'test-key' }],
     profiles: [
-      { id: 'prof-luna', name: 'Luna', providerId: 'p-sub', model: 'gpt-5.6-luna', efforts: ['max'], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+      { id: 'prof-luna', name: 'Luna', providerId: 'p-sub', model: 'gpt-5.6-luna', efforts: ['low', 'medium', 'high', 'xhigh'], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
       { id: 'prof-kimi', name: 'Kimi CN', providerId: 'p-sub', model: 'cn:kimi-k3.1-pro', efforts: ['high'], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
       { id: 'prof-manual', name: 'Manual Lock', providerId: 'p-sub', model: 'gpt-5.6-luna', efforts: ['max'], contextWindowTokens: 128_000, summaryThresholdTokens: 96_000 },
-      { id: 'prof-effort-only', name: 'Effort Only', providerId: 'p-sub', model: 'effort-only-custom', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0 },
+      { id: 'prof-legacy-default', name: 'Legacy Default Only', providerId: 'p-sub', model: 'gpt-5.6-luna', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0 },
     ],
-    defaultRoute: { profileId: 'prof-luna', effort: 'max', fallbacks: [] },
+    defaultRoute: { profileId: 'prof-luna', effort: 'xhigh', fallbacks: [] },
     botRoutes: {},
   });
   assert.equal(routing.profiles.find(p => p.id === 'prof-luna').effortsMode, 'auto');
   assert.equal(routing.profiles.find(p => p.id === 'prof-manual').effortsMode, 'manual');
-  assert.equal(routing.profiles.find(p => p.id === 'prof-effort-only').effortsMode, 'auto');
+  assert.equal(routing.profiles.find(p => p.id === 'prof-legacy-default').effortsMode, 'manual');
 
   await models.save({ ...routing, migrateLegacyRouting: true });
-  const summary = await models.syncAllProviders({ force: true });
-  assert.equal(summary.ok, 1);
-  assert.equal(summary.modelsDetected, 2);
-  assert.equal(summary.effortsDetected, 3);
-  assert.equal(summary.providerEfforts, 3);
+  await models.syncAllProviders({ force: true });
 
   const pub = await models.publicConfig();
   const byId = new Map(pub.profiles.map(p => [p.id, p]));
   assert.deepEqual(byId.get('prof-luna').effectiveEfforts, {
-    efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    efforts: ['low', 'medium', 'high'],
     effortsSource: 'provider',
     effortsMode: 'auto',
   });
-  assert.deepEqual(byId.get('prof-kimi').effectiveEfforts, {
-    efforts: ['none'],
-    effortsSource: 'provider',
-    effortsMode: 'auto',
-  });
-  assert.deepEqual(byId.get('prof-manual').effectiveEfforts, {
-    efforts: ['max'],
-    effortsSource: 'manual',
+  assert.deepEqual(byId.get('prof-legacy-default').effectiveEfforts, {
+    efforts: [],
+    effortsSource: 'unknown',
     effortsMode: 'manual',
   });
-  assert.deepEqual(byId.get('prof-effort-only').effectiveEfforts, {
-    efforts: ['low', 'high'],
-    effortsSource: 'provider',
-    effortsMode: 'auto',
-  });
 
-  // Resolve effort-only model from cache without losing provider source
-  const resolvedOnly = await models.resolve({ model: 'effort-only-custom', providerId: 'p-sub' });
-  assert.deepEqual(resolvedOnly.model.efforts, ['low', 'high']);
-  assert.equal(resolvedOnly.model.source, 'provider');
-  assert.equal(resolvedOnly.model.contextWindowTokens, 0);
-
-  // Runtime openai-responses session picks up live efforts=['none'] for cn:kimi-k3.1-pro and omits reasoning block!
+  // Runtime clamps route effort 'xhigh' down to 'high' after upstream drops 'xhigh'
+  assert.equal(clampSupportedEffort('xhigh', ['low', 'medium', 'high']), 'high');
+  assert.equal(clampSupportedEffort('high', ['none']), 'none');
   const cachePath = contextCacheFilePath(dir);
-  let sentBody;
-  const session = createModelSession({
+  let sentLunaBody;
+  const lunaSession = createModelSession({
+    baseUrl: 'https://sub2api.example/v1',
+    apiKey: 'test-key',
+    apiFormat: 'openai-responses',
+    model: 'gpt-5.6-luna',
+    effort: 'xhigh',
+    efforts: ['low', 'medium', 'high', 'xhigh'],
+    effortsMode: 'auto',
+    contextMode: 'auto',
+    contextCachePath: cachePath,
+    fetchImpl: async (_url, init) => {
+      sentLunaBody = JSON.parse(init.body);
+      const sse = [
+        `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, delta: 'OK' })}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_1', model: 'gpt-5.6-luna', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }], usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } })}\n\n`,
+      ].join('');
+      return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+  });
+  const lunaStream = lunaSession.getExecutor([{ role: 'user', content: 'hi' }]).stream({}, 'turn-clamp', []);
+  for await (const _ of lunaStream.fullStream) {}
+  assert.equal(sentLunaBody.reasoning?.effort, 'high', 'dropped xhigh must clamp down to closest supported effort high');
+
+  // Runtime openai-responses session picks up live efforts=['none'] for cn:kimi-k3.1-pro and omits reasoning block
+  let sentKimiBody;
+  const kimiSession = createModelSession({
     baseUrl: 'https://sub2api.example/v1',
     apiKey: 'test-key',
     apiFormat: 'openai-responses',
     model: 'cn:kimi-k3.1-pro',
+    effort: 'high',
     efforts: ['high'],
     effortsMode: 'auto',
     contextMode: 'auto',
     contextCachePath: cachePath,
     fetchImpl: async (_url, init) => {
-      sentBody = JSON.parse(init.body);
+      sentKimiBody = JSON.parse(init.body);
       const sse = [
         `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, delta: 'OK' })}\n\n`,
-        `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_1', model: 'cn:kimi-k3.1-pro', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }], usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } })}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_2', model: 'cn:kimi-k3.1-pro', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }], usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } })}\n\n`,
       ].join('');
       return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
     },
   });
-  const stream = session.getExecutor([{ role: 'user', content: 'hi' }]).stream({}, 'turn-efforts', []);
-  for await (const _ of stream.fullStream) {}
-  assert.equal(sentBody.reasoning, undefined, 'auto-synced efforts=["none"] must omit reasoning block in openai-responses');
+  const kimiStream = kimiSession.getExecutor([{ role: 'user', content: 'hi' }]).stream({}, 'turn-kimi', []);
+  for await (const _ of kimiStream.fullStream) {}
+  assert.equal(sentKimiBody.reasoning, undefined, 'auto-synced efforts=["none"] must omit reasoning block in openai-responses');
+});
 
-  // Direct resolveEffectiveEfforts respects manual mode and region-prefix normalization
-  const cache = await readContextCache(cachePath);
-  assert.deepEqual(
-    resolveEffectiveEfforts({ apiFormat: 'openai-responses', baseUrl: 'https://sub2api.example/v1', model: 'cn:kimi-k3.1-pro', efforts: ['high'], effortsMode: 'auto' }, { cache }),
-    { efforts: ['none'], effortsSource: 'provider', effortsMode: 'auto' },
-  );
-  assert.deepEqual(
-    resolveEffectiveEfforts({ apiFormat: 'openai-responses', baseUrl: 'https://sub2api.example/v1', model: 'cn:kimi-k3.1-pro', efforts: ['high'], effortsMode: 'manual' }, { cache }),
-    { efforts: ['high'], effortsSource: 'manual', effortsMode: 'manual' },
-  );
+test('CLI host-admin and legacy save path: explicit --context/--efforts become manual, and CLI never stores reference guesses', async t => {
+  const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-cli-save-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const models = new Models(dir, {
+    fetchImpl: async () => new Response(JSON.stringify({
+      data: [
+        { id: 'gpt-5-chat-latest' },
+        { id: 'provider-reported-model', context_window: 256_000, supported_reasoning_efforts: ['low', 'high'] },
+      ],
+    }), { status: 200, headers: { 'content-type': 'application/json' } }),
+  });
+  t.after(() => models.close());
+
+  // Seed an auto profile
+  await models.save({
+    version: 1,
+    migrateLegacyRouting: true,
+    providers: [{ id: 'default', name: 'Default', apiFormat: 'openai', baseUrl: 'https://relay.example/v1', apiKey: 'sk-1' }],
+    profiles: [{ id: 'default', name: 'Default', providerId: 'default', model: 'gpt-5-chat-latest', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' }],
+    defaultRoute: { profileId: 'default', effort: 'default', fallbacks: [] },
+    botRoutes: {},
+  });
+
+  // Spin up minimal admin HTTP bridge to test host-admin.mjs end-to-end against Models
+  const server = createServer(async (req, res) => {
+    const path = req.url;
+    let raw = '';
+    for await (const chunk of req) raw += chunk;
+    const body = raw ? JSON.parse(raw) : {};
+    if (path === '/admin/api/login') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true }));
+    }
+    if (path === '/admin/api/model' && req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await models.publicConfig()));
+    }
+    if (path === '/admin/api/model/catalog') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await models.catalog(body)));
+    }
+    if (path === '/admin/api/model/test') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true }));
+    }
+    if (path === '/admin/api/model' && req.method === 'PUT') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify(await models.save(body)));
+    }
+    if (path === '/admin/api/status') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      return res.end(JSON.stringify({ host: { connected: true }, model: { reload: { status: 'applied' } } }));
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const cliEnv = {
+    ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
+    GROKBOT_URL: `http://127.0.0.1:${server.address().port}`,
+    GROKBOT_ADMIN_PASSWORD: 'demo-only-password',
+    MODEL_API_KEY: 'sk-1',
+  };
+
+  // 1. model-set --model gpt-5-chat-latest WITHOUT --context must NOT store reference guess (400K/128K)
+  await exec(process.execPath, [hostAdminCli, 'model-set', '--model', 'gpt-5-chat-latest'], { env: cliEnv, timeout: 8000 });
+  let current = await models.current();
+  assert.equal(current.routing.profiles[0].contextWindowTokens, 0, 'CLI without --context must not store reference table guess');
+
+  // 2. model-set --context 128000 --efforts low,high overrides auto mode to manual
+  await exec(process.execPath, [hostAdminCli, 'model-set', '--model', 'gpt-5-chat-latest', '--context', '128000', '--efforts', 'low,high'], { env: cliEnv, timeout: 8000 });
+  current = await models.current();
+  assert.equal(current.routing.profiles[0].contextMode, 'manual');
+  assert.equal(current.routing.profiles[0].contextWindowTokens, 128_000);
+  assert.equal(current.routing.profiles[0].effortsMode, 'manual');
+  assert.deepEqual(current.routing.profiles[0].efforts, ['low', 'high']);
+
+  // 3. model-set WITHOUT --context on a model whose provider DID report capacity adopts provider capacity
+  await exec(process.execPath, [hostAdminCli, 'model-set', '--model', 'provider-reported-model'], { env: cliEnv, timeout: 8000 });
+  current = await models.current();
+  assert.equal(current.routing.profiles[0].contextWindowTokens, 256_000);
+  assert.deepEqual(current.routing.profiles[0].efforts, ['low', 'high']);
 });

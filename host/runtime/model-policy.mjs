@@ -5,10 +5,45 @@ import { normalizeModelId, parseReportedCapacity, referenceContextWindow } from 
 export const TIERS = ['routine', 'reasoning', 'expert'];
 export const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-export function summaryThresholdFor(contextWindowTokens) {
+/** Compute a compaction threshold (75% of input budget after output reserve) for a context window. */
+export function summaryThresholdFor(contextWindowTokens, { apiFormat, model, maxTokens, outputReserve } = {}) {
   if (!Number.isSafeInteger(contextWindowTokens) || contextWindowTokens < 2) return 0;
-  if (contextWindowTokens < 2_000) return Math.max(1, Math.floor(contextWindowTokens * 0.75));
-  return Math.max(1, Math.floor(contextWindowTokens * 0.75 / 1_000) * 1_000);
+  let reserve = 0;
+  if (Number.isSafeInteger(outputReserve) && outputReserve > 0) {
+    reserve = outputReserve;
+  } else if (apiFormat === 'anthropic') {
+    const traits = claudeTraits(model || '');
+    reserve = Number.isSafeInteger(maxTokens) && maxTokens > 0
+      ? Math.min(maxTokens, traits.maxOutput)
+      : Math.min(64_000, traits.maxOutput);
+  } else if (Number.isSafeInteger(maxTokens) && maxTokens > 0) {
+    reserve = maxTokens;
+  }
+  let budget = contextWindowTokens;
+  if (reserve > 0 && contextWindowTokens > reserve) {
+    budget = contextWindowTokens - reserve;
+  } else if (reserve > 0) {
+    // Context window is at or below the default output cap; fall back to half the window.
+    budget = Math.max(2, Math.floor(contextWindowTokens * 0.5));
+    return budget < 2_000 ? Math.max(1, budget) : Math.max(1, Math.floor(budget / 1_000) * 1_000);
+  }
+  if (budget < 2_000) return Math.max(1, Math.floor(budget * 0.75));
+  return Math.max(1, Math.floor(budget * 0.75 / 1_000) * 1_000);
+}
+
+/** Clamp an explicit reasoning effort to the closest supported level in the catalog list. */
+export function clampSupportedEffort(effort, supportedEfforts) {
+  if (!effort || effort === 'default' || effort === 'auto' || !Array.isArray(supportedEfforts) || !supportedEfforts.length) {
+    return effort;
+  }
+  if (supportedEfforts.includes(effort)) return effort;
+  let index = EFFORTS.indexOf(effort);
+  if (index < 0) return supportedEfforts[0];
+  while (index >= 0) {
+    if (supportedEfforts.includes(EFFORTS[index])) return EFFORTS[index];
+    index--;
+  }
+  return supportedEfforts[0];
 }
 
 /** Recommended compaction settings for a model: provider-reported first, then curated reference spec. */
