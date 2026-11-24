@@ -97,7 +97,7 @@ export function createModelPage({ api, toast, busy, refresh }) {
   panel.innerHTML = html(`<header class="page-header"><h1>对话模型</h1></header>
     <form id="model-form" class="sections">
       <section class="section"><div class="section-head"><h2 class="section-title">模型服务</h2><div class="section-actions"><button id="add-model-provider" class="icon-btn" type="button" aria-label="添加模型服务"></button></div></div><div id="model-providers" class="card"></div></section>
-      <section class="section"><div class="section-head"><h2 class="section-title">模型档案</h2><div class="section-actions"><button id="sync-model-contexts" class="btn btn-sm" type="button" hidden>同步上游上下文</button><button id="auto-fill-model-contexts" class="btn btn-sm" type="button" hidden>补全未知上下文</button><button id="add-model-profile" class="icon-btn" type="button" aria-label="添加模型档案"></button></div></div><div id="model-profiles" class="card"></div></section>
+      <section class="section"><div class="section-head"><h2 class="section-title">模型档案</h2><div class="section-actions"><button id="sync-model-contexts" class="btn btn-sm" type="button" hidden>同步上游能力</button><button id="auto-fill-model-contexts" class="btn btn-sm" type="button" hidden>补全未知上下文</button><button id="add-model-profile" class="icon-btn" type="button" aria-label="添加模型档案"></button></div></div><div id="model-profiles" class="card"></div></section>
       <section class="section"><div class="section-head"><h2 class="section-title">默认路由</h2></div><div id="model-default-route" class="card"></div></section>
       <section class="section"><div class="section-head"><h2 class="section-title">Bot 路由</h2><div class="section-actions"><button id="refresh-model-bots" class="icon-btn" type="button" aria-label="刷新 Bot"></button></div></div><div id="model-bot-routes" class="card"></div></section>
       <p id="legacy-routing-notice" class="hint" role="status" hidden></p>
@@ -159,6 +159,7 @@ export function createModelPage({ api, toast, busy, refresh }) {
       throw new Error(t('请填写“{0}”的 API Key。', provider.name));
     return { version: 1, ...(legacyRouting ? { migrateLegacyRouting: true } : {}), providers: config.providers.map(serializedProvider), profiles: config.profiles.map(profile => ({
       id: profile.id, name: profile.name, providerId: profile.providerId, model: profile.model, efforts: [...profile.efforts],
+      ...(profile.effortsMode ? { effortsMode: profile.effortsMode } : {}),
       contextWindowTokens: profile.contextWindowTokens ?? 0, summaryThresholdTokens: profile.summaryThresholdTokens ?? 0,
       ...(profile.contextMode ? { contextMode: profile.contextMode } : {}),
     })), defaultRoute: routeCopy(config.defaultRoute), botRoutes: Object.fromEntries(Object.entries(config.botRoutes)
@@ -169,7 +170,12 @@ export function createModelPage({ api, toast, busy, refresh }) {
     // Only an adaptive policy used task-difficulty routing; a single model converts without loss.
     legacyAdaptive = legacyRouting && value.legacyAdaptiveRouting === true;
     config = { version: 1, providers: (value.providers ?? []).map(provider => ({ ...provider })),
-      profiles: (value.profiles ?? []).map(profile => ({ ...profile, efforts: [...(profile.efforts ?? [])] })),
+      profiles: (value.profiles ?? []).map(profile => {
+        const syncedEfforts = profile.effortsMode === 'auto' && Array.isArray(profile.effectiveEfforts?.efforts) && profile.effectiveEfforts.efforts.length
+          ? profile.effectiveEfforts.efforts
+          : (profile.efforts ?? []);
+        return { ...profile, efforts: [...syncedEfforts] };
+      }),
       defaultRoute: null, botRoutes: clone(value.botRoutes ?? {}) };
     config.defaultRoute = value.defaultRoute ? routeCopy(value.defaultRoute) : null;
     config.botRoutes = Object.fromEntries(Object.entries(config.botRoutes)
@@ -286,7 +292,11 @@ export function createModelPage({ api, toast, busy, refresh }) {
           config.profiles = config.profiles.filter(item => item.id !== profile.id); markDirty(); render();
         }) },
       ]);
-      const effortText = profile.efforts.length ? profile.efforts.map(level => t(levelLabels[level])).join(' · ') : t('仅模型默认');
+      const effEfforts = profile.effectiveEfforts;
+      const isEffortsAuto = profile.effortsMode === 'auto';
+      const activeEfforts = isEffortsAuto && effEfforts?.efforts?.length ? effEfforts.efforts : profile.efforts;
+      const effortsTag = isEffortsAuto ? `（${t(effectiveSourceTags[effEfforts?.effortsSource] ?? '自动')}）` : '';
+      const effortText = `${activeEfforts.length ? activeEfforts.map(level => t(levelLabels[level])).join(' · ') : t('仅模型默认')}${effortsTag}`;
       const eff = profile.effectiveContext;
       const isAuto = profile.contextMode === 'auto';
       const activeCapacity = isAuto ? (eff?.contextWindowTokens || profile.contextWindowTokens || 0) : (profile.contextWindowTokens || 0);
@@ -375,8 +385,9 @@ export function createModelPage({ api, toast, busy, refresh }) {
   function showProfile(entry) {
     if (!config.providers.length) return;
     const current = entry ? clone(entry) : { id: uid('profile'), name: '', providerId: config.providers[0].id, model: '', efforts: [],
-      contextWindowTokens: defaultContextWindowTokens, summaryThresholdTokens: defaultSummaryThresholdTokens, contextMode: 'auto' };
+      effortsMode: 'auto', contextWindowTokens: defaultContextWindowTokens, summaryThresholdTokens: defaultSummaryThresholdTokens, contextMode: 'auto' };
     const initialContextMode = current.contextMode ?? (current.contextWindowTokens > 0 ? 'manual' : 'auto');
+    const initialEffortsMode = current.effortsMode ?? ((current.efforts?.length ?? 0) > 0 ? 'manual' : 'auto');
     const { form: editForm, title, body, submit, dialog } = profileEditor;
     body.replaceChildren(); editForm.reset(); title.textContent = t(entry ? '编辑模型档案' : '添加模型档案');
     const name = formField(body, 'name', '名称'), providerId = formSelect(body, 'providerId', '模型服务');
@@ -387,7 +398,20 @@ export function createModelPage({ api, toast, busy, refresh }) {
     const catalog = node('button', 'btn btn-sm', t('同步模型')); catalog.type = 'button';
     const catalogSelect = document.createElement('select'); catalogSelect.hidden = true; catalogSelect.setAttribute('aria-label', t('从同步列表选择模型'));
     modelRow.append(model, catalog); modelField.append(modelRow, catalogSelect, list); body.append(modelField);
-    addEffortControls(body, current.efforts ?? []);
+    const effortsModeLine = node('label', 'check'), effortsModeToggle = document.createElement('input');
+    effortsModeToggle.type = 'checkbox'; effortsModeToggle.name = 'effortsModeAuto'; effortsModeToggle.checked = initialEffortsMode === 'auto';
+    effortsModeLine.append(effortsModeToggle, node('span', '', t('自动跟随上游思考强度（同步模型或每 6 小时自动更新可选档位）')));
+    const shownEfforts = initialEffortsMode === 'auto'
+      ? (current.effectiveEfforts?.efforts?.length ? current.effectiveEfforts.efforts : (current.efforts ?? []))
+      : (current.efforts ?? []);
+    body.append(effortsModeLine);
+    addEffortControls(body, shownEfforts);
+    const initialEffortsSource = initialEffortsMode === 'auto'
+      ? (current.effectiveEfforts?.effortsSource || (shownEfforts.length ? 'reference' : 'unknown'))
+      : (shownEfforts.length ? 'manual' : 'unknown');
+    const effortsSourceHint = node('p', 'hint', t(contextSourceLabels[initialEffortsSource] ?? contextSourceLabels.unknown));
+    effortsSourceHint.dataset.effortsSource = '';
+    body.append(effortsSourceHint);
     const autoModeLine = node('label', 'check'), autoModeToggle = document.createElement('input');
     autoModeToggle.type = 'checkbox'; autoModeToggle.name = 'contextModeAuto'; autoModeToggle.checked = initialContextMode === 'auto';
     autoModeLine.append(autoModeToggle, node('span', '', t('自动跟随上游上下文（每 6 小时自动同步并按 75% 计算摘要阈值）')));
@@ -411,7 +435,7 @@ export function createModelPage({ api, toast, busy, refresh }) {
     let thresholdCustom = Boolean(current.summaryThresholdTokens && current.contextWindowTokens &&
       current.summaryThresholdTokens !== recommendedSummaryThreshold(current.contextWindowTokens));
     let contextManual = initialContextMode === 'manual' && Boolean(current.contextWindowTokens > 0 || current.summaryThresholdTokens > 0);
-    let effortsManual = Boolean(entry && (current.efforts?.length ?? 0) > 0);
+    let effortsManual = initialEffortsMode === 'manual' && Boolean(entry && (current.efforts?.length ?? 0) > 0);
     let contextAutoFilled = initialContextMode === 'auto' && shownCapacity > 0;
     let lastModelId = current.model.trim();
     let lastResolvedModelId = '';
@@ -428,10 +452,14 @@ export function createModelPage({ api, toast, busy, refresh }) {
       const base = t(contextSourceLabels[source] ?? contextSourceLabels.unknown);
       sourceHint.textContent = source === 'reference' && matchedFamily ? `${base} · ${matchedFamily}` : base;
     };
+    const setEffortsSource = (source) => {
+      effortsSourceHint.textContent = t(contextSourceLabels[source] ?? contextSourceLabels.unknown);
+    };
     const applyCapabilities = (spec, { onlyMissingContext = false, applyEfforts = true } = {}) => {
       if (!spec) return;
       if (applyEfforts && !effortsManual && Array.isArray(spec.efforts)) {
         for (const level of levels) editForm.elements[`effort-${level}`].checked = spec.efforts.includes(level);
+        setEffortsSource(spec.efforts.length ? (spec.source || 'reference') : 'unknown');
       }
       const currentCapacity = parseTokenCount(capacity.value);
       const hasCapacity = Number.isFinite(currentCapacity) && currentCapacity > 0;
@@ -478,6 +506,17 @@ export function createModelPage({ api, toast, busy, refresh }) {
         if (seq === resolveSeq) inFlightModelId = '';
       }
     };
+    effortsModeToggle.onchange = () => {
+      if (effortsModeToggle.checked) {
+        effortsManual = false;
+        const trimmed = model.value.trim();
+        if (trimmed) void lookupModelCapabilities(trimmed, { onlyMissingContext: true, applyEfforts: true });
+      } else {
+        effortsManual = true;
+        const anyChecked = levels.some(level => editForm.elements[`effort-${level}`].checked);
+        setEffortsSource(anyChecked ? 'manual' : 'unknown');
+      }
+    };
     autoModeToggle.onchange = () => {
       if (autoModeToggle.checked) {
         contextManual = false;
@@ -494,7 +533,10 @@ export function createModelPage({ api, toast, busy, refresh }) {
     for (const level of levels) {
       editForm.elements[`effort-${level}`].onchange = () => {
         effortsManual = true;
+        effortsModeToggle.checked = false;
         cancelPendingResolve();
+        const anyChecked = levels.some(item => editForm.elements[`effort-${item}`].checked);
+        setEffortsSource(anyChecked ? 'manual' : 'unknown');
       };
     }
     capacity.oninput = () => {
@@ -576,6 +618,7 @@ export function createModelPage({ api, toast, busy, refresh }) {
       const trimmedModel = model.value.trim();
       catalogSelect.value = result.models.some(candidate => candidate.id === trimmedModel) ? trimmedModel : '';
       if (catalogSelect.value) applyCapabilities(catalogModels.get(trimmedModel), { onlyMissingContext: true });
+      else if (trimmedModel) void lookupModelCapabilities(trimmedModel, { onlyMissingContext: true });
       catalogSelect.hidden = false;
       const detected = result.models.filter(candidate => candidate.contextWindowTokens > 0).length;
       toast(detected > 0 ? t('已同步 {0} 个模型（已识别 {1} 个上下文上限）', result.models.length, detected) : t('已同步 {0} 个模型', result.models.length));
@@ -585,9 +628,11 @@ export function createModelPage({ api, toast, busy, refresh }) {
       if (!Number.isFinite(contextWindowTokens) || !Number.isFinite(summaryThresholdTokens)) throw new Error(t('请输入 0–100M 的整数 Token 数，如 1M、400K。'));
       if (summaryThresholdTokens && (!contextWindowTokens || summaryThresholdTokens >= contextWindowTokens)) throw new Error(t('摘要阈值必须小于上下文容量。'));
       const contextMode = autoModeToggle.checked ? 'auto' : 'manual';
+      const effortsMode = effortsModeToggle.checked ? 'auto' : 'manual';
       const next = { ...current, name: name.value.trim(), providerId: providerId.value, model: model.value.trim(),
-        efforts: levels.filter(level => editForm.elements[`effort-${level}`].checked), contextWindowTokens, summaryThresholdTokens, contextMode };
+        efforts: levels.filter(level => editForm.elements[`effort-${level}`].checked), effortsMode, contextWindowTokens, summaryThresholdTokens, contextMode };
       delete next.effectiveContext;
+      delete next.effectiveEfforts;
       config.profiles = [...config.profiles.filter(profile => profile.id !== next.id), next];
       if (!config.defaultRoute) config.defaultRoute = { profileId: next.id, effort: 'default', fallbacks: [] };
       markDirty(); dialog.close(); render();
@@ -640,7 +685,7 @@ export function createModelPage({ api, toast, busy, refresh }) {
       const result = await api('/admin/api/model/sync-contexts', { method: 'POST', body: {} });
       const summary = result.syncResult ?? {};
       if (!dirty) setConfig(result);
-      toast(t('已同步 {0} 个模型服务（识别 {1} 个上下文上限）', summary.ok ?? 0, summary.modelsDetected ?? 0));
+      toast(t('已同步 {0} 个模型服务（上下文 {1} 个 · 思考强度 {2} 个）', summary.ok ?? 0, summary.modelsDetected ?? 0, summary.effortsDetected ?? 0));
     }).catch(error => toast(error.message, true));
   }
   $('#auto-fill-model-contexts').onclick = () => busy($('#auto-fill-model-contexts'), async () => {

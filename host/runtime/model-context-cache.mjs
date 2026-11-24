@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { summaryThresholdFor } from './model-policy.mjs';
+import { EFFORTS, effortLevels, summaryThresholdFor } from './model-policy.mjs';
 import { normalizeModelId, referenceContextWindow } from './model-specs.mjs';
 
 export const MODEL_CONTEXT_CACHE_FILE = 'model-context-cache.json';
@@ -72,10 +72,28 @@ export async function readContextCache(filePath) {
   }
 }
 
-function pruneMapByTimestamp(mapObj, maxEntries, timestampField, maxAgeMs, now) {
+function normalizeEfforts(list) {
+  if (!Array.isArray(list)) return [];
+  return EFFORTS.filter(level => list.includes(level));
+}
+
+function lookupCatalogEntry(cache, candidate = {}) {
+  const key = contextEntryKey(candidate);
+  if (cache?.catalog?.[key]) return cache.catalog[key];
+  const normalizedModel = normalizeModelId(candidate.model);
+  if (normalizedModel && normalizedModel !== String(candidate.model ?? '').trim().toLowerCase()) {
+    const normalizedKey = contextEntryKey({ ...candidate, model: normalizedModel });
+    if (cache?.catalog?.[normalizedKey]) return cache.catalog[normalizedKey];
+  }
+  return undefined;
+}
+
+function pruneMapByTimestamp(mapObj, maxEntries, timestampField, maxAgeMs, now, { allowEffortsOnly = false } = {}) {
   const entries = Object.entries(mapObj).filter(([, item]) => {
     if (!item || typeof item !== 'object') return false;
-    if (!Number.isSafeInteger(item.contextWindowTokens) || item.contextWindowTokens < 1) return false;
+    const hasWindow = Number.isSafeInteger(item.contextWindowTokens) && item.contextWindowTokens >= 1;
+    const hasEfforts = allowEffortsOnly && Array.isArray(item.efforts) && item.efforts.length > 0;
+    if (!hasWindow && !hasEfforts) return false;
     if (maxAgeMs && Number.isFinite(item[timestampField]) && now - item[timestampField] >= maxAgeMs) return false;
     return true;
   });
@@ -93,7 +111,7 @@ export function updateContextCache(filePath, mutator) {
     await mutator(current, now);
     current.version = 1;
     current.updatedAt = new Date(now).toISOString();
-    current.catalog = pruneMapByTimestamp(current.catalog, MAX_CATALOG_ENTRIES, 'syncedAt', 0, now);
+    current.catalog = pruneMapByTimestamp(current.catalog, MAX_CATALOG_ENTRIES, 'syncedAt', 0, now, { allowEffortsOnly: true });
     current.observed = pruneMapByTimestamp(current.observed, MAX_OBSERVED_ENTRIES, 'observedAt', OBSERVED_PERSIST_TTL_MS, now);
     await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
     const temp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
@@ -117,24 +135,58 @@ export async function recordCatalogSync(filePath, provider, models, { status = '
   return updateContextCache(filePath, (draft) => {
     let detectedCount = 0;
     let providerReportedCount = 0;
+    let effortsDetectedCount = 0;
+    let providerEffortsCount = 0;
     if (Array.isArray(models)) {
       for (const item of models) {
         if (!item?.id) continue;
         const cap = Number(item.contextWindowTokens ?? 0);
-        if (!Number.isSafeInteger(cap) || cap < 1) continue;
-        detectedCount++;
-        const source = item.contextSource === 'provider' ? 'provider' : 'reference';
-        if (source === 'provider') providerReportedCount++;
+        const validCap = Number.isSafeInteger(cap) && cap >= 1 ? cap : 0;
+        const incomingEfforts = normalizeEfforts(item.efforts);
+        if (!validCap && !incomingEfforts.length) continue;
+
+        const incomingContextSource = validCap
+          ? (item.contextSource === 'provider' ? 'provider' : 'reference')
+          : 'unknown';
+        const incomingEffortsSource = incomingEfforts.length
+          ? (item.source === 'provider' ? 'provider' : 'reference')
+          : 'manual';
+
+        if (validCap) {
+          detectedCount++;
+          if (incomingContextSource === 'provider') providerReportedCount++;
+        }
+        if (incomingEfforts.length) {
+          effortsDetectedCount++;
+          if (incomingEffortsSource === 'provider') providerEffortsCount++;
+        }
+
         const key = contextEntryKey({ apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, model: item.id });
         const existing = draft.catalog[key];
-        // Never downgrade a provider-reported value to a static reference value.
-        if (existing && existing.source === 'provider' && source !== 'provider') continue;
+        const keepExistingContext = Boolean(
+          existing &&
+          Number.isSafeInteger(existing.contextWindowTokens) && existing.contextWindowTokens >= 1 &&
+          (!validCap || (existing.source === 'provider' && incomingContextSource !== 'provider')),
+        );
+        const finalCap = keepExistingContext ? existing.contextWindowTokens : validCap;
+        const finalContextSource = keepExistingContext ? existing.source : incomingContextSource;
+
+        const existingEfforts = normalizeEfforts(existing?.efforts);
+        const existingEffortsSource = existing?.effortsSource ?? (existingEfforts.length ? 'reference' : 'manual');
+        const keepExistingEfforts = Boolean(
+          existingEfforts.length > 0 &&
+          (!incomingEfforts.length || (existingEffortsSource === 'provider' && incomingEffortsSource !== 'provider')),
+        );
+        const finalEfforts = keepExistingEfforts ? existingEfforts : incomingEfforts;
+        const finalEffortsSource = keepExistingEfforts ? existingEffortsSource : incomingEffortsSource;
+
         draft.catalog[key] = {
           model: item.id,
-          contextWindowTokens: cap,
-          summaryThresholdTokens: summaryThresholdFor(cap),
-          source,
-          efforts: Array.isArray(item.efforts) ? [...item.efforts] : [],
+          contextWindowTokens: finalCap,
+          summaryThresholdTokens: finalCap ? summaryThresholdFor(finalCap) : 0,
+          source: finalContextSource,
+          efforts: finalEfforts,
+          effortsSource: finalEffortsSource,
           syncedAt: now,
         };
       }
@@ -145,6 +197,8 @@ export async function recordCatalogSync(filePath, provider, models, { status = '
       modelCount: Array.isArray(models) ? models.length : 0,
       detectedCount,
       providerReportedCount,
+      effortsDetectedCount,
+      providerEffortsCount,
       error: status === 'error' ? String(error || 'Sync failed').slice(0, 240) : '',
     };
   });
@@ -231,11 +285,7 @@ export function resolveEffectiveContext(candidate = {}, {
   }
 
   // 2. Check cached upstream catalog entry (exact model ID first, then gateway-prefix-stripped ID e.g. cn:kimi-k3.1-pro).
-  const normalizedModel = normalizeModelId(candidate.model);
-  const normalizedKey = normalizedModel && normalizedModel !== String(candidate.model ?? '').trim().toLowerCase()
-    ? contextEntryKey({ ...candidate, model: normalizedModel })
-    : null;
-  const cachedCatalog = cache?.catalog?.[key] ?? (normalizedKey ? cache?.catalog?.[normalizedKey] : undefined);
+  const cachedCatalog = lookupCatalogEntry(cache, candidate);
   const providerCatalog = cachedCatalog && cachedCatalog.source === 'provider' &&
     Number.isSafeInteger(cachedCatalog.contextWindowTokens) && cachedCatalog.contextWindowTokens > 0
     ? cachedCatalog : null;
@@ -306,5 +356,58 @@ export function resolveEffectiveContext(candidate = {}, {
     summaryThresholdTokens: baseThreshold,
     contextSource,
     contextMode: autoFollow ? 'auto' : 'manual',
+  };
+}
+
+/**
+ * Resolve the effective supported reasoning efforts for one profile/candidate.
+ *
+ * Priority:
+ * - effortsMode === 'auto':
+ *     1. Cached upstream API catalog entry (effortsSource === 'provider')
+ *     2. Built-in reference effortLevels(model)
+ *     3. Cached catalog efforts (for legacy caches written before effortsSource)
+ *     4. Configured profile snapshot
+ * - effortsMode === 'manual' (default for legacy profiles with manual efforts):
+ *     Configured profile values.
+ */
+export function resolveEffectiveEfforts(candidate = {}, { cache } = {}) {
+  const configured = normalizeEfforts(candidate.efforts);
+  const autoFollow = candidate.effortsMode === 'auto';
+  if (!autoFollow) {
+    return {
+      efforts: configured,
+      effortsSource: configured.length ? 'manual' : 'unknown',
+      effortsMode: 'manual',
+    };
+  }
+  const cached = lookupCatalogEntry(cache, candidate);
+  const cachedEfforts = normalizeEfforts(cached?.efforts);
+  if (cached && cachedEfforts.length && cached.effortsSource === 'provider') {
+    return {
+      efforts: cachedEfforts,
+      effortsSource: 'provider',
+      effortsMode: 'auto',
+    };
+  }
+  const refEfforts = effortLevels(candidate.model);
+  if (refEfforts.length) {
+    return {
+      efforts: refEfforts,
+      effortsSource: 'reference',
+      effortsMode: 'auto',
+    };
+  }
+  if (cached && cachedEfforts.length) {
+    return {
+      efforts: cachedEfforts,
+      effortsSource: cached.effortsSource ?? (cached.source === 'provider' ? 'provider' : 'reference'),
+      effortsMode: 'auto',
+    };
+  }
+  return {
+    efforts: configured,
+    effortsSource: configured.length ? 'configured' : 'unknown',
+    effortsMode: 'auto',
   };
 }

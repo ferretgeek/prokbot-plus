@@ -1,6 +1,6 @@
 import { catalogContextPolicy, defaultPolicy, effortLevels, parseModelPolicy, resolveModelCapabilities, summaryThresholdFor, validatePolicy, EFFORTS } from '../runtime/model-policy.mjs';
 import { extractProviderContextWindow, extractProviderEfforts, normalizeModelId } from '../runtime/model-specs.mjs';
-import { contextCacheFilePath, contextEntryKey, readContextCache, recordCatalogSync, resolveEffectiveContext } from '../runtime/model-context-cache.mjs';
+import { contextCacheFilePath, contextEntryKey, readContextCache, recordCatalogSync, resolveEffectiveContext, resolveEffectiveEfforts } from '../runtime/model-context-cache.mjs';
 import { createModelRouter } from '../runtime/model-router.mjs';
 import { anthropicEndpoint, anthropicHeaders } from '../runtime/anthropic-messages.mjs';
 import { createModelSession } from '../runtime/model-session.mjs';
@@ -153,7 +153,14 @@ export class Models {
           contextSource: (profile.contextWindowTokens ?? 0) > 0 ? 'manual' : 'unknown',
           contextMode: profile.contextMode ?? ((profile.contextWindowTokens ?? 0) > 0 ? 'manual' : 'auto'),
         };
-      return { ...profile, effectiveContext };
+      const effectiveEfforts = provider
+        ? resolveEffectiveEfforts({ ...profile, apiFormat: provider.apiFormat, baseUrl: provider.baseUrl }, { cache })
+        : {
+          efforts: [...(profile.efforts ?? [])],
+          effortsSource: (profile.efforts?.length ?? 0) > 0 ? 'manual' : 'unknown',
+          effortsMode: profile.effortsMode ?? ((profile.efforts?.length ?? 0) > 0 ? 'manual' : 'auto'),
+        };
+      return { ...profile, effectiveContext, effectiveEfforts };
     });
     const providerSync = {};
     for (const provider of routing.providers ?? []) {
@@ -405,16 +412,16 @@ export class Models {
     return { models };
   }
   async syncAllProviders({ force = false } = {}) {
-    if (this.closed) return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, providers: {} };
+    if (this.closed) return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, effortsDetected: 0, providerEfforts: 0, providers: {} };
     if (this.syncInFlight && !force) return this.syncInFlight;
     const run = (async () => {
       const current = await this.current();
       const providers = (current.routing?.providers ?? []).filter(item => item.baseUrl && item.apiKey);
       if (!providers.length || this.closed) {
-        return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, providers: {} };
+        return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, effortsDetected: 0, providerEfforts: 0, providers: {} };
       }
       const results = {};
-      let ok = 0, failed = 0, modelsDetected = 0, providerReported = 0;
+      let ok = 0, failed = 0, modelsDetected = 0, providerReported = 0, effortsDetected = 0, providerEfforts = 0;
       const queue = [...providers];
       const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
         while (queue.length && !this.closed) {
@@ -423,10 +430,21 @@ export class Models {
             const { models } = await this.catalog({ provider });
             const detected = models.filter(item => item.contextWindowTokens > 0).length;
             const reported = models.filter(item => item.contextSource === 'provider' && item.contextWindowTokens > 0).length;
+            const effortsCount = models.filter(item => item.efforts?.length > 0).length;
+            const reportedEfforts = models.filter(item => item.source === 'provider' && item.efforts?.length > 0).length;
             ok++;
             modelsDetected += detected;
             providerReported += reported;
-            results[provider.id] = { status: 'ok', modelCount: models.length, detectedCount: detected, providerReportedCount: reported };
+            effortsDetected += effortsCount;
+            providerEfforts += reportedEfforts;
+            results[provider.id] = {
+              status: 'ok',
+              modelCount: models.length,
+              detectedCount: detected,
+              providerReportedCount: reported,
+              effortsDetectedCount: effortsCount,
+              providerEffortsCount: reportedEfforts,
+            };
           } catch (error) {
             if (this.closed) return;
             failed++;
@@ -437,7 +455,7 @@ export class Models {
         }
       });
       await Promise.all(workers);
-      return { synced: providers.length, ok, failed, modelsDetected, providerReported, providers: results };
+      return { synced: providers.length, ok, failed, modelsDetected, providerReported, effortsDetected, providerEfforts, providers: results };
     })();
     this.syncInFlight = run.finally(() => {
       if (this.syncInFlight === run) this.syncInFlight = null;
@@ -451,28 +469,28 @@ export class Models {
         const normalizedId = normalizeModelId(id);
         const providerLive = liveByProvider?.get(provider.id);
         const live = providerLive?.get(id) ?? (normalizedId ? providerLive?.get(normalizedId) : undefined);
-        if (live && live.contextWindowTokens > 0) return live.id === id ? live : { ...live, id };
+        if (live && (live.contextWindowTokens > 0 || live.efforts?.length > 0)) return live.id === id ? live : { ...live, id };
         const key = contextEntryKey({ apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, model: id });
         const normalizedKey = normalizedId && normalizedId !== id.toLowerCase()
           ? contextEntryKey({ apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, model: normalizedId })
           : null;
         const cached = cache?.catalog?.[key] ?? (normalizedKey ? cache?.catalog?.[normalizedKey] : undefined);
-        if (cached && cached.source === 'provider' && cached.contextWindowTokens > 0) {
-          const base = resolveModelCapabilities(id, { reportedCapacity: cached.contextWindowTokens, reportedEfforts: cached.efforts?.length ? cached.efforts : undefined });
-          return { ...base, contextSource: 'provider' };
-        }
-        const spec = resolveModelCapabilities(id);
-        if (spec.contextWindowTokens > 0) return spec;
+        const reportedCapacity = cached && cached.source === 'provider' && cached.contextWindowTokens > 0
+          ? cached.contextWindowTokens : undefined;
+        const reportedEfforts = cached && cached.effortsSource === 'provider' && cached.efforts?.length
+          ? cached.efforts : undefined;
+        const base = resolveModelCapabilities(id, { reportedCapacity, reportedEfforts });
+        if (base.contextWindowTokens > 0) return base;
         const observed = cache?.observed?.[key];
         if (observed && Number.isSafeInteger(observed.contextWindowTokens) && observed.contextWindowTokens >= 1_024) {
           return {
-            ...spec,
+            ...base,
             contextWindowTokens: observed.contextWindowTokens,
             summaryThresholdTokens: summaryThresholdFor(observed.contextWindowTokens),
             contextSource: 'observed',
           };
         }
-        return spec;
+        return base;
       }
       return resolveModelCapabilities(id);
     };

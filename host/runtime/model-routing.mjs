@@ -5,6 +5,7 @@ import { EFFORTS, effortLevels } from './model-policy.mjs';
 
 export const API_FORMATS = Object.freeze(['openai', 'openai-responses', 'anthropic']);
 export const CONTEXT_MODES = Object.freeze(['auto', 'manual']);
+export const EFFORTS_MODES = Object.freeze(['auto', 'manual']);
 export const MODEL_ROUTING_ENV = 'GROKBOT_MODEL_ROUTING';
 
 const MAX_PROVIDERS = 32;
@@ -78,6 +79,16 @@ function contextForProfile(value, previous) {
     contextMode = policy.contextWindowTokens > 0 ? 'manual' : 'auto';
   }
   return { ...policy, contextMode };
+}
+
+function effortsModeForProfile(value, efforts, previous) {
+  const hasMode = Object.prototype.hasOwnProperty.call(value, 'effortsMode') && value.effortsMode !== undefined;
+  if (hasMode) {
+    if (!EFFORTS_MODES.includes(value.effortsMode)) fail('Invalid efforts mode');
+    return value.effortsMode;
+  }
+  if (EFFORTS_MODES.includes(previous?.effortsMode)) return previous.effortsMode;
+  return efforts.length > 0 ? 'manual' : 'auto';
 }
 
 function routeEffort(value, profile) {
@@ -188,8 +199,11 @@ export function validateModelRouting(input, { previous } = {}) {
     const providerId = identifier(item.providerId, 'provider ID');
     if (!providersById.has(providerId)) fail(`Unknown provider: ${providerId}`);
     const model = modelId(item.model);
-    const context = contextForProfile(item, previousProfiles.get(id));
-    return { id, name: text(item.name, 'profile name', 120), providerId, model, efforts: levels(item.efforts, model), ...context };
+    const previousProfile = previousProfiles.get(id);
+    const profileEfforts = levels(item.efforts, model);
+    const effortsMode = effortsModeForProfile(item, profileEfforts, previousProfile);
+    const context = contextForProfile(item, previousProfile);
+    return { id, name: text(item.name, 'profile name', 120), providerId, model, efforts: profileEfforts, effortsMode, ...context };
   });
   const profilesById = new Map(profiles.map(item => [item.id, item]));
   const defaultRoute = normalizeRoute(input.defaultRoute, profilesById, 'default route');
@@ -220,6 +234,7 @@ function candidate(profile, provider, route) {
     profileId: profile.id, profileName: profile.name, providerId: provider.id, providerName: provider.name,
     apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, apiKey: provider.apiKey,
     model: profile.model, efforts: [...profile.efforts], effort: route.effort,
+    effortsMode: profile.effortsMode ?? (profile.efforts.length > 0 ? 'manual' : 'auto'),
     contextWindowTokens: profile.contextWindowTokens, summaryThresholdTokens: profile.summaryThresholdTokens,
     contextMode: profile.contextMode ?? (profile.contextWindowTokens > 0 ? 'manual' : 'auto'),
   };

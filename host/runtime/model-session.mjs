@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { ModelRequestError } from './model-common.mjs';
 import { isInputTokenLimitError, parseContextLimitFromError } from './model-errors.mjs';
 import { summaryThresholdFor } from './model-policy.mjs';
-import { contextEntryKey, persistObservedCeiling, readContextCacheSync, resolveEffectiveContext } from './model-context-cache.mjs';
+import { contextEntryKey, persistObservedCeiling, readContextCacheSync, resolveEffectiveContext, resolveEffectiveEfforts } from './model-context-cache.mjs';
 import { chatEndpoint, chatTurn, convertChatMessages, convertChatTools } from './openai-chat.mjs';
 import { responsesEndpoint, responsesTurn } from './openai-responses.mjs';
 import { anthropicEndpoint, anthropicTurn } from './anthropic-messages.mjs';
@@ -29,6 +29,15 @@ function resolveCandidateContext(candidate, observedCeilings, contextCachePath, 
     contextWindowTokens: resolved.contextWindowTokens,
     summaryThresholdTokens: resolved.summaryThresholdTokens,
   };
+}
+
+function resolveCandidateEfforts(candidate, contextCachePath, fallbackEfforts) {
+  if (candidate.effortsMode === 'auto' && contextCachePath) {
+    const cache = readContextCacheSync(contextCachePath);
+    const resolved = resolveEffectiveEfforts(candidate, { cache });
+    if (resolved.efforts.length) return resolved.efforts;
+  }
+  return candidate.efforts ?? fallbackEfforts;
 }
 
 function recordObservedCeiling(candidate, observedLimit, observedCeilings, contextCachePath, now = Date.now()) {
@@ -133,6 +142,7 @@ function requestCandidate(value, defaults) {
     model: value?.model ?? defaults.model,
     effort: value?.effort ?? defaults.effort,
     efforts: value?.efforts ?? defaults.efforts,
+    effortsMode: value?.effortsMode ?? defaults.effortsMode,
     requestOptions: value?.requestOptions ?? defaults.requestOptions,
     contextWindowTokens: value?.contextWindowTokens ?? defaults.contextWindowTokens,
     summaryThresholdTokens: value?.summaryThresholdTokens ?? defaults.summaryThresholdTokens,
@@ -218,7 +228,7 @@ function usageValues(raw = {}, contextWindowTokens = 0) {
 
 export function createModelSession({ baseUrl, apiKey, model, onRequestId, apiFormat = 'openai', policy,
   fetchImpl = globalThis.fetch, headers = {}, requestOptions = {}, contextWindowTokens = 0,
-  summaryThresholdTokens = 0, contextMode, mapError = error => error, onUsage = async () => {}, selectRequest,
+  summaryThresholdTokens = 0, contextMode, effortsMode, mapError = error => error, onUsage = async () => {}, selectRequest,
   onFallback = async () => {}, idleTimeoutMs = 300_000, profileId, providerId, efforts,
   observedCeilings = DEFAULT_OBSERVED_CEILINGS, contextCachePath } = {}) {
   if (typeof model !== 'string' || !model.trim() || model !== model.trim() || model.length > 256 || /[\r\n\0]/.test(model)) {
@@ -241,7 +251,7 @@ export function createModelSession({ baseUrl, apiKey, model, onRequestId, apiFor
   // the tool loop would make the next step invalid when the fallback stripped it.
   let preferredKey;
   const defaults = { baseUrl, apiKey, apiFormat, model, requestOptions, contextWindowTokens,
-    summaryThresholdTokens, contextMode, profileId, providerId, efforts };
+    summaryThresholdTokens, contextMode, effortsMode, profileId, providerId, efforts };
   const effortsFor = id => policy?.models?.find(entry => entry.id === id)?.efforts;
   let resolvedModelId;
   let selectedContext = { contextWindowTokens, summaryThresholdTokens };
@@ -346,7 +356,7 @@ export function createModelSession({ baseUrl, apiKey, model, onRequestId, apiFor
               const iterator = format.turn({ fetchImpl, endpoint: format.endpoint(candidate.baseUrl), apiKey: candidate.apiKey,
                 headers, model: candidate.model, messages, tools,
                 effort: candidate.effort ?? candidate.requestOptions?.reasoning_effort,
-                efforts: candidate.efforts ?? effortsFor(candidate.model), maxTokens: options.maxTokens,
+                efforts: resolveCandidateEfforts(candidate, contextCachePath, effortsFor(candidate.model)), maxTokens: options.maxTokens,
                 requestOptions: candidate.requestOptions, signal: attemptSignal, waitForIO: attemptWaitForIO,
                 state: adaptations.get(adaptationKey), notifyRequest,
                 providerId: candidate.providerId,

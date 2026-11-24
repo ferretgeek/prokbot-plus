@@ -872,4 +872,7 @@ export default {
   "已同步 {0} 个模型（已识别 {1} 个上下文上限）": "Synced {0} models ({1} with detected context limits)",
   "未匹配到上游 API 或内置规格，请在编辑档案中手动填写上下文上限或开启自动跟随。": "No upstream API or built-in specs matched. Enter context limits manually or enable auto-follow.",
   "已自动填充 {0} 个档案的上下文上限，请点击「保存配置」生效": "Auto-filled context limits for {0} profile(s). Click Save to apply.",
+  "同步上游能力": "Sync upstream capabilities",
+  "自动跟随上游思考强度（同步模型或每 6 小时自动更新可选档位）": "Auto-follow upstream reasoning efforts (updates selectable levels on sync or every 6h)",
+  "已同步 {0} 个模型服务（上下文 {1} 个 · 思考强度 {2} 个）": "Synced {0} provider(s) ({1} contexts · {2} reasoning efforts)",
 };

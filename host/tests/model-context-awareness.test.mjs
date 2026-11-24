@@ -29,7 +29,7 @@ import {
 } from '../runtime/model-session.mjs';
 import { createInference } from '../runtime/host-extensions.mjs';
 import { loadModelConfig } from '../runtime/config.mjs';
-import { contextCacheFilePath, readContextCache, recordCatalogSync, resolveEffectiveContext } from '../runtime/model-context-cache.mjs';
+import { contextCacheFilePath, readContextCache, recordCatalogSync, resolveEffectiveContext, resolveEffectiveEfforts } from '../runtime/model-context-cache.mjs';
 import { validateModelRouting } from '../runtime/model-routing.mjs';
 import { ModelRequestError } from '../runtime/model-common.mjs';
 import { Models } from '../server/models.mjs';
@@ -1321,6 +1321,48 @@ test('Review #6, #7, #10: model.js guards dialog close, preserves manual edits &
     assert.equal(intactOut.model, 'deepseek-chat');
     assert.equal(intactOut.contextWindowTokens, 128_000, 'untouched profile must still be backfilled');
     assert.equal(intactOut.summaryThresholdTokens, 96_000);
+
+    // --- Upstream efforts sync in model.js: setConfig hydrates auto efforts ---
+    apiHandler = async (path) => {
+      if (path === '/admin/api/model') {
+        return {
+          version: 1,
+          configured: true,
+          providers: baseConfig.providers,
+          profiles: [
+            {
+              id: 'prof-luna-ui',
+              name: 'Luna UI',
+              providerId: 'prov-1',
+              model: 'gpt-5.6-luna',
+              efforts: ['max'],
+              effortsMode: 'auto',
+              contextWindowTokens: 0,
+              summaryThresholdTokens: 0,
+              contextMode: 'auto',
+              effectiveContext: { contextWindowTokens: 272_000, summaryThresholdTokens: 204_000, contextSource: 'provider', contextMode: 'auto' },
+              effectiveEfforts: { efforts: ['low', 'medium', 'high', 'xhigh', 'max'], effortsSource: 'provider', effortsMode: 'auto' },
+            },
+          ],
+          defaultRoute: { profileId: 'prof-luna-ui', effort: 'max', fallbacks: [] },
+          botRoutes: {},
+        };
+      }
+      return {};
+    };
+    await page.load();
+    let savedAutoPayload;
+    apiHandler = async (path, opts) => {
+      if (path === '/admin/api/model' && opts?.method === 'PUT') {
+        savedAutoPayload = opts.body;
+        return { ...opts.body, configured: true };
+      }
+      return {};
+    };
+    form.onsubmit({ preventDefault() {}, submitter: new FakeElement('button') });
+    await flush();
+    assert.deepEqual(savedAutoPayload.profiles[0].efforts, ['low', 'medium', 'high', 'xhigh', 'max']);
+    assert.equal(savedAutoPayload.profiles[0].effortsMode, 'auto');
   } finally {
     globalThis.document = prevDoc;
     globalThis.Option = prevOption;
@@ -1649,4 +1691,133 @@ test('HTTP endpoint: POST /admin/api/model/sync-contexts syncs upstream catalogs
   assert.equal(payload.profiles[0].effectiveContext.contextWindowTokens, 384_000);
   assert.equal(payload.profiles[0].effectiveContext.summaryThresholdTokens, 288_000);
   assert.equal(payload.profiles[0].effectiveContext.contextSource, 'provider');
+});
+
+test('Upstream reasoning effort sync: effortsMode, effort-only catalog caching, region-prefix matching, publicConfig effectiveEfforts, and runtime session sync', async t => {
+  const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-efforts-sync-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  const models = new Models(dir, {
+    fetchImpl: async (url) => {
+      const href = String(url);
+      if (href.includes('client_version=')) {
+        return new Response(JSON.stringify({
+          models: [
+            {
+              slug: 'gpt-5.6-luna',
+              context_window: 272_000,
+              supported_reasoning_levels: [
+                { effort: 'low' }, { effort: 'medium' }, { effort: 'high' }, { effort: 'xhigh' }, { effort: 'max' },
+              ],
+            },
+            {
+              slug: 'kimi-k3.1-pro',
+              context_window: 272_000,
+              supported_reasoning_levels: [{ effort: 'none' }],
+            },
+            {
+              slug: 'effort-only-custom',
+              supported_reasoning_efforts: ['low', 'high'],
+            },
+          ],
+        }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      return new Response(JSON.stringify({
+        data: [
+          { id: 'gpt-5.6-luna' },
+          { id: 'kimi-k3.1-pro' },
+          { id: 'effort-only-custom' },
+        ],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    },
+  });
+  t.after(() => models.close());
+
+  const routing = validateModelRouting({
+    version: 1,
+    providers: [{ id: 'p-sub', name: 'Sub2API', apiFormat: 'openai-responses', baseUrl: 'https://sub2api.example/v1', apiKey: 'test-key' }],
+    profiles: [
+      { id: 'prof-luna', name: 'Luna', providerId: 'p-sub', model: 'gpt-5.6-luna', efforts: ['max'], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+      { id: 'prof-kimi', name: 'Kimi CN', providerId: 'p-sub', model: 'cn:kimi-k3.1-pro', efforts: ['high'], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+      { id: 'prof-manual', name: 'Manual Lock', providerId: 'p-sub', model: 'gpt-5.6-luna', efforts: ['max'], contextWindowTokens: 128_000, summaryThresholdTokens: 96_000 },
+      { id: 'prof-effort-only', name: 'Effort Only', providerId: 'p-sub', model: 'effort-only-custom', efforts: [], contextWindowTokens: 0, summaryThresholdTokens: 0 },
+    ],
+    defaultRoute: { profileId: 'prof-luna', effort: 'max', fallbacks: [] },
+    botRoutes: {},
+  });
+  assert.equal(routing.profiles.find(p => p.id === 'prof-luna').effortsMode, 'auto');
+  assert.equal(routing.profiles.find(p => p.id === 'prof-manual').effortsMode, 'manual');
+  assert.equal(routing.profiles.find(p => p.id === 'prof-effort-only').effortsMode, 'auto');
+
+  await models.save({ ...routing, migrateLegacyRouting: true });
+  const summary = await models.syncAllProviders({ force: true });
+  assert.equal(summary.ok, 1);
+  assert.equal(summary.modelsDetected, 2);
+  assert.equal(summary.effortsDetected, 3);
+  assert.equal(summary.providerEfforts, 3);
+
+  const pub = await models.publicConfig();
+  const byId = new Map(pub.profiles.map(p => [p.id, p]));
+  assert.deepEqual(byId.get('prof-luna').effectiveEfforts, {
+    efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+    effortsSource: 'provider',
+    effortsMode: 'auto',
+  });
+  assert.deepEqual(byId.get('prof-kimi').effectiveEfforts, {
+    efforts: ['none'],
+    effortsSource: 'provider',
+    effortsMode: 'auto',
+  });
+  assert.deepEqual(byId.get('prof-manual').effectiveEfforts, {
+    efforts: ['max'],
+    effortsSource: 'manual',
+    effortsMode: 'manual',
+  });
+  assert.deepEqual(byId.get('prof-effort-only').effectiveEfforts, {
+    efforts: ['low', 'high'],
+    effortsSource: 'provider',
+    effortsMode: 'auto',
+  });
+
+  // Resolve effort-only model from cache without losing provider source
+  const resolvedOnly = await models.resolve({ model: 'effort-only-custom', providerId: 'p-sub' });
+  assert.deepEqual(resolvedOnly.model.efforts, ['low', 'high']);
+  assert.equal(resolvedOnly.model.source, 'provider');
+  assert.equal(resolvedOnly.model.contextWindowTokens, 0);
+
+  // Runtime openai-responses session picks up live efforts=['none'] for cn:kimi-k3.1-pro and omits reasoning block!
+  const cachePath = contextCacheFilePath(dir);
+  let sentBody;
+  const session = createModelSession({
+    baseUrl: 'https://sub2api.example/v1',
+    apiKey: 'test-key',
+    apiFormat: 'openai-responses',
+    model: 'cn:kimi-k3.1-pro',
+    efforts: ['high'],
+    effortsMode: 'auto',
+    contextMode: 'auto',
+    contextCachePath: cachePath,
+    fetchImpl: async (_url, init) => {
+      sentBody = JSON.parse(init.body);
+      const sse = [
+        `event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, delta: 'OK' })}\n\n`,
+        `event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { id: 'resp_1', model: 'cn:kimi-k3.1-pro', status: 'completed', output: [{ type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'OK' }] }], usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } })}\n\n`,
+      ].join('');
+      return new Response(sse, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    },
+  });
+  const stream = session.getExecutor([{ role: 'user', content: 'hi' }]).stream({}, 'turn-efforts', []);
+  for await (const _ of stream.fullStream) {}
+  assert.equal(sentBody.reasoning, undefined, 'auto-synced efforts=["none"] must omit reasoning block in openai-responses');
+
+  // Direct resolveEffectiveEfforts respects manual mode and region-prefix normalization
+  const cache = await readContextCache(cachePath);
+  assert.deepEqual(
+    resolveEffectiveEfforts({ apiFormat: 'openai-responses', baseUrl: 'https://sub2api.example/v1', model: 'cn:kimi-k3.1-pro', efforts: ['high'], effortsMode: 'auto' }, { cache }),
+    { efforts: ['none'], effortsSource: 'provider', effortsMode: 'auto' },
+  );
+  assert.deepEqual(
+    resolveEffectiveEfforts({ apiFormat: 'openai-responses', baseUrl: 'https://sub2api.example/v1', model: 'cn:kimi-k3.1-pro', efforts: ['high'], effortsMode: 'manual' }, { cache }),
+    { efforts: ['high'], effortsSource: 'manual', effortsMode: 'manual' },
+  );
 });

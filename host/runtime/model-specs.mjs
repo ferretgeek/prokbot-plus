@@ -270,7 +270,10 @@ export function extractProviderEfforts(item) {
     item.supported_reasoning_efforts ??
     item.supported_efforts ??
     item.supported_reasoning_levels ??
+    item.reasoning_efforts ??
+    item.reasoning?.efforts ??
     item.reasoning_effort?.values ??
+    item.capabilities?.supported_reasoning_efforts ??
     item.capabilities?.reasoning_efforts;
   if (!Array.isArray(raw)) return undefined;
   const values = raw
