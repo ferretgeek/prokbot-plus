@@ -3,7 +3,7 @@ import { ModelRequestError } from './model-session.mjs';
 const CONFIG_CODES = new Set(['invalid_api_key', 'authentication_error']);
 const TERMINAL_CODES = new Set([
   'invalid_request_error', 'model_not_found', 'permission_denied', 'insufficient_quota',
-  'content_filter', 'length', 'repeated_user_delivery',
+  'content_filter', 'repeated_user_delivery',
 ]);
 const TERMINAL_STATUSES = new Set([400, 402, 403, 404, 405, 413, 415, 422]);
 const RATE_LIMIT_CODES = new Set(['rate_limit_error', 'rate_limit_exceeded']);
@@ -11,6 +11,9 @@ const RATE_LIMIT_CODES = new Set(['rate_limit_error', 'rate_limit_exceeded']);
 /** Bridge local provider failures to the exact error constructors used by this Runner. */
 export function createHarnessModelErrorMapper(library) {
   const { ConnectError, Code, ActionRequiredError, NonRetriableError, InputTokenLimitError } = library;
+  const OutputTokensLimitExceededError =
+    library.OutputTokensLimitExceededError ??
+    library.getEngineRecoveryBindings?.()?.OutputTokensLimitExceededError;
   if (![ConnectError, ActionRequiredError, NonRetriableError].every(value => typeof value === 'function')
       || ![Code?.ResourceExhausted, Code?.Unavailable, Code?.Internal].every(Number.isInteger)) {
     throw new TypeError('The original Harness error constructors must be exported by the loaded library');
@@ -30,6 +33,14 @@ export function createHarnessModelErrorMapper(library) {
       ([400, 413, 422].includes(status) && /(?:maximum context length|input token limit|prompt (?:is )?too long|context window.*exceed)/i.test(error.message));
     if (inputLimit && typeof InputTokenLimitError === 'function') {
       const mapped = new InputTokenLimitError(error.message); mapped.cause = error; return mapped;
+    }
+    // Map output-token truncation to the Harness OutputTokensLimitExceededError so
+    // runWithMaxTokensRetry can inject its break-work-into-smaller-pieces reminder and continue.
+    if (code === 'length') {
+      if (typeof OutputTokensLimitExceededError === 'function') {
+        const mapped = new OutputTokensLimitExceededError(error.message); mapped.cause = error; return mapped;
+      }
+      return new NonRetriableError(error.message, options);
     }
     if (status === 401 || CONFIG_CODES.has(code)) {
       // This is a local provider API key, so official-account login is not the remedy.

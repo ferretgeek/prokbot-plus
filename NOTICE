@@ -249,6 +249,21 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-24)
       editor dialog title and Sharing skill picker.
     - Contributed by @jun9100 (GitHub pull request #17).
 
+20. Host turn continuity and working-indicator reliability.
+    - host/runtime/turn-continuity.mjs (new), recovered-host-flow.mjs,
+      recovered-engine.mjs, recovered-harness.mjs, recovered-host-execution.mjs
+      and model-errors.mjs: detect substantive unreported tool work after
+      multi-SendToUser, tool-first, parallel or plain-text/reasoning endings
+      (excluding bookkeeping tools such as update_state and TodoWrite) with
+      bounded closing continuations (up to 2); enable in-loop
+      empty/missing-SendToUser retries for normal user turns only (excluding
+      subagents, isSilenceAllowed runs and group-member turns) capped at 2 per
+      turn; map output length truncation to OutputTokensLimitExceededError for
+      up to 2 automatic continuations per step while preserving the truncation
+      error; and keep live session activity populated at turn start and across
+      mid-turn SendToUser updates so clients consistently display working state.
+    - Contributed by @jun9100 (GitHub pull request #18).
+
 Third-party components
 ----------------------
 

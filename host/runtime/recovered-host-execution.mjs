@@ -1,5 +1,10 @@
 import { combineRecoveryPlans, constructRecoveredModules } from './recovered-modules.mjs';
 import { withLocalLibraryRunner } from './host-library-files.mjs';
+import {
+  wrapResolveNamedActivityHold,
+  wrapRunLifecycle,
+  wrapTurnRuntime,
+} from './turn-continuity.mjs';
 
 export async function installRecoveredHostExecutionAndSession(library, directory) {
   const plans = [library.hostExecutionRecoveryPlan, library.hostSessionRecoveryPlan];
@@ -8,9 +13,32 @@ export async function installRecoveredHostExecutionAndSession(library, directory
     if (Object.hasOwn(original, name) && original[name] !== value) throw new Error(`Inconsistent recovery identity: ${name}`);
     original[name] = value;
   }
+  if (typeof original.SandAgentRunner !== 'function') {
+    throw new TypeError('Missing Host execution dependency: SandAgentRunner');
+  }
+  if (typeof original.resolveNamedActivityHold !== 'function') {
+    throw new TypeError('Missing Host execution dependency: resolveNamedActivityHold');
+  }
+  if (!original.INITIAL_NAMED_ACTIVITY_HOLD_STATE || typeof original.INITIAL_NAMED_ACTIVITY_HOLD_STATE !== 'object') {
+    throw new TypeError('Missing Host execution dependency: INITIAL_NAMED_ACTIVITY_HOLD_STATE');
+  }
+  if (typeof original.setTurnTraceAttributes !== 'function') {
+    throw new TypeError('Missing Host execution dependency: setTurnTraceAttributes');
+  }
   const plan = combineRecoveryPlans(plans);
   original.SandAgentRunner = withLocalLibraryRunner(original.SandAgentRunner, library);
-  const constructed = await constructRecoveredModules(plan, original, directory, 'Host execution/session');
+  original.resolveNamedActivityHold = wrapResolveNamedActivityHold(
+    original.resolveNamedActivityHold,
+    original.INITIAL_NAMED_ACTIVITY_HOLD_STATE,
+  );
+  const constructed = await constructRecoveredModules(plan, original, directory, 'Host execution/session', {
+    overrides: {
+      RunLifecycle: recovered => wrapRunLifecycle(recovered),
+      TurnRuntime: recovered => wrapTurnRuntime(recovered, {
+        setTurnTraceAttributes: original.setTurnTraceAttributes,
+      }),
+    },
+  });
   // Both groups are validated and constructed before changing either bundle group.
   const sessionBindings = library.installRecoveredHostSession(constructed.bindings);
   const executionBindings = library.installRecoveredHostExecution(constructed.bindings);

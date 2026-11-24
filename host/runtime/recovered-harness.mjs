@@ -1,7 +1,20 @@
 import { constructRecoveredModules } from './recovered-modules.mjs';
+import { wrapAnysphereAgent, wrapCreateTurnAgentComposition } from './turn-continuity.mjs';
 
 export function constructRecoveredHarness(library, directory) {
-  return constructRecoveredModules(library.harnessRecoveryPlan, library.getHarnessRecoveryBindings(), directory, 'Harness');
+  const original = library.getHarnessRecoveryBindings();
+  if (typeof original.AnysphereAgent !== 'function') {
+    throw new TypeError('Missing Harness dependency: AnysphereAgent');
+  }
+  const bindings = {
+    ...original,
+    AnysphereAgent: wrapAnysphereAgent(original.AnysphereAgent),
+  };
+  return constructRecoveredModules(library.harnessRecoveryPlan, bindings, directory, 'Harness', {
+    overrides: {
+      createTurnAgentComposition: recovered => wrapCreateTurnAgentComposition(recovered),
+    },
+  });
 }
 
 export async function installRecoveredHarness(library, directory) {
