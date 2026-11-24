@@ -1,6 +1,9 @@
-import { t, html } from './i18n.js';
+import { t, html, locale, localizedText } from './i18n.js';
 import { $, item, toggle, menu, empty, button, confirmAction, dialog, filePicker } from './ui.js';
 import { icon } from './icons.js';
+
+const skillName = entry => localizedText(entry?.localizedName, entry?.name ?? '');
+const skillDescription = entry => localizedText(entry?.localizedDescription, entry?.description ?? '');
 
 export function createSkillsEditor({ api, toast, act }) {
   const panel = $('[data-panel=skills]');
@@ -29,7 +32,7 @@ export function createSkillsEditor({ api, toast, act }) {
   function fill(entry) {
     selected = entry; const content = entry?.content;
     form.reset(); form.elements.id.readOnly = Boolean(entry);
-    $('#skill-editor-title').textContent = entry ? entry.name : t('添加技能');
+    $('#skill-editor-title').textContent = entry ? skillName(entry) : t('添加技能');
     for (const key of ['id', 'name', 'description']) form.elements[key].value = entry?.[key] ?? '';
     form.elements.markdown.value = content ? markdown(content) : '';
     form.elements.requiresTools.value = content?.requiresTools.join(', ') ?? '';
@@ -37,7 +40,7 @@ export function createSkillsEditor({ api, toast, act }) {
     $('#skill-resources').textContent = resources.length ? t('{0} 个附带文件', resources.length) : '';
     $('#skill-history').hidden = !entry; $('#skill-history').open = false;
     const selector = form.elements.version; selector.replaceChildren();
-    for (const version of [...entry?.versions ?? []].reverse()) selector.add(new Option(`${new Date(version.at).toLocaleString()} · ${version.id.slice(0, 8)}`, version.id));
+    for (const version of [...entry?.versions ?? []].reverse()) selector.add(new Option(`${new Date(version.at).toLocaleString(locale)} · ${version.id.slice(0, 8)}`, version.id));
     panel.querySelector('[data-restore=previous]').disabled = !entry?.previous;
     $('#skill-after').textContent = content ? markdown(content) : '';
     $('#skill-before').textContent = $('#skill-after').textContent;
@@ -47,18 +50,18 @@ export function createSkillsEditor({ api, toast, act }) {
     list.replaceChildren();
     if (!entries.length) list.append(empty(t('还没有技能'), t('添加 SKILL.md，Bot 会在需要时读取。')));
     for (const entry of entries) {
-      const managed = entry.source === 'host';
-      const enabled = toggle(entry.enabled, `${entry.name} · ${t('启用')}`); enabled.disabled = !managed;
+      const managed = entry.source === 'host', title = skillName(entry), description = skillDescription(entry);
+      const enabled = toggle(entry.enabled, `${title} · ${t('启用')}`); enabled.disabled = !managed;
       enabled.onchange = () => act(enabled, async () => {
         try { await api(`/admin/api/skills/${entry.id}`, { method: 'PATCH', body: { enabled: enabled.checked } }); } finally { await load(); }
       });
       const edit = button(t('编辑'), { size: 'sm' }); edit.disabled = !managed;
       edit.onclick = () => act(edit, async () => { fill(await api(`/admin/api/skills/${entry.id}`)); editor.showModal(); });
       const more = menu(t('更多操作'), [{ label: t('删除'), danger: true, disabled: !managed, run: trigger => act(trigger, async () => {
-        if (!await confirmAction({ title: t('删除“{0}”？', entry.name), message: t('Bot 将无法再使用此技能。'), action: t('删除') })) return;
+        if (!await confirmAction({ title: t('删除“{0}”？', title), message: t('Bot 将无法再使用此技能。'), action: t('删除') })) return;
         await api(`/admin/api/skills/${entry.id}`, { method: 'DELETE' }); await load();
       }) }]);
-      list.append(item({ icon: 'book', title: entry.name, description: entry.description,
+      list.append(item({ icon: 'book', title, description,
         meta: [`${entry.source.startsWith('plugin:') ? t('应用附带') : entry.source === 'host' ? 'Host' : entry.source} · ${entry.current.slice(0, 8)}`], actions: [enabled, edit, more] }));
     }
   }

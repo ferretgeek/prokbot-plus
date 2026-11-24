@@ -18,7 +18,7 @@ export class Sharing {
   }
   async load() {
     await this.store.load();
-    if (this.skills && !this.skills.list().some(item => item.id === 'export-bot-template')) await this.skills.publish(localExportSkill);
+    if (this.skills) await this.skills.seed(localExportSkill);
     return this;
   }
   hostName() { return this.profile?.current().hostName ?? 'Host'; }
@@ -150,6 +150,9 @@ export class Sharing {
 
 export const localExportSkill = {
   id: 'export-bot-template', name: 'Export Bot template',
-  description: 'Prepare a reusable Bot recipe for review and publishing to this Host.', requiresTools: [],
+  description: 'Prepare a reusable Bot recipe for review and publishing to this Host.',
+  localizedName: { en: 'Export Bot template', 'zh-CN': '导出 Bot 模板' },
+  localizedDescription: { en: 'Prepare a reusable Bot recipe for review and publishing to this Host.', 'zh-CN': '准备可复用的 Bot 模板，供审核并发布到此 Host。' },
+  requiresTools: [],
   files: [{ path: 'SKILL.md', encoding: 'utf8', content: `# Export Bot template\n\nUse create_bot_share_json to stage a reusable Bot recipe on this Host when the user asks to share a Bot. The original review card lets the user publish the draft. Use visibility team; this means the current self-hosted workspace.\n\nInclude only the reusable profile, selected skill prose, paused routine descriptions and installed plugin references. Exclude credentials, private keys, cookies, chat transcripts, databases, personal identifiers and configuration values. Never include a complete workspace or read historical chats to assemble a package. Default memory to an empty array. If the user asks to review specific memories, include only those candidate facts; exporting memories still requires their explicit selection in the Host sharing review.\n\nPublished versions are downloaded as ZIP packages from the Host Sharing page. Importing creates a new Bot identity and keeps routines paused. Plugins are dependency metadata, not credentials or installed sessions. Do not claim that a draft is published until the user confirms the original review card.\n` }],
 };

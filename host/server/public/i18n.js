@@ -7,6 +7,10 @@ export function t(source, ...values) {
   const translated = locale === 'en' ? english[source] ?? english[normalized] ?? source : source;
   return translated.replace(/\{(\d+)\}/g, (match, index) => values[index] ?? match);
 }
+export function localizedText(value, fallback = '') {
+  if (typeof value === 'string') return value || fallback;
+  return value?.[locale] || value?.en || fallback || value?.['zh-CN'] || '';
+}
 // Translate only static UI fragments at creation; never observe user-supplied content.
 export function localize(root) {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
