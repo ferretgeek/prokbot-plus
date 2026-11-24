@@ -8,7 +8,7 @@
 
 @interface GBVoiceProtocol : NSURLProtocol
 @property(nonatomic,strong) NSURLSessionDataTask *task;
-@property(nonatomic,assign) BOOL cancelled;
+@property(atomic,assign) BOOL cancelled;
 @end
 @implementation GBVoiceProtocol
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
@@ -44,8 +44,11 @@
   if (![agentId isKindOfClass:NSString.class] || !agentId.length || agentId.length > 256) {
     [self fail:GBL(@"请选择 Bot。", @"Choose a Bot.") code:400]; return;
   }
-  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:
-    [serverURL stringByAppendingString:@"/local/voice/session"]]];
+  NSURL *targetURL = [NSURL URLWithString:[serverURL stringByAppendingString:@"/local/voice/session"]];
+  if (!targetURL) {
+    [self fail:GBL(@"无法连接语音服务。", @"Could not connect to the voice service.") code:400]; return;
+  }
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:targetURL];
   request.HTTPMethod = @"POST"; request.timeoutInterval = 30;
   request.allHTTPHeaderFields = @{@"Content-Type":@"application/json", @"Accept":@"application/json",
     @"Authorization":[@"Bearer " stringByAppendingString:token]};
@@ -55,6 +58,10 @@
   self.task = [GBHTTPSession() dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
     if (self.cancelled) return;
     if (error) { [self.client URLProtocol:self didFailWithError:error]; return; }
+    if (![response isKindOfClass:NSHTTPURLResponse.class]) {
+      [self.client URLProtocol:self didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorBadServerResponse userInfo:nil]];
+      return;
+    }
     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
     if (http.statusCode >= 200 && http.statusCode < 300) {
       id credential = data.length && data.length <= 16384 ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;

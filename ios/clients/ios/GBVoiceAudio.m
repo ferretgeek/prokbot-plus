@@ -9,15 +9,16 @@
 
 #if !defined(GROKBOT_VOICE_AEC3)
 BOOL GBVoiceAudioAvailable(void) { return NO; }
+void GBVoiceAudioObserveSocket(id socket) { (void)socket; }
 #else
 // The original module retains its microphone tap, player, resampler and UI.
 // AEC3 uses the same engine's actual output to remove residual speaker echo.
 static BOOL GBVoiceAudioInstalled;
 static BOOL (*GBOriginalEngineStart)(AVAudioEngine *, SEL, NSError **);
 static void (*GBOriginalTap)(AVAudioNode *, SEL, AVAudioNodeBus, AVAudioFrameCount, AVAudioFormat *, AVAudioNodeTapBlock);
+static NSString *const GBVoiceAudioLock = @"GrokBot.VoiceAudio";
 static __weak AVAudioEngine *GBCallEngine;
 static __weak id GBCallSocket;
-static void (*GBOriginalSocketOpen)(id, SEL);
 static const void *GBEchoKey = &GBEchoKey;
 @interface GBVoiceAudioContext : NSObject { @public atomic_bool failureQueued; }
 @property(atomic,strong) GBVoiceEcho *echo;
@@ -61,23 +62,31 @@ static BOOL GBIsVoiceSession(void) {
   return [AVAudioSession.sharedInstance.mode isEqual:AVAudioSessionModeVoiceChat];
 }
 static GBVoiceAudioContext *GBContextForEngine(AVAudioEngine *engine) {
+  if (!engine) return nil;
   GBVoiceAudioContext *context = objc_getAssociatedObject(engine, GBEchoKey);
-  if (!context) {
-    context = [GBVoiceAudioContext new];
-    objc_setAssociatedObject(engine, GBEchoKey, context, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  if (context) return context;
+  @synchronized (engine) {
+    context = objc_getAssociatedObject(engine, GBEchoKey);
+    if (!context) {
+      context = [GBVoiceAudioContext new];
+      objc_setAssociatedObject(engine, GBEchoKey, context, OBJC_ASSOCIATION_RETAIN);
+    }
   }
   return context;
 }
-static void GBOpenVoiceSocket(id socket, SEL selector) {
+void GBVoiceAudioObserveSocket(id socket) {
+  if (!socket) return;
   NSURL *url = ((id (*)(id, SEL))objc_msgSend)(socket, @selector(url));
-  if ([url.path isEqualToString:@"/local/voice/realtime"]) GBCallSocket = socket;
-  GBOriginalSocketOpen(socket, selector);
+  if ([url.path isEqualToString:@"/local/voice/realtime"]) {
+    @synchronized (GBVoiceAudioLock) { GBCallSocket = socket; }
+  }
 }
 static void GBFailVoiceAudio(AVAudioEngine *engine, GBVoiceAudioContext *context) {
   if (atomic_exchange(&context->failureQueued, true)) return;
   // Audio taps must not stop their own engine. The original realtime socket's
   // close event already ends the call and updates the original React UI.
-  id socket = GBCallSocket;
+  id socket = nil;
+  @synchronized (GBVoiceAudioLock) { socket = GBCallSocket; }
   dispatch_async(dispatch_get_main_queue(), ^{
     [engine stop];
     if ([socket respondsToSelector:@selector(closeWithCode:reason:)]) {
@@ -100,7 +109,7 @@ static BOOL GBConfigureVoiceEngine(AVAudioEngine *engine) {
       ^(AVAudioPCMBuffer *buffer, AVAudioTime *time) { [context.echo render:buffer atTime:time]; });
     context.referenceNode = mixer;
   }
-  GBCallEngine = engine;
+  @synchronized (GBVoiceAudioLock) { GBCallEngine = engine; }
   return YES;
 }
 static BOOL GBStartVoiceEngine(AVAudioEngine *engine, SEL selector, NSError **error) {
@@ -127,7 +136,7 @@ static BOOL GBStartVoiceEngine(AVAudioEngine *engine, SEL selector, NSError **er
 }
 static void GBInstallInputTap(AVAudioNode *node, SEL selector, AVAudioNodeBus bus,
     AVAudioFrameCount size, AVAudioFormat *format, AVAudioNodeTapBlock block) {
-  if (![node isKindOfClass:AVAudioInputNode.class] || !GBIsVoiceSession()) {
+  if (![node isKindOfClass:AVAudioInputNode.class] || !GBIsVoiceSession() || !node.engine) {
     GBOriginalTap(node, selector, bus, size, format, block); return;
   }
   GBVoiceAudioContext *context = GBContextForEngine(node.engine);
@@ -148,9 +157,6 @@ __attribute__((constructor)) static void GBInstallVoiceAudio(void) {
   if (!start || !tap) return;
   GBOriginalEngineStart = (void *)method_setImplementation(start, (IMP)GBStartVoiceEngine);
   GBOriginalTap = (void *)method_setImplementation(tap, (IMP)GBInstallInputTap);
-  Class socketClass = NSClassFromString(@"SRWebSocket");
-  Method open = class_getInstanceMethod(socketClass, @selector(open));
-  if (open) GBOriginalSocketOpen = (void *)method_setImplementation(open, (IMP)GBOpenVoiceSocket);
   GBVoiceAudioInstalled = YES;
   [NSNotificationCenter.defaultCenter addObserverForName:AVAudioEngineConfigurationChangeNotification
     object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) {
@@ -163,10 +169,14 @@ __attribute__((constructor)) static void GBInstallVoiceAudio(void) {
     }];
   [NSNotificationCenter.defaultCenter addObserverForName:AVAudioSessionRouteChangeNotification
     object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *notification) {
-      AVAudioEngine *engine = GBCallEngine;
+      AVAudioEngine *engine = nil;
+      @synchronized (GBVoiceAudioLock) { engine = GBCallEngine; }
       // A new speaker/microphone route changes the acoustic path even if its
       // sample rate is unchanged. Rebuild the filter and timestamp ring.
-      if (engine) GBContextForEngine(engine).echo = nil;
+      if (engine) {
+        GBVoiceAudioContext *context = objc_getAssociatedObject(engine, GBEchoKey);
+        context.echo = nil;
+      }
     }];
 }
 

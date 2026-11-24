@@ -28,19 +28,29 @@
   [self dismissViewControllerAnimated:YES completion:nil];
 }
 - (void)reload {
-  NSMutableURLRequest *request = [NSMutableURLRequest
-      requestWithURL:[NSURL URLWithString:[GBConnection.shared.serverURL
-                                              stringByAppendingString:@"/local/computers"]]];
+  NSString *base = GBConnection.shared.serverURL;
+  NSString *token = GBConnection.shared.deviceToken;
+  NSURL *url = base.length ? [NSURL URLWithString:[base stringByAppendingString:@"/local/computers"]] : nil;
+  if (!url || !token.length) {
+    [self.refreshControl endRefreshing];
+    self.state = GBL(@"请先连接 Host。", @"Connect to Host first.");
+    self.computers = @[];
+    [self.tableView reloadData];
+    return;
+  }
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
   request.timeoutInterval = 20;
-  [request setValue:[@"Bearer " stringByAppendingString:GBConnection.shared.deviceToken ?: @""]
+  [request setValue:[@"Bearer " stringByAppendingString:token]
       forHTTPHeaderField:@"Authorization"];
   [[GBHTTPSession()
       dataTaskWithRequest:request
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
           id value = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+          NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class]
+              ? ((NSHTTPURLResponse *)response).statusCode : 0;
           dispatch_async(dispatch_get_main_queue(), ^{
             [self.refreshControl endRefreshing];
-            if (error || ((NSHTTPURLResponse *)response).statusCode != 200 ||
+            if (error || status != 200 ||
                 ![value isKindOfClass:NSDictionary.class] ||
                 ![value[@"computers"] isKindOfClass:NSArray.class]) {
               self.state = GBL(@"加载失败，下拉重试。", @"Could not load. Pull to retry.");

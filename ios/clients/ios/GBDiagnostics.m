@@ -9,23 +9,81 @@
 #import <dlfcn.h>
 #import <sys/sysctl.h>
 #import <objc/runtime.h>
+#import <stdatomic.h>
 static NSDictionary *GBLoadedBundle;
-@interface GBTaskTiming : NSObject
+static atomic_bool GBDiagnosticsActive;
+static void *GBTaskTimingContext = &GBTaskTimingContext;
+static BOOL GBValidateCaptureEnv(void) {
+  static BOOL enabled;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ enabled = getenv("GROKBOT_VALIDATE_CAPTURE") != NULL; });
+  return enabled;
+}
+static NSURL *GBValidationDirectory(void) {
+  return [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject
+      URLByAppendingPathComponent:@"HostValidation" isDirectory:YES];
+}
+BOOL GBDiagnosticsEnabled(void) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    BOOL active = GBValidateCaptureEnv();
+    if (!active) {
+      NSURL *directory = GBValidationDirectory();
+      active = directory != nil &&
+          [NSFileManager.defaultManager fileExistsAtPath:
+            [directory URLByAppendingPathComponent:@"enable-notification-diagnostics"].path];
+    }
+    atomic_store_explicit(&GBDiagnosticsActive, active, memory_order_relaxed);
+    if (!GBValidateCaptureEnv()) {
+      [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                      object:nil
+                                                       queue:nil
+                                                  usingBlock:^(NSNotification *n) {
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+          NSURL *dir = GBValidationDirectory();
+          BOOL enabled = dir != nil &&
+              [NSFileManager.defaultManager fileExistsAtPath:
+                [dir URLByAppendingPathComponent:@"enable-notification-diagnostics"].path];
+          atomic_store_explicit(&GBDiagnosticsActive, enabled, memory_order_relaxed);
+        });
+      }];
+    }
+  });
+  return atomic_load_explicit(&GBDiagnosticsActive, memory_order_relaxed);
+}
+@interface GBTaskTiming : NSObject {
+  atomic_bool _removed;
+}
+- (BOOL)claimRemoval;
 @end
 @implementation GBTaskTiming
+- (BOOL)claimRemoval {
+  return !atomic_exchange(&_removed, true);
+}
 - (void)observeValueForKeyPath:(NSString *)path ofObject:(id)object change:(NSDictionary *)change context:(void *)context {
+  if (context != GBTaskTimingContext) {
+    [super observeValueForKeyPath:path ofObject:object change:change context:context];
+    return;
+  }
   NSURLSessionTask *task = object;
   if (task.state != NSURLSessionTaskStateCompleted) return;
-  GBDiagnosticsEvent(@"network.taskComplete", @{@"path":task.originalRequest.URL.path ?: @"", @"status":@(((NSHTTPURLResponse *)task.response).statusCode), @"error":@(task.error.code)});
-  [task removeObserver:self forKeyPath:@"state"];
-  objc_setAssociatedObject(task, @selector(observeValueForKeyPath:ofObject:change:context:), nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  if (![self claimRemoval]) return;
+  NSInteger status = [task.response isKindOfClass:NSHTTPURLResponse.class]
+      ? ((NSHTTPURLResponse *)task.response).statusCode : 0;
+  GBDiagnosticsEvent(@"network.taskComplete", @{@"path":task.originalRequest.URL.path ?: @"", @"status":@(status), @"error":@(task.error.code)});
+  [task removeObserver:self forKeyPath:@"state" context:GBTaskTimingContext];
+  objc_setAssociatedObject(task, GBTaskTimingContext, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
 @end
 void GBDiagnosticsObserveTask(NSURLSessionTask *task) {
-  if (!getenv("GROKBOT_VALIDATE_CAPTURE")) return;
+  if (!GBValidateCaptureEnv() || !task || task.state == NSURLSessionTaskStateCompleted) return;
   GBTaskTiming *observer = [GBTaskTiming new];
-  objc_setAssociatedObject(task, @selector(observeValueForKeyPath:ofObject:change:context:), observer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  [task addObserver:observer forKeyPath:@"state" options:NSKeyValueObservingOptionNew context:nil];
+  objc_setAssociatedObject(task, GBTaskTimingContext, observer, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  [task addObserver:observer forKeyPath:@"state" options:NSKeyValueObservingOptionNew context:GBTaskTimingContext];
+  if (task.state == NSURLSessionTaskStateCompleted && [observer claimRemoval]) {
+    [task removeObserver:observer forKeyPath:@"state" context:GBTaskTimingContext];
+    objc_setAssociatedObject(task, GBTaskTimingContext, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
 }
 static IMP GBOriginalNetworkComplete, GBOriginalSplashReady;
 typedef void (^GBRCTFatalHandler)(NSError *);
@@ -82,7 +140,9 @@ static void GBSplashReady(id self, SEL selector) {
   ((void (*)(id,SEL))GBOriginalSplashReady)(self,selector);
 }
 static void GBNetworkComplete(id self, SEL selector, NSURLSession *session, NSURLSessionTask *task, NSError *error) {
-  GBDiagnosticsEvent(@"network.complete", @{@"path":task.originalRequest.URL.path ?: @"", @"status":@(((NSHTTPURLResponse *)task.response).statusCode), @"error":@(error.code)});
+  NSInteger status = [task.response isKindOfClass:NSHTTPURLResponse.class]
+      ? ((NSHTTPURLResponse *)task.response).statusCode : 0;
+  GBDiagnosticsEvent(@"network.complete", @{@"path":task.originalRequest.URL.path ?: @"", @"status":@(status), @"error":@(error.code)});
   ((void (*)(id,SEL,id,id,id))GBOriginalNetworkComplete)(self,selector,session,task,error);
 }
 static BOOL GBContainsReadyLabel(UIView *view, NSString *label) {
@@ -92,15 +152,10 @@ static BOOL GBContainsReadyLabel(UIView *view, NSString *label) {
   for (UIView *child in view.subviews) if (GBContainsReadyLabel(child, label)) return YES;
   return NO;
 }
-static NSURL *GBValidationDirectory(void) {
-  return [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject
-      URLByAppendingPathComponent:@"HostValidation" isDirectory:YES];
-}
 void GBDiagnosticsEvent(NSString *event, NSDictionary *values) {
+  if (!GBDiagnosticsEnabled()) return;
   NSURL *directory = GBValidationDirectory();
-  if (!getenv("GROKBOT_VALIDATE_CAPTURE") &&
-      ![NSFileManager.defaultManager fileExistsAtPath:
-        [directory URLByAppendingPathComponent:@"enable-notification-diagnostics"].path]) return;
+  if (!directory) return;
   @synchronized (GBConnection.class) {
     [NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil];
     NSURL *file = [directory URLByAppendingPathComponent:@"notification-events.json"];
@@ -137,7 +192,7 @@ static NSDictionary *GBBundleDescription(NSURL *url) {
 }
 void GBDiagnosticsRecordBundle(NSURL *requested, NSURL *loaded) {
   GBDiagnosticsEvent(@"bundle.load", @{@"requested":requested.lastPathComponent ?: @"", @"loaded":loaded.lastPathComponent ?: @""});
-  if (getenv("GROKBOT_VALIDATE_CAPTURE"))
+  if (GBValidateCaptureEnv())
     GBLoadedBundle = @{@"requested":GBBundleDescription(requested), @"loaded":GBBundleDescription(loaded)};
 }
 static void *GBResolveReactSymbol(const char *symbolName) {
@@ -165,7 +220,7 @@ static void *GBResolveReactSymbol(const char *symbolName) {
   return NULL;
 }
 __attribute__((constructor)) static void GBInstallDiagnostics(void) {
-  if (!getenv("GROKBOT_VALIDATE_CAPTURE"))
+  if (!GBValidateCaptureEnv())
     return;
   typedef void (*GBSetFatalHandler)(GBRCTFatalHandler);
   typedef GBRCTFatalHandler (*GBGetFatalHandler)(void);

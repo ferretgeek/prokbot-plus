@@ -31,6 +31,7 @@ static NSString *GBAppIntentSharedAccessGroup(void) {
 
 static OSStatus GBWriteAppIntentCredential(
     NSString *service, NSString *account, NSString *group, NSData *data) {
+  if (!data.length) return errSecParam;
   NSMutableDictionary *query = [@{
     (__bridge id)kSecClass: (__bridge id)kSecClassGenericPassword,
     (__bridge id)kSecAttrService: service,
@@ -84,14 +85,28 @@ static void GBDeleteAppIntentCredential(
   SecItemDelete((__bridge CFDictionaryRef)query);
 }
 
+static NSString *const GBSyncLock = @"GrokBot.AppIntentsSync";
+static BOOL GBHasSyncedCredentials;
+static BOOL GBLastSyncedPaired;
+static NSString *GBLastSyncedServerURL;
+
 // The original Swift App Intents and the React Native TokenStore use different
 // SecureStore services. Keep both copies aligned with the local Host session;
 // the transport owns the real device authentication.
 void GBSyncAppIntentCredentials(void) {
   GBConnection *connection = GBConnection.shared;
+  NSString *serverURL = connection.serverURL;
+  NSString *deviceToken = connection.deviceToken;
+  BOOL paired = serverURL.length > 0 && deviceToken.length > 0;
+  @synchronized (GBSyncLock) {
+    if (GBHasSyncedCredentials && GBLastSyncedPaired == paired &&
+        (!paired || [GBLastSyncedServerURL isEqualToString:serverURL])) {
+      return;
+    }
+  }
   NSString *defaultGroup = GBAppIntentDefaultAccessGroup();
   NSString *sharedGroup = GBAppIntentSharedAccessGroup();
-  if (!connection.serverURL.length || !connection.deviceToken.length) {
+  if (!paired) {
     GBDeleteAppIntentCredential(@"x.money.agent-connection-code:no-auth",
                                 @"grok-bot", defaultGroup);
     GBDeleteAppIntentCredential(@"x.money.agent-connection-code:no-auth",
@@ -104,13 +119,19 @@ void GBSyncAppIntentCredentials(void) {
                                 @"sand.cursor-tokens", sharedGroup);
     GBDeleteAppIntentCredential(@"app:no-auth",
                                 @"sand.cursor-tokens", nil);
+    @synchronized (GBSyncLock) {
+      GBHasSyncedCredentials = YES;
+      GBLastSyncedPaired = NO;
+      GBLastSyncedServerURL = nil;
+    }
     return;
   }
   // Original Swift code derives the account ID from a JWT payload. This is an
   // unsigned local marker, not an authentication credential. Real device auth
   // is attached only by the local transport below.
   NSString *(^base64url)(NSDictionary *) = ^NSString *(NSDictionary *value) {
-    NSString *encoded = [[NSJSONSerialization dataWithJSONObject:value options:0 error:nil] base64EncodedStringWithOptions:0];
+    NSData *json = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
+    NSString *encoded = [json base64EncodedStringWithOptions:0] ?: @"";
     return [[[encoded stringByReplacingOccurrencesOfString:@"+" withString:@"-"]
       stringByReplacingOccurrencesOfString:@"/" withString:@"_"] stringByReplacingOccurrencesOfString:@"=" withString:@""];
   };
@@ -126,50 +147,65 @@ void GBSyncAppIntentCredentials(void) {
   NSData *data = [NSJSONSerialization dataWithJSONObject:@{
     @"accessToken": marker,
     @"refreshToken": marker,
-    @"backendUrl": connection.serverURL
+    @"backendUrl": serverURL
   } options:0 error:nil];
+  if (!data.length) return;
   OSStatus tokenStoreStatus = GBWriteAppIntentCredential(
       @"app:no-auth", @"sand.cursor-tokens", defaultGroup, data);
   OSStatus appIntentStatus = GBWriteAppIntentCredential(
       @"x.money.agent-connection-code:no-auth", @"grok-bot", sharedGroup, data);
-  NSUInteger tokenStoreLength = 0;
-  NSUInteger appIntentLength = 0;
-  NSUInteger ungroupedTokenStoreLength = 0;
-  NSUInteger sharedTokenStoreLength = 0;
-  OSStatus tokenStoreReadStatus = GBReadAppIntentCredential(
-      @"app:no-auth", @"sand.cursor-tokens", defaultGroup, &tokenStoreLength);
-  OSStatus appIntentReadStatus = GBReadAppIntentCredential(
-      @"x.money.agent-connection-code:no-auth", @"grok-bot",
-      sharedGroup, &appIntentLength);
-  OSStatus ungroupedTokenStoreReadStatus = GBReadAppIntentCredential(
-      @"app:no-auth", @"sand.cursor-tokens", nil, &ungroupedTokenStoreLength);
-  OSStatus sharedTokenStoreReadStatus = GBReadAppIntentCredential(
-      @"app:no-auth", @"sand.cursor-tokens", sharedGroup, &sharedTokenStoreLength);
-  GBDiagnosticsEvent(@"app-intents.credentials", @{
-    @"tokenStoreStatus": @(tokenStoreStatus),
-    @"appIntentStatus": @(appIntentStatus),
-    @"tokenStoreReadStatus": @(tokenStoreReadStatus),
-    @"appIntentReadStatus": @(appIntentReadStatus),
-    @"tokenStoreLength": @(tokenStoreLength),
-    @"appIntentLength": @(appIntentLength),
-    @"ungroupedTokenStoreReadStatus": @(ungroupedTokenStoreReadStatus),
-    @"ungroupedTokenStoreLength": @(ungroupedTokenStoreLength),
-    @"sharedTokenStoreReadStatus": @(sharedTokenStoreReadStatus),
-    @"sharedTokenStoreLength": @(sharedTokenStoreLength)
-  });
+  if (tokenStoreStatus == errSecSuccess || appIntentStatus == errSecSuccess) {
+    @synchronized (GBSyncLock) {
+      GBHasSyncedCredentials = YES;
+      GBLastSyncedPaired = YES;
+      GBLastSyncedServerURL = [serverURL copy];
+    }
+  }
+  if (GBDiagnosticsEnabled()) {
+    NSUInteger tokenStoreLength = 0;
+    NSUInteger appIntentLength = 0;
+    NSUInteger ungroupedTokenStoreLength = 0;
+    NSUInteger sharedTokenStoreLength = 0;
+    OSStatus tokenStoreReadStatus = GBReadAppIntentCredential(
+        @"app:no-auth", @"sand.cursor-tokens", defaultGroup, &tokenStoreLength);
+    OSStatus appIntentReadStatus = GBReadAppIntentCredential(
+        @"x.money.agent-connection-code:no-auth", @"grok-bot",
+        sharedGroup, &appIntentLength);
+    OSStatus ungroupedTokenStoreReadStatus = GBReadAppIntentCredential(
+        @"app:no-auth", @"sand.cursor-tokens", nil, &ungroupedTokenStoreLength);
+    OSStatus sharedTokenStoreReadStatus = GBReadAppIntentCredential(
+        @"app:no-auth", @"sand.cursor-tokens", sharedGroup, &sharedTokenStoreLength);
+    GBDiagnosticsEvent(@"app-intents.credentials", @{
+      @"tokenStoreStatus": @(tokenStoreStatus),
+      @"appIntentStatus": @(appIntentStatus),
+      @"tokenStoreReadStatus": @(tokenStoreReadStatus),
+      @"appIntentReadStatus": @(appIntentReadStatus),
+      @"tokenStoreLength": @(tokenStoreLength),
+      @"appIntentLength": @(appIntentLength),
+      @"ungroupedTokenStoreReadStatus": @(ungroupedTokenStoreReadStatus),
+      @"ungroupedTokenStoreLength": @(ungroupedTokenStoreLength),
+      @"sharedTokenStoreReadStatus": @(sharedTokenStoreReadStatus),
+      @"sharedTokenStoreLength": @(sharedTokenStoreLength)
+    });
+  }
 }
 
 static NSString *GBIntentMethod(NSURLRequest *request) {
   if (![request.HTTPMethod isEqual:@"POST"]) return nil;
   NSString *prefix = @"/aiserver.v1.GrokBotService/";
   if (![request.URL.path hasPrefix:prefix]) return nil;
+  static NSSet<NSString *> *methods;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    methods = [NSSet setWithArray:@[@"ListGrokBotAgents", @"SendGrokBotUserMessage", @"GetGrokBotSendStatus"]];
+  });
   NSString *method = [request.URL.path substringFromIndex:prefix.length];
-  return [@[@"ListGrokBotAgents", @"SendGrokBotUserMessage", @"GetGrokBotSendStatus"] containsObject:method] ? method : nil;
+  return [methods containsObject:method] ? method : nil;
 }
 
 @interface GBAppIntentsProtocol : NSURLProtocol
 @property(nonatomic, strong) NSURLSessionDataTask *task;
-@property(nonatomic, assign) BOOL cancelled;
+@property(atomic, assign) BOOL cancelled;
 @end
 
 @implementation GBAppIntentsProtocol
@@ -181,7 +217,9 @@ static NSString *GBIntentMethod(NSURLRequest *request) {
 }
 - (void)startLoading {
   GBConnection *connection = GBConnection.shared;
-  if (!connection.serverURL.length || !connection.deviceToken.length) {
+  NSString *serverURL = connection.serverURL;
+  NSString *deviceToken = connection.deviceToken;
+  if (!serverURL.length || !deviceToken.length) {
     [self fail:GBL(@"请先连接 Host。", @"Connect to Host first.") code:401];
     return;
   }
@@ -202,19 +240,28 @@ static NSString *GBIntentMethod(NSURLRequest *request) {
     body = collected;
   }
   NSString *method = GBIntentMethod(self.request);
-  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:
-    [connection.serverURL stringByAppendingFormat:@"/local/app-intents/%@", method]]];
+  NSURL *targetURL = method.length ? [NSURL URLWithString:
+    [serverURL stringByAppendingFormat:@"/local/app-intents/%@", method]] : nil;
+  if (!targetURL) {
+    [self fail:GBL(@"无法连接 Host。", @"Could not connect to Host.") code:400];
+    return;
+  }
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:targetURL];
   request.HTTPMethod = @"POST";
   request.HTTPBody = body ?: [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
   request.allHTTPHeaderFields = @{@"Content-Type":@"application/json", @"Accept":@"application/json",
-    @"Authorization":[@"Bearer " stringByAppendingString:connection.deviceToken]};
+    @"Authorization":[@"Bearer " stringByAppendingString:deviceToken]};
   request.timeoutInterval = 30;
-  GBDiagnosticsEvent(@"app-intents.request", @{@"method":method});
+  if (GBDiagnosticsEnabled()) GBDiagnosticsEvent(@"app-intents.request", @{@"method":method});
   self.task = [GBHTTPSession() dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
     if (self.cancelled) return;
     if (error) { [self.client URLProtocol:self didFailWithError:error]; return; }
+    if (![response isKindOfClass:NSHTTPURLResponse.class]) {
+      [self.client URLProtocol:self didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorBadServerResponse userInfo:nil]];
+      return;
+    }
     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
-    GBDiagnosticsEvent(@"app-intents.response", @{@"method":method, @"status":@(http.statusCode)});
+    if (GBDiagnosticsEnabled()) GBDiagnosticsEvent(@"app-intents.response", @{@"method":method, @"status":@(http.statusCode)});
     NSHTTPURLResponse *original = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL
       statusCode:http.statusCode HTTPVersion:@"HTTP/1.1" headerFields:http.allHeaderFields];
     [self.client URLProtocol:self didReceiveResponse:original cacheStoragePolicy:NSURLCacheStorageNotAllowed];

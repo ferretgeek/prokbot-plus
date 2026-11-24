@@ -12,7 +12,7 @@
 
 static NSString *const GBURLKey = @"GrokBotLocal.serverURL";
 static NSString *GBService(void) {
-  return [@"dev.grokbot.local." stringByAppendingString:NSBundle.mainBundle.bundleIdentifier];
+  return [@"dev.grokbot.local." stringByAppendingString:NSBundle.mainBundle.bundleIdentifier ?: @""];
 }
 static NSDictionary *GBKeychainQuery(void) {
   return @{
@@ -30,9 +30,12 @@ static NSString *GBReadToken(void) {
   return [[NSString alloc] initWithData:CFBridgingRelease(result) encoding:NSUTF8StringEncoding];
 }
 static BOOL GBWriteToken(NSString *token) {
+  NSData *data = [token dataUsingEncoding:NSUTF8StringEncoding];
+  if (!data.length)
+    return NO;
   NSMutableDictionary *q = [GBKeychainQuery() mutableCopy];
   NSDictionary *attrs = @{
-    (__bridge id)kSecValueData : [token dataUsingEncoding:NSUTF8StringEncoding],
+    (__bridge id)kSecValueData : data,
     (__bridge id)kSecAttrAccessible : (__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
   };
   OSStatus status = SecItemUpdate((__bridge CFDictionaryRef)q, (__bridge CFDictionaryRef)attrs);
@@ -62,6 +65,7 @@ static UIViewController *GBTop(void) {
 @property(nonatomic, strong) UISwitch *tailcat;
 @property(nonatomic, strong) UILabel *networkLabel;
 @property(nonatomic, strong) NSTimer *networkTimer;
+@property(nonatomic, strong) NSURLSession *pairSession;
 @property(nonatomic, assign) BOOL editingConnection;
 @property(nonatomic, assign) BOOL cancelled;
 @end
@@ -71,7 +75,11 @@ static UIViewController *GBTop(void) {
 @property(nonatomic, readwrite) NSURL *gatewayBundleURL;
 @property(nonatomic, weak) GBPairController *controller;
 @end
-@implementation GBConnection
+@implementation GBConnection {
+  NSString *_serverURL;
+  NSString *_deviceToken;
+  NSURL *_gatewayBundleURL;
+}
 + (instancetype)shared {
   static GBConnection *v;
   static dispatch_once_t once;
@@ -79,6 +87,24 @@ static UIViewController *GBTop(void) {
     v = [self new];
   });
   return v;
+}
+- (NSString *)serverURL {
+  @synchronized (self) { return _serverURL; }
+}
+- (void)setServerURL:(NSString *)serverURL {
+  @synchronized (self) { _serverURL = [serverURL copy]; }
+}
+- (NSString *)deviceToken {
+  @synchronized (self) { return _deviceToken; }
+}
+- (void)setDeviceToken:(NSString *)deviceToken {
+  @synchronized (self) { _deviceToken = [deviceToken copy]; }
+}
+- (NSURL *)gatewayBundleURL {
+  @synchronized (self) { return _gatewayBundleURL; }
+}
+- (void)setGatewayBundleURL:(NSURL *)gatewayBundleURL {
+  @synchronized (self) { _gatewayBundleURL = [gatewayBundleURL copy]; }
 }
 - (BOOL)restore:(NSError **)error {
   GBDiagnosticsEvent(@"connection.credentials.begin", @{});
@@ -174,15 +200,24 @@ static UIViewController *GBTop(void) {
 }
 - (void)viewWillAppear:(BOOL)animated {
   [super viewWillAppear:animated];
-  __weak GBPairController *weak = self;
-  self.networkTimer = [NSTimer scheduledTimerWithTimeInterval:2 repeats:YES block:^(NSTimer *timer) {
-    [weak updateNetworkState];
-  }];
+  [self.networkTimer invalidate];
+  self.networkTimer = nil;
+  if (GBNetworkEnabled()) {
+    __weak GBPairController *weak = self;
+    self.networkTimer = [NSTimer scheduledTimerWithTimeInterval:2 repeats:YES block:^(NSTimer *timer) {
+      [weak updateNetworkState];
+    }];
+    self.networkTimer.tolerance = 0.5;
+  }
   [self updateNetworkState];
 }
 - (void)viewWillDisappear:(BOOL)animated {
   [self.networkTimer invalidate]; self.networkTimer = nil;
   [super viewWillDisappear:animated];
+}
+- (void)dealloc {
+  [_networkTimer invalidate];
+  [_pairSession invalidateAndCancel];
 }
 - (void)updateNetworkState {
   if (self.editingConnection || !GBConnection.shared.deviceToken.length) return;
@@ -316,6 +351,8 @@ static UIViewController *GBTop(void) {
 - (void)networkChanged { self.address.placeholder = self.tailcat.on ? @"tailcat://connect/…" : @"https://bot.example.com"; }
 - (void)close {
   self.cancelled = YES;
+  [self.pairSession invalidateAndCancel];
+  self.pairSession = nil;
   GBNetworkRollback();
   [self dismissViewControllerAnimated:YES completion:nil];
 }
@@ -330,20 +367,32 @@ static UIViewController *GBTop(void) {
   self.connect.enabled = YES;
 }
 - (void)updateConnection:(NSString *)base {
+  NSString *token = GBConnection.shared.deviceToken;
+  if (!token.length) {
+    [self fail:GBL(@"无法验证此 Host 的设备凭据。", @"Could not verify this device with the Host.")];
+    return;
+  }
   self.connect.enabled = NO; self.status.text = GBL(@"正在连接…", @"Connecting…");
-  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:[base stringByAppendingString:@"/connect/status"]]];
+  NSURL *statusURL = [NSURL URLWithString:[base stringByAppendingString:@"/connect/status"]];
+  if (!statusURL) {
+    [self fail:GBL(@"无法验证此 Host 的设备凭据。", @"Could not verify this device with the Host.")];
+    return;
+  }
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:statusURL];
   request.timeoutInterval = 35;
-  [request setValue:[@"Bearer " stringByAppendingString:GBConnection.shared.deviceToken] forHTTPHeaderField:@"Authorization"];
+  [request setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
+  __weak typeof(self) weak = self;
   [[GBHTTPSession() dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (self.cancelled) return;
+      typeof(self) strong = weak;
+      if (!strong || strong.cancelled) return;
       NSInteger code = [response isKindOfClass:NSHTTPURLResponse.class] ? ((NSHTTPURLResponse *)response).statusCode : 0;
-      if (error || code != 200) { [self fail:GBL(@"无法验证此 Host 的设备凭据。", @"Could not verify this device with the Host.")]; return; }
-      NSURL *bundle = [GBHermes writeGateway:base token:GBConnection.shared.deviceToken resources:GBConnection.shared.resourcesURL error:nil];
-      if (!bundle || !GBNetworkCommit()) { [self fail:GBL(@"无法保存连接。", @"Could not save connection.")]; return; }
+      if (error || code != 200) { [strong fail:GBL(@"无法验证此 Host 的设备凭据。", @"Could not verify this device with the Host.")]; return; }
+      NSURL *bundle = [GBHermes writeGateway:base token:token resources:GBConnection.shared.resourcesURL error:nil];
+      if (!bundle || !GBNetworkCommit()) { [strong fail:GBL(@"无法保存连接。", @"Could not save connection.")]; return; }
       [NSUserDefaults.standardUserDefaults setObject:GBNetworkAddress() forKey:GBURLKey];
       GBConnection.shared.serverURL = base; GBConnection.shared.gatewayBundleURL = bundle; GBSyncAppIntentCredentials();
-      [self dismissViewControllerAnimated:YES completion:^{ GBReloadReactHost(); if (GBConnection.shared.didConnect) GBConnection.shared.didConnect(); }];
+      [strong dismissViewControllerAnimated:YES completion:^{ GBReloadReactHost(); if (GBConnection.shared.didConnect) GBConnection.shared.didConnect(); }];
     });
   }] resume];
 }
@@ -370,16 +419,18 @@ static UIViewController *GBTop(void) {
   [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
   request.HTTPBody = [NSJSONSerialization dataWithJSONObject:@{
     @"pairingKey" : key,
-    @"deviceName" : UIDevice.currentDevice.name,
+    @"deviceName" : UIDevice.currentDevice.name ?: @"",
     @"platform" : @"ios"
   }
                                                      options:0
                                                        error:nil];
+  [self.pairSession invalidateAndCancel];
   NSURLSessionConfiguration *sessionConfig =
       NSURLSessionConfiguration.ephemeralSessionConfiguration;
   NSURLSession *session = [NSURLSession sessionWithConfiguration:sessionConfig
                                                         delegate:self
                                                    delegateQueue:nil];
+  self.pairSession = session;
   __weak typeof(self) weak = self;
   [[session dataTaskWithRequest:request
               completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
@@ -390,6 +441,8 @@ static UIViewController *GBTop(void) {
                                        : 0;
                 dispatch_async(dispatch_get_main_queue(), ^{
                   typeof(self) strong = weak;
+                  if (strong && strong.pairSession == session)
+                    strong.pairSession = nil;
                   if (!strong || strong.cancelled)
                     return;
                   if (error) {
@@ -407,8 +460,9 @@ static UIViewController *GBTop(void) {
                   }
                   NSString *token =
                       [result[@"token"] isKindOfClass:NSString.class] ? result[@"token"] : nil;
-                  NSURLComponents *gateway =
-                      [NSURLComponents componentsWithString:result[@"gatewayUrl"] ?: @""];
+                  NSString *gatewayUrl =
+                      [result[@"gatewayUrl"] isKindOfClass:NSString.class] ? result[@"gatewayUrl"] : @"";
+                  NSURLComponents *gateway = [NSURLComponents componentsWithString:gatewayUrl];
                   if (!token.length || (!strong.tailcat.on && ![gateway.URL.absoluteString isEqual:base])) {
                     [strong fail:GBL(@"Host 配置不匹配。", @"Host configuration does not match.")];
                     return;
@@ -427,7 +481,9 @@ static UIViewController *GBTop(void) {
                     return;
                   }
                   [NSUserDefaults.standardUserDefaults setObject:GBNetworkAddress() forKey:GBURLKey];
-                  [NSUserDefaults.standardUserDefaults setObject:result[@"deviceId"] ?: @""
+                  NSString *deviceId =
+                      [result[@"deviceId"] isKindOfClass:NSString.class] ? result[@"deviceId"] : @"";
+                  [NSUserDefaults.standardUserDefaults setObject:deviceId
                                                           forKey:@"GrokBotLocal.deviceId"];
                   GBConnection.shared.serverURL = base;
                   GBConnection.shared.deviceToken = token;

@@ -237,6 +237,22 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-24)
       desktop clients. ci/release-packages.py builds a seventh, Linux package.
     - Contributed by @jun9100 (GitHub pull request #16).
 
+19. iOS injection library thermal, hot-path, and thread-safety hardening.
+    - ios/clients/ios/ and ios/bin/GrokBotLocal.dylib: eliminated the 120Hz
+      Fabric RCTRecursiveAccessibilityLabel addSubview/removeFromSuperview
+      thrash loop on plugin buttons, added O(1) layoutSubviews fast-path
+      short-circuiting and cached sets/classes, guarded frame/text/zPosition
+      and bringSubviewToFront updates, restored hidden sibling paragraph views
+      on recycle, limited GBObserveRequest JSON parsing to
+      /api/openAgentWindowed, cached GBDiagnosticsEnabled() and privacy domain
+      lists, added capped exponential backoff and O(N) SSE parsing in
+      GBNotifications, made direct-mode GBNetwork checks lock-free and off the
+      main thread, synchronized cross-thread credential/protocol state, and
+      fixed voice socket/audio leaks, swizzle ordering, and KVO/NSNull/empty
+      displayName crashes. Updated dylibSha256 across 1.27.0, 1.26.0, and
+      1.16.0 manifests.
+    - Contributed by @jun9100 (GitHub pull request #15).
+
 Third-party components
 ----------------------
 

@@ -24,7 +24,10 @@ static NSString *GBPushStateKey(void) {
     [NSUserDefaults.standardUserDefaults stringForKey:@"GrokBotLocal.deviceId"] ?: @"unpaired"];
 }
 static void GBPushDiagnostic(NSString *event, NSDictionary *values) {
-  if (!getenv("GROKBOT_VALIDATE_CAPTURE")) return;
+  static BOOL capture;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ capture = getenv("GROKBOT_VALIDATE_CAPTURE") != NULL; });
+  if (!capture) return;
   NSURL *dir = [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject URLByAppendingPathComponent:@"HostValidation"];
   [NSFileManager.defaultManager createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
   NSMutableDictionary *report = [values mutableCopy]; report[@"event"] = event;
@@ -72,9 +75,15 @@ static UIViewController *GBPushTop(void) {
 static void GBDeviceRequest(NSString *method, NSDictionary *body,
                             void (^done)(NSDictionary *, NSError *)) {
   NSString *base = GBConnection.shared.serverURL, *token = GBConnection.shared.deviceToken;
-  if (!base.length || !token.length) return;
-  NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:
-    [NSURL URLWithString:[base stringByAppendingString:@"/local/device"]]];
+  NSURL *url = base.length ? [NSURL URLWithString:[base stringByAppendingString:@"/local/device"]] : nil;
+  if (!url || !token.length) {
+    if (done) {
+      NSError *err = [NSError errorWithDomain:@"GrokBotDevice" code:401 userInfo:nil];
+      dispatch_async(dispatch_get_main_queue(), ^{ done(nil, err); });
+    }
+    return;
+  }
+  NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:url];
   r.HTTPMethod = method; r.timeoutInterval = 15;
   [r setValue:[@"Bearer " stringByAppendingString:token] forHTTPHeaderField:@"Authorization"];
   if (body) {
@@ -82,22 +91,38 @@ static void GBDeviceRequest(NSString *method, NSDictionary *body,
     [r setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
   }
   [[GBHTTPSession() dataTaskWithRequest:r completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-    NSDictionary *value = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
-    NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
-    if (!error && (status < 200 || status >= 300 || ![value isKindOfClass:NSDictionary.class]))
+    id parsed = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    NSDictionary *value = [parsed isKindOfClass:NSDictionary.class] ? parsed : nil;
+    NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class]
+        ? ((NSHTTPURLResponse *)response).statusCode : 0;
+    if (!error && (status < 200 || status >= 300 || !value))
       error = [NSError errorWithDomain:@"GrokBotDevice" code:status userInfo:nil];
     GBPushDiagnostic(@"request", @{@"method":method,@"status":@(status),@"errorDomain":error.domain ?: @"",@"errorCode":@(error.code),@"responseError":[value[@"error"] isKindOfClass:NSString.class] ? value[@"error"] : @""});
     dispatch_async(dispatch_get_main_queue(), ^{
-      if (![base isEqual:GBConnection.shared.serverURL] || ![token isEqual:GBConnection.shared.deviceToken]) return;
+      if (![base isEqual:GBConnection.shared.serverURL] || ![token isEqual:GBConnection.shared.deviceToken]) {
+        if (done) done(nil, [NSError errorWithDomain:@"GrokBotDevice" code:NSURLErrorCancelled userInfo:nil]);
+        return;
+      }
       if (!error && [value[@"push"] isKindOfClass:NSDictionary.class]) {
         // Persist only display state, never push tokens, URLs, or JSON nulls.
-        GBDevicePushState = @{@"provider":value[@"push"][@"provider"] ?: @"none",
-                              @"configured":[value[@"push"][@"configured"] boolValue] ? @YES : @NO,
-                              @"enabled":[value[@"push"][@"enabled"] boolValue] ? @YES : @NO,
-                              @"authorization":value[@"push"][@"authorization"] ?: @"notDetermined"};
-        GBDevicePushStateIdentity = GBPushStateKey();
-        [NSUserDefaults.standardUserDefaults setObject:GBDevicePushState forKey:GBPushStateKey()];
-        [NSNotificationCenter.defaultCenter postNotificationName:@"GrokBotPushStateChanged" object:nil];
+        NSDictionary *push = value[@"push"];
+        NSString *provider = [push[@"provider"] isKindOfClass:NSString.class] ? push[@"provider"] : @"none";
+        NSString *authorization = [push[@"authorization"] isKindOfClass:NSString.class] ? push[@"authorization"] : @"notDetermined";
+        BOOL configured = [push[@"configured"] isKindOfClass:NSNumber.class] && [push[@"configured"] boolValue];
+        BOOL enabled = [push[@"enabled"] isKindOfClass:NSNumber.class] && [push[@"enabled"] boolValue];
+        NSDictionary *nextState = @{
+          @"provider": provider,
+          @"configured": configured ? @YES : @NO,
+          @"enabled": enabled ? @YES : @NO,
+          @"authorization": authorization
+        };
+        NSString *key = GBPushStateKey();
+        if (![key isEqualToString:GBDevicePushStateIdentity] || ![nextState isEqualToDictionary:GBDevicePushState]) {
+          GBDevicePushState = nextState;
+          GBDevicePushStateIdentity = key;
+          [NSUserDefaults.standardUserDefaults setObject:GBDevicePushState forKey:key];
+          [NSNotificationCenter.defaultCenter postNotificationName:@"GrokBotPushStateChanged" object:nil];
+        }
       }
       if (done) done(value, error);
     });
@@ -107,9 +132,9 @@ static void GBReportDevice(UNNotificationSettings *settings) {
   NSString *environment = GBPushEnvironment();
   GBPushDiagnostic(@"registration", @{@"environment":environment ?: (id)NSNull.null,@"authorization":GBAuthName(settings.authorizationStatus),@"tokenPresent":@(GBAPNsToken.length > 0),@"registrationError":GBRegistrationError ?: @""});
   NSMutableDictionary *body = [@{
-    @"name": UIDevice.currentDevice.name,
+    @"name": UIDevice.currentDevice.name ?: @"",
     @"kind": UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? @"ipad" : @"iphone",
-    @"bundleId": NSBundle.mainBundle.bundleIdentifier,
+    @"bundleId": NSBundle.mainBundle.bundleIdentifier ?: @"",
     @"appVersion": [NSBundle.mainBundle objectForInfoDictionaryKey:@"CFBundleShortVersionString"] ?: @"",
     // Objective-C comparison expressions box as NSNumber(int), which JSON
     // encodes as 0/1. The Host correctly requires a JSON boolean here.
@@ -128,17 +153,23 @@ static void GBReportDevice(UNNotificationSettings *settings) {
 void GBPushSetForeground(BOOL foreground) {
   if (!GBConnection.shared.deviceToken.length) return;
   __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
-  if (!foreground)
-    task = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"Host notification state" expirationHandler:^{
+  void (^endTask)(void) = ^{
+    void (^finish)(void) = ^{
       if (task != UIBackgroundTaskInvalid) {
-        [UIApplication.sharedApplication endBackgroundTask:task]; task = UIBackgroundTaskInvalid;
+        UIBackgroundTaskIdentifier current = task;
+        task = UIBackgroundTaskInvalid;
+        [UIApplication.sharedApplication endBackgroundTask:current];
       }
-    }];
+    };
+    if ([NSThread isMainThread]) finish();
+    else dispatch_async(dispatch_get_main_queue(), finish);
+  };
+  if (!foreground)
+    task = [UIApplication.sharedApplication beginBackgroundTaskWithName:@"Host notification state"
+                                                      expirationHandler:endTask];
   GBDeviceRequest(@"PUT", @{@"foreground":foreground ? @YES : @NO}, ^(NSDictionary *value, NSError *error) {
     GBDiagnosticsEvent(@"presence.report", @{@"foreground":foreground ? @YES : @NO, @"success":error ? @NO : @YES});
-    if (task != UIBackgroundTaskInvalid) {
-      [UIApplication.sharedApplication endBackgroundTask:task]; task = UIBackgroundTaskInvalid;
-    }
+    endTask();
   });
 }
 static BOOL GBClaimNotification(NSString *identity) {
@@ -217,7 +248,9 @@ static void GBRegistered(id self, SEL cmd, UIApplication *app, NSData *token) {
   NSMutableString *value = [NSMutableString stringWithCapacity:token.length * 2];
   for (NSUInteger i=0; i<token.length; i++) [value appendFormat:@"%02x",bytes[i]];
   GBAPNsToken = value; GBRegistrationError = nil;
-  [UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) { GBReportDevice(s); }];
+  [UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) {
+    dispatch_async(dispatch_get_main_queue(), ^{ GBReportDevice(s); });
+  }];
 }
 static void GBFailed(id self, SEL cmd, UIApplication *app, NSError *error) {
   if (!GBConnection.shared.deviceToken.length) {
@@ -228,7 +261,9 @@ static void GBFailed(id self, SEL cmd, UIApplication *app, NSError *error) {
   // That expected missing-entitlement error is unrelated to Bark delivery.
   if (!GBPushEnvironment()) { GBRegistrationError = nil; return; }
   GBRegistrationError = [NSString stringWithFormat:@"%@ (%ld)",error.domain,(long)error.code];
-  [UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) { GBReportDevice(s); }];
+  [UNUserNotificationCenter.currentNotificationCenter getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) {
+    dispatch_async(dispatch_get_main_queue(), ^{ GBReportDevice(s); });
+  }];
 }
 static IMP GBHook(Class cls, SEL selector, IMP replacement) {
   Method method = class_getInstanceMethod(cls, selector);
@@ -255,7 +290,8 @@ static NSString *GBPromptKey(void) {
 }
 static void GBShowBark(void) {
   if (GBPromptVisible || !GBConnection.shared.deviceToken.length) return;
-  UIViewController *top = GBPushTop(); if (!top) return;
+  UIViewController *top = GBPushTop();
+  if (!top || [top isKindOfClass:UIAlertController.class] || top.beingDismissed) return;
   GBPromptVisible = YES;
   UIAlertController *alert = [UIAlertController alertControllerWithTitle:GBL(@"接收通知", @"Notifications")
     message:GBL(@"粘贴 Bark 推送链接", @"Paste your Bark notification URL")
@@ -268,16 +304,19 @@ static void GBShowBark(void) {
   [alert addAction:[UIAlertAction actionWithTitle:GBL(@"稍后", @"Not now") style:UIAlertActionStyleCancel handler:^(UIAlertAction *a) {
     GBPromptVisible = NO; [NSUserDefaults.standardUserDefaults setBool:YES forKey:GBPromptKey()];
   }]];
+  __weak UIAlertController *weakAlert = alert;
   [alert addAction:[UIAlertAction actionWithTitle:GBL(@"保存", @"Save") style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) {
     GBPromptVisible = NO;
-    NSString *input = alert.textFields.firstObject.text;
+    NSString *input = weakAlert.textFields.firstObject.text;
     GBDeviceRequest(@"PUT", @{ @"push": @{ @"provider": @"bark", @"barkUrl": input ?: @"" } }, ^(NSDictionary *value, NSError *error) {
       if (!error) { [NSUserDefaults.standardUserDefaults setBool:YES forKey:GBPromptKey()]; return; }
       UIAlertController *failed = [UIAlertController alertControllerWithTitle:GBL(@"未能保存", @"Could not save")
         message:GBL(@"请检查 Bark 链接和服务端连接。", @"Check the Bark URL and Host connection.") preferredStyle:UIAlertControllerStyleAlert];
       [failed addAction:[UIAlertAction actionWithTitle:GBL(@"重试", @"Retry") style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { GBShowBark(); }]];
       [failed addAction:[UIAlertAction actionWithTitle:GBL(@"稍后", @"Not now") style:UIAlertActionStyleCancel handler:nil]];
-      [GBPushTop() presentViewController:failed animated:YES completion:nil];
+      UIViewController *presenter = GBPushTop();
+      if (presenter && ![presenter isKindOfClass:UIAlertController.class] && !presenter.beingDismissed)
+        [presenter presentViewController:failed animated:YES completion:nil];
     });
   }]];
   [top presentViewController:alert animated:YES completion:nil];
@@ -345,7 +384,14 @@ void GBResetPushView(UIView *view) {
 BOOL GBReplacePushView(UIView *view) {
   if (!GBConnection.shared.deviceToken.length) return NO;
   UISwitch *control = GBNotificationSwitch(view);
-  if (!control || ![@[@"通知", @"Notifications"] containsObject:control.accessibilityLabel]) return NO;
+  static NSSet<NSString *> *switchLabels;
+  static NSSet<NSString *> *authorizedStates;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    switchLabels = [NSSet setWithArray:@[@"通知", @"Notifications"]];
+    authorizedStates = [NSSet setWithArray:@[@"authorized", @"provisional", @"ephemeral"]];
+  });
+  if (!control || !control.accessibilityLabel.length || ![switchLabels containsObject:control.accessibilityLabel]) return NO;
   NSString *identity = GBPushStateKey();
   NSDictionary *state = [GBDevicePushStateIdentity isEqual:identity] ? GBDevicePushState :
     [NSUserDefaults.standardUserDefaults dictionaryForKey:identity];
@@ -360,8 +406,12 @@ BOOL GBReplacePushView(UIView *view) {
       [control removeTarget:nil action:nil forControlEvents:UIControlEventValueChanged];
       [control addTarget:GBPushEntry.class action:@selector(changed:) forControlEvents:UIControlEventValueChanged];
     }
-    if (state && control.enabled)
-      control.on = [state[@"enabled"] boolValue] && [@[@"authorized", @"provisional", @"ephemeral"] containsObject:state[@"authorization"]];
+    if (state && control.enabled) {
+      BOOL shouldBeOn = [state[@"enabled"] boolValue] &&
+          [state[@"authorization"] isKindOfClass:NSString.class] &&
+          [authorizedStates containsObject:state[@"authorization"]];
+      if (control.on != shouldBeOn) control.on = shouldBeOn;
+    }
     return YES;
   }
   UIView *row = control.superview;
@@ -376,22 +426,32 @@ BOOL GBReplacePushView(UIView *view) {
   if (!entry) {
     entry = [GBPushEntry buttonWithType:UIButtonTypeCustom];
     entry.tag = 731990; entry.originalSwitch = control;
-    entry.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    entry.frame = rowFrame;
+    entry.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     entry.stateLabel = [UILabel new]; entry.stateLabel.font = [UIFont systemFontOfSize:17];
     entry.stateLabel.textColor = UIColor.secondaryLabelColor; entry.stateLabel.textAlignment = NSTextAlignmentRight;
     entry.chevron = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"chevron.right"]];
     entry.chevron.tintColor = UIColor.tertiaryLabelColor;
     [entry addSubview:entry.stateLabel]; [entry addSubview:entry.chevron];
     [entry addTarget:entry action:@selector(open) forControlEvents:UIControlEventTouchUpInside];
-    row.userInteractionEnabled = YES; [row addSubview:entry];
+    if (!row.userInteractionEnabled) row.userInteractionEnabled = YES;
+    [row addSubview:entry];
+  } else {
+    if (entry.originalSwitch != control) entry.originalSwitch = control;
+    if (!CGRectEqualToRect(entry.frame, rowFrame)) entry.frame = rowFrame;
   }
-  control.hidden = YES;
-  entry.frame = rowFrame; entry.layer.zPosition = 1000; [row bringSubviewToFront:entry];
+  if (!control.hidden) control.hidden = YES;
+  if (entry.layer.zPosition != 1000) entry.layer.zPosition = 1000;
+  if (row.subviews.lastObject != entry) [row bringSubviewToFront:entry];
   BOOL configured = [state[@"provider"] isEqual:@"bark"] && [state[@"configured"] boolValue];
-  entry.stateLabel.text = configured ? GBL(@"Bark 已配置", @"Bark configured") : GBL(@"Bark 未配置", @"Bark not configured");
-  entry.stateLabel.frame = CGRectMake(entry.bounds.size.width - 204, (entry.bounds.size.height - 22) / 2, 160, 22);
-  entry.chevron.frame = CGRectMake(entry.bounds.size.width - 34, (entry.bounds.size.height - 16) / 2, 10, 16);
-  entry.accessibilityLabel = [GBL(@"通知，", @"Notifications, ") stringByAppendingString:entry.stateLabel.text];
+  NSString *stateText = configured ? GBL(@"Bark 已配置", @"Bark configured") : GBL(@"Bark 未配置", @"Bark not configured");
+  if (![entry.stateLabel.text isEqualToString:stateText]) entry.stateLabel.text = stateText;
+  CGRect labelFrame = CGRectMake(entry.bounds.size.width - 204, (entry.bounds.size.height - 22) / 2, 160, 22);
+  if (!CGRectEqualToRect(entry.stateLabel.frame, labelFrame)) entry.stateLabel.frame = labelFrame;
+  CGRect chevronFrame = CGRectMake(entry.bounds.size.width - 34, (entry.bounds.size.height - 16) / 2, 10, 16);
+  if (!CGRectEqualToRect(entry.chevron.frame, chevronFrame)) entry.chevron.frame = chevronFrame;
+  NSString *entryLabel = [GBL(@"通知，", @"Notifications, ") stringByAppendingString:stateText];
+  if (![entry.accessibilityLabel isEqualToString:entryLabel]) entry.accessibilityLabel = entryLabel;
   return YES;
 }
 void GBPushRefresh(void) {
@@ -399,8 +459,8 @@ void GBPushRefresh(void) {
   GBInstallPushDelegate();
   UNUserNotificationCenter *center = UNUserNotificationCenter.currentNotificationCenter;
   [center getNotificationSettingsWithCompletionHandler:^(UNNotificationSettings *s) {
-    GBReportDevice(s);
     dispatch_async(dispatch_get_main_queue(), ^{
+      GBReportDevice(s);
       if (GBPushEnvironment()) {
         if (s.authorizationStatus == UNAuthorizationStatusNotDetermined && !GBAuthorizing && !GBAuthorizationAttempted) {
           GBAuthorizing = YES; GBAuthorizationAttempted = YES;
@@ -415,7 +475,8 @@ void GBPushRefresh(void) {
       } else if (![NSUserDefaults.standardUserDefaults boolForKey:GBPromptKey()]) {
         GBDeviceRequest(@"GET", nil, ^(NSDictionary *value, NSError *error) {
           if (error) return;
-          if ([value[@"push"][@"configured"] boolValue])
+          NSDictionary *push = [value[@"push"] isKindOfClass:NSDictionary.class] ? value[@"push"] : nil;
+          if ([push[@"configured"] isKindOfClass:NSNumber.class] && [push[@"configured"] boolValue])
             [NSUserDefaults.standardUserDefaults setBool:YES forKey:GBPromptKey()];
           else GBShowBark();
         });

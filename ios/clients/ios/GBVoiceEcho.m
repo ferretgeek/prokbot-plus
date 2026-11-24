@@ -88,7 +88,7 @@ void GBVoiceEchoTimings(int64_t *out) {
 }
 
 - (BOOL)capture:(AVAudioPCMBuffer *)buffer atTime:(AVAudioTime *)time {
-  if (atomic_load(&_invalidReference) || !time.isHostTimeValid || !buffer.floatChannelData || buffer.format.sampleRate != _rate ||
+  if (atomic_load(&_invalidReference) || !time.isHostTimeValid || !buffer.floatChannelData || (int)llround(buffer.format.sampleRate) != _rate ||
       !buffer.format.channelCount) return NO;
   uint64_t tick = (uint64_t)llround([AVAudioTime secondsForHostTime:time.hostTime] * _rate);
   unsigned channels = buffer.format.channelCount;

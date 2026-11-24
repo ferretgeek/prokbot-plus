@@ -5,6 +5,8 @@
 #import <sys/socket.h>
 #import <netinet/in.h>
 #import <unistd.h>
+#include <stdatomic.h>
+#include <string.h>
 
 extern char *GBTailcatIdentity(void);
 extern char *GBTailcatStart(const char *config);
@@ -14,6 +16,8 @@ extern void GBTailcatFree(char *text);
 
 static int GBActiveTunnel, GBPendingTunnel, GBReservedSocket = -1;
 static uint16_t GBActivePort, GBPendingPort;
+static atomic_bool GBActiveEnabledAtomic;
+static _Atomic(uint16_t) GBActivePortAtomic;
 static CFAbsoluteTime GBLastAttempt;
 static CFAbsoluteTime GBPeerUnhealthySince;
 static const CFTimeInterval GBPeerRecoveryGrace = 20;
@@ -51,7 +55,7 @@ static void GBNetworkDropPending(void) {
 }
 static NSDictionary *GBNetworkQuery(void) {
   return @{(__bridge id)kSecClass:(__bridge id)kSecClassGenericPassword,
-    (__bridge id)kSecAttrService:[@"grokbot.network." stringByAppendingString:NSBundle.mainBundle.bundleIdentifier],
+    (__bridge id)kSecAttrService:[@"grokbot.network." stringByAppendingString:NSBundle.mainBundle.bundleIdentifier ?: @""],
     (__bridge id)kSecAttrAccount:@"tailcat"};
 }
 static NSDictionary *GBNetworkRead(void) {
@@ -62,7 +66,9 @@ static NSDictionary *GBNetworkRead(void) {
   return [value isKindOfClass:NSDictionary.class] ? value : nil;
 }
 static BOOL GBNetworkWrite(NSDictionary *value) {
-  NSDictionary *attrs = @{(__bridge id)kSecValueData:[NSJSONSerialization dataWithJSONObject:value options:0 error:nil],
+  NSData *data = value ? [NSJSONSerialization dataWithJSONObject:value options:0 error:nil] : nil;
+  if (!data) return NO;
+  NSDictionary *attrs = @{(__bridge id)kSecValueData:data,
     (__bridge id)kSecAttrAccessible:(__bridge id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly};
   OSStatus result = SecItemUpdate((__bridge CFDictionaryRef)GBNetworkQuery(), (__bridge CFDictionaryRef)attrs);
   if (result == errSecItemNotFound) { NSMutableDictionary *q = [GBNetworkQuery() mutableCopy]; [q addEntriesFromDictionary:attrs]; result = SecItemAdd((__bridge CFDictionaryRef)q, NULL); }
@@ -70,17 +76,24 @@ static BOOL GBNetworkWrite(NSDictionary *value) {
 }
 static NSDictionary *GBNetworkResult(char *raw) {
   if (!raw) return nil;
-  NSData *data = [[NSString stringWithUTF8String:raw] dataUsingEncoding:NSUTF8StringEncoding]; GBTailcatFree(raw);
-  id result = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  id result = nil;
+  if (raw[0] != '\0') {
+    NSData *data = [NSData dataWithBytesNoCopy:raw length:strlen(raw) freeWhenDone:NO];
+    result = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  }
+  GBTailcatFree(raw);
   return [result isKindOfClass:NSDictionary.class] ? result : nil;
 }
 NSString *GBNetworkAddress(void) {
   __block NSString *address; GBNetworkSync(^{ address = GBActiveNetwork[@"address"] ?: @""; }); return address;
 }
 BOOL GBNetworkEnabled(void) {
-  __block BOOL enabled; GBNetworkSync(^{ enabled = [GBActiveNetwork[@"enabled"] boolValue]; }); return enabled;
+  return atomic_load_explicit(&GBActiveEnabledAtomic, memory_order_acquire);
 }
 BOOL GBNetworkEnsureReadyForURL(NSURL *url) {
+  if (!atomic_load_explicit(&GBActiveEnabledAtomic, memory_order_acquire)) return YES;
+  uint16_t activePort = atomic_load_explicit(&GBActivePortAtomic, memory_order_acquire);
+  if (!activePort || ![url.host isEqualToString:@"127.0.0.1"] || url.port.integerValue != activePort) return YES;
   __block BOOL ready = YES;
   GBNetworkSync(^{
     if (![GBActiveNetwork[@"enabled"] boolValue] || ![url.host isEqual:@"127.0.0.1"] ||
@@ -88,8 +101,9 @@ BOOL GBNetworkEnsureReadyForURL(NSURL *url) {
     NSDictionary *status = GBActiveTunnel ? GBNetworkResult(GBTailcatStatus(GBActiveTunnel)) : nil;
     CFAbsoluteTime now = CFAbsoluteTimeGetCurrent();
     BOOL listening = [status[@"listening"] boolValue];
+    BOOL hasError = [status[@"error"] isKindOfClass:NSString.class] && [status[@"error"] length] > 0;
     if (listening) {
-      if ([status[@"state"] isEqual:@"ready"] && ![status[@"error"] length]) {
+      if ([status[@"state"] isEqual:@"ready"] && !hasError) {
         GBPeerUnhealthySince = 0; GBPeerWasReady = YES;
         return;
       }
@@ -106,14 +120,21 @@ BOOL GBNetworkEnsureReadyForURL(NSURL *url) {
     int old = GBActiveTunnel; GBActiveTunnel = 0;
     if (old) GBTailcatStop(old); // Releases the local listener before asynchronous peer cleanup.
     GBNetworkReleaseSocket();
-    NSDictionary *config = @{@"mode":@"forward", @"link":GBActiveNetwork[@"address"],
-      @"identity":GBActiveNetwork[@"identity"], @"localPort":@(GBActivePort)};
+    NSString *link = [GBActiveNetwork[@"address"] isKindOfClass:NSString.class] ? GBActiveNetwork[@"address"] : nil;
+    id identity = GBActiveNetwork[@"identity"];
+    if (!link.length || !identity) {
+      GBStartFailures = MIN(GBStartFailures + 1, 8u);
+      return;
+    }
+    NSDictionary *config = @{@"mode":@"forward", @"link":link,
+      @"identity":identity, @"localPort":@(GBActivePort)};
     NSData *data = [NSJSONSerialization dataWithJSONObject:config options:0 error:nil];
-    NSString *raw = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    NSDictionary *result = GBNetworkResult(GBTailcatStart(raw.UTF8String));
+    NSString *raw = data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
+    NSDictionary *result = raw ? GBNetworkResult(GBTailcatStart(raw.UTF8String)) : nil;
     int handle = [result[@"handle"] intValue];
-    ready = handle && [result[@"status"][@"listening"] boolValue] &&
-      GBNetworkPort(result[@"status"][@"localURL"]) == GBActivePort;
+    NSDictionary *resultStatus = [result[@"status"] isKindOfClass:NSDictionary.class] ? result[@"status"] : nil;
+    ready = handle && [resultStatus[@"listening"] boolValue] &&
+      GBNetworkPort(resultStatus[@"localURL"]) == GBActivePort;
     if (ready) { GBActiveTunnel = handle; GBStartFailures = 0; GBPeerUnhealthySince = now; }
     else { if (handle) GBTailcatStop(handle); GBStartFailures = MIN(GBStartFailures + 1, 8u); }
     GBDiagnosticsEvent(old ? @"connection.tunnel.restart" : @"connection.tunnel.start",
@@ -128,8 +149,8 @@ NSDictionary *GBNetworkStatus(void) {
     if (![GBActiveNetwork[@"enabled"] boolValue]) { status = @{@"state":@"direct", @"healthy":@YES}; return; }
     NSDictionary *value = GBActiveTunnel ? GBNetworkResult(GBTailcatStatus(GBActiveTunnel)) : nil;
     NSMutableDictionary *result = [(value ?: @{@"state":@"connecting"}) mutableCopy];
-    result[@"healthy"] = @([value[@"listening"] boolValue] && [value[@"state"] isEqual:@"ready"] &&
-      ![value[@"error"] length]);
+    BOOL hasError = [value[@"error"] isKindOfClass:NSString.class] && [value[@"error"] length] > 0;
+    result[@"healthy"] = @([value[@"listening"] boolValue] && [value[@"state"] isEqual:@"ready"] && !hasError);
     status = result;
   });
   return status;
@@ -154,13 +175,16 @@ NSString *GBNetworkPrepare(NSString *address, BOOL enabled, NSError **error) {
     if (!identity) return;
     record[@"identity"] = identity;
     NSDictionary *config = @{@"mode":@"forward", @"link":input ?: @"", @"identity":identity};
-    NSString *raw = [[NSString alloc] initWithData:[NSJSONSerialization dataWithJSONObject:config options:0 error:nil] encoding:NSUTF8StringEncoding];
+    NSData *configData = [NSJSONSerialization dataWithJSONObject:config options:0 error:nil];
+    NSString *raw = configData ? [[NSString alloc] initWithData:configData encoding:NSUTF8StringEncoding] : nil;
+    if (!raw) return;
     NSDictionary *result = GBNetworkResult(GBTailcatStart(raw.UTF8String));
     int handle = [result[@"handle"] intValue];
-    uint16_t port = GBNetworkPort(result[@"status"][@"localURL"]);
-    if (!handle || !port || ![result[@"status"][@"listening"] boolValue]) { if (handle) GBTailcatStop(handle); return; }
+    NSDictionary *resultStatus = [result[@"status"] isKindOfClass:NSDictionary.class] ? result[@"status"] : nil;
+    uint16_t port = GBNetworkPort(resultStatus[@"localURL"]);
+    if (!handle || !port || ![resultStatus[@"listening"] boolValue]) { if (handle) GBTailcatStop(handle); return; }
     GBPendingTunnel = handle; GBPendingPort = port; GBPendingNetwork = record;
-    prepared = result[@"status"][@"localURL"];
+    prepared = resultStatus[@"localURL"];
   });
   if (!prepared && error) *error = [NSError errorWithDomain:@"GrokBotNetwork" code:1
     userInfo:@{NSLocalizedDescriptionKey:GBL(@"无法连接，请检查地址后重试。", @"Could not connect. Check the address and try again.")}];
@@ -173,6 +197,8 @@ BOOL GBNetworkCommit(void) {
     int old = GBActiveTunnel;
     GBNetworkReleaseSocket();
     GBActiveTunnel = GBPendingTunnel; GBActivePort = GBPendingPort; GBActiveNetwork = GBPendingNetwork;
+    atomic_store_explicit(&GBActivePortAtomic, GBActivePort, memory_order_release);
+    atomic_store_explicit(&GBActiveEnabledAtomic, [GBActiveNetwork[@"enabled"] boolValue], memory_order_release);
     GBPendingTunnel = 0; GBPendingPort = 0; GBPendingNetwork = nil;
     GBLastAttempt = 0; GBStartFailures = 0; GBPeerUnhealthySince = 0; GBPeerWasReady = NO;
     if (old) GBTailcatStop(old);
@@ -187,16 +213,37 @@ NSString *GBNetworkRestore(NSString *fallback) {
       address = [NSString stringWithFormat:@"http://127.0.0.1:%hu", GBActivePort]; return;
     }
     GBActiveNetwork = GBNetworkRead();
-    if (![GBActiveNetwork[@"enabled"] boolValue]) { address = GBActiveNetwork[@"address"] ?: fallback; return; }
+    BOOL enabled = [GBActiveNetwork[@"enabled"] boolValue];
+    if (!enabled) {
+      GBActivePort = 0;
+      atomic_store_explicit(&GBActivePortAtomic, 0, memory_order_release);
+      atomic_store_explicit(&GBActiveEnabledAtomic, false, memory_order_release);
+      address = GBActiveNetwork[@"address"] ?: fallback;
+      return;
+    }
     // Constructor restore never enters Go. Hold the port until the first request
     // starts the listener after dyld has completed its initializers.
     GBNetworkReleaseSocket();
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in local = {0}; local.sin_family = AF_INET; local.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    if (fd < 0 || bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0) { if (fd >= 0) close(fd); return; }
+    if (fd < 0 || bind(fd, (struct sockaddr *)&local, sizeof(local)) != 0) {
+      if (fd >= 0) close(fd);
+      GBActivePort = 0;
+      atomic_store_explicit(&GBActivePortAtomic, 0, memory_order_release);
+      atomic_store_explicit(&GBActiveEnabledAtomic, false, memory_order_release);
+      return;
+    }
     socklen_t size = sizeof(local);
-    if (getsockname(fd, (struct sockaddr *)&local, &size) != 0) { close(fd); return; }
+    if (getsockname(fd, (struct sockaddr *)&local, &size) != 0) {
+      close(fd);
+      GBActivePort = 0;
+      atomic_store_explicit(&GBActivePortAtomic, 0, memory_order_release);
+      atomic_store_explicit(&GBActiveEnabledAtomic, false, memory_order_release);
+      return;
+    }
     GBReservedSocket = fd; GBActivePort = ntohs(local.sin_port);
+    atomic_store_explicit(&GBActivePortAtomic, GBActivePort, memory_order_release);
+    atomic_store_explicit(&GBActiveEnabledAtomic, true, memory_order_release);
     GBActiveTunnel = 0; GBLastAttempt = 0; GBStartFailures = 0; GBPeerUnhealthySince = 0; GBPeerWasReady = NO;
     address = [NSString stringWithFormat:@"http://127.0.0.1:%hu", GBActivePort];
   });
@@ -207,6 +254,8 @@ void GBNetworkClear(void) {
     GBNetworkDropPending();
     int old = GBActiveTunnel;
     GBActiveTunnel = 0; GBActivePort = 0; GBActiveNetwork = nil;
+    atomic_store_explicit(&GBActivePortAtomic, 0, memory_order_release);
+    atomic_store_explicit(&GBActiveEnabledAtomic, false, memory_order_release);
     GBLastAttempt = 0; GBStartFailures = 0; GBPeerUnhealthySince = 0; GBPeerWasReady = NO;
     GBNetworkReleaseSocket();
     SecItemDelete((__bridge CFDictionaryRef)GBNetworkQuery());

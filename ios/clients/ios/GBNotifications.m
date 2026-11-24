@@ -2,12 +2,14 @@
 #import "GBConnection.h"
 #import "GBPush.h"
 #import <UserNotifications/UserNotifications.h>
+#include <string.h>
 
 @interface GBNotifications () <NSURLSessionDataDelegate, UNUserNotificationCenterDelegate>
 @property(nonatomic, strong) NSURLSession *session;
 @property(nonatomic, strong) NSURLSessionDataTask *task;
 @property(nonatomic, strong) NSMutableData *buffer;
 @property(nonatomic, assign) NSUInteger generation;
+@property(nonatomic, assign) NSUInteger retryCount;
 @property(nonatomic, strong) NSString *eventId;
 @property(nonatomic, strong) NSString *eventType;
 @property(nonatomic, strong) NSMutableArray *eventLines;
@@ -31,13 +33,27 @@
 }
 - (void)start {
   NSString *base = GBConnection.shared.serverURL;
-  NSString *authorization = [@"Bearer " stringByAppendingString:GBConnection.shared.deviceToken ?: @""];
-  if (self.task.state == NSURLSessionTaskStateRunning && self.task &&
+  NSString *token = GBConnection.shared.deviceToken;
+  if (self.task && self.task.state == NSURLSessionTaskStateRunning && base.length && token.length &&
       [self.task.originalRequest.URL.absoluteString isEqual:[base stringByAppendingString:@"/notifications/events"]] &&
-      [[self.task.originalRequest valueForHTTPHeaderField:@"Authorization"] isEqual:authorization]) return;
+      [[self.task.originalRequest valueForHTTPHeaderField:@"Authorization"] isEqual:[@"Bearer " stringByAppendingString:token]])
+    return;
+  self.retryCount = 0;
+  [self connect];
+}
+- (void)connect {
+  NSString *base = GBConnection.shared.serverURL;
+  NSString *token = GBConnection.shared.deviceToken;
+  if (self.task && self.task.state == NSURLSessionTaskStateRunning && base.length && token.length &&
+      [self.task.originalRequest.URL.absoluteString isEqual:[base stringByAppendingString:@"/notifications/events"]] &&
+      [[self.task.originalRequest valueForHTTPHeaderField:@"Authorization"] isEqual:[@"Bearer " stringByAppendingString:token]])
+    return;
   [self stop];
-  if (!GBConnection.shared.deviceToken.length ||
+  if (!base.length || !token.length ||
       UIApplication.sharedApplication.applicationState != UIApplicationStateActive)
+    return;
+  NSURL *url = [NSURL URLWithString:[base stringByAppendingString:@"/notifications/events"]];
+  if (!url)
     return;
   self.buffer = [NSMutableData data];
   self.eventLines = [NSMutableArray array];
@@ -47,17 +63,15 @@
   self.session = [NSURLSession sessionWithConfiguration:config
                                                delegate:self
                                           delegateQueue:NSOperationQueue.mainQueue];
-  NSMutableURLRequest *request = [NSMutableURLRequest
-      requestWithURL:[NSURL URLWithString:[GBConnection.shared.serverURL
-                                              stringByAppendingString:@"/notifications/events"]]];
-  [request setValue:[@"Bearer " stringByAppendingString:GBConnection.shared.deviceToken]
+  NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:url];
+  [request setValue:[@"Bearer " stringByAppendingString:token]
       forHTTPHeaderField:@"Authorization"];
   [request setValue:@"text/event-stream" forHTTPHeaderField:@"Accept"];
   [request setValue:@"1" forHTTPHeaderField:@"X-GrokBot-Foreground"];
   NSString *last =
       [[NSUserDefaults.standardUserDefaults dictionaryForKey:@"GrokBotLocal.notificationCursor"]
-          objectForKey:GBConnection.shared.serverURL];
-  if (last.length)
+          objectForKey:base];
+  if ([last isKindOfClass:NSString.class] && last.length)
     [request setValue:last forHTTPHeaderField:@"Last-Event-ID"];
   self.task = [self.session dataTaskWithRequest:request];
   [self.task resume];
@@ -73,13 +87,16 @@
               dataTask:(NSURLSessionDataTask *)task
     didReceiveResponse:(NSURLResponse *)response
      completionHandler:(void (^)(NSURLSessionResponseDisposition))completionHandler {
-  NSInteger status = ((NSHTTPURLResponse *)response).statusCode;
+  NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class]
+      ? ((NSHTTPURLResponse *)response).statusCode : 0;
   if (status == 401) {
     completionHandler(NSURLSessionResponseCancel);
     [self stop];
     [GBConnection.shared show];
     return;
   }
+  if (status == 200)
+    self.retryCount = 0;
   completionHandler(status == 200 ? NSURLSessionResponseAllow : NSURLSessionResponseCancel);
 }
 - (void)URLSession:(NSURLSession *)session
@@ -92,20 +109,22 @@
     [self stop];
     return;
   }
-  while (YES) {
-    const uint8_t *bytes = self.buffer.bytes;
-    NSUInteger pos = 0;
-    while (pos < self.buffer.length && bytes[pos] != '\n')
-      pos++;
-    if (pos == self.buffer.length)
+  const uint8_t *bytes = self.buffer.bytes;
+  NSUInteger total = self.buffer.length;
+  NSUInteger offset = 0;
+  while (offset < total) {
+    const uint8_t *nl = memchr(bytes + offset, '\n', total - offset);
+    if (!nl)
       break;
-    NSData *lineData = [self.buffer subdataWithRange:NSMakeRange(0, pos)];
-    [self.buffer replaceBytesInRange:NSMakeRange(0, pos + 1) withBytes:NULL length:0];
-    NSString *line = [[NSString alloc] initWithData:lineData encoding:NSUTF8StringEncoding];
+    NSUInteger lineLen = (NSUInteger)(nl - (bytes + offset));
+    if (lineLen > 0 && bytes[offset + lineLen - 1] == '\r')
+      lineLen--;
+    NSString *line = [[NSString alloc] initWithBytes:bytes + offset
+                                              length:lineLen
+                                            encoding:NSUTF8StringEncoding];
+    offset = (NSUInteger)(nl - bytes) + 1;
     if (!line)
       continue;
-    if ([line hasSuffix:@"\r"])
-      line = [line substringToIndex:line.length - 1];
     if (!line.length) {
       [self event];
       self.eventType = nil;
@@ -122,18 +141,23 @@
       self.eventId = [[line substringFromIndex:3]
           stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
   }
+  if (offset > 0 && self.buffer)
+    [self.buffer replaceBytesInRange:NSMakeRange(0, offset) withBytes:NULL length:0];
 }
 - (void)event {
   if (![self.eventType isEqual:@"notification"] || !self.eventLines.count)
     return;
   NSData *data =
       [[self.eventLines componentsJoinedByString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
-  NSDictionary *n = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+  id parsed = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+  if (![parsed isKindOfClass:NSDictionary.class])
+    return;
+  NSDictionary *n = parsed;
   NSString *identity = [n[@"id"] isKindOfClass:NSString.class] ? n[@"id"] : nil;
   if (!identity.length)
     return;
   NSString *base = GBConnection.shared.serverURL;
-  if (!base)
+  if (!base.length)
     return;
   NSMutableDictionary *cursors =
       [[NSUserDefaults.standardUserDefaults dictionaryForKey:@"GrokBotLocal.notificationCursor"]
@@ -149,10 +173,17 @@
   if (task != self.task)
     return;
   self.task = nil;
+  [self.session invalidateAndCancel];
+  self.session = nil;
+  self.buffer = nil;
   NSUInteger generation = self.generation;
-  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-    if (self.generation == generation)
-      [self start];
-  });
+  double delay = MIN(60.0, 3.0 * (1u << MIN(self.retryCount, 4u)));
+  if (self.retryCount < 8)
+    self.retryCount++;
+  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
+                 dispatch_get_main_queue(), ^{
+                   if (self.generation == generation)
+                     [self connect];
+                 });
 }
 @end

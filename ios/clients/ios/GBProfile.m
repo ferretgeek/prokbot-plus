@@ -10,6 +10,21 @@ static NSDictionary *GBUserProfile;
 static UIImage *GBUserAvatar;
 static NSString *GBProfileScope;
 static char GBOriginalVisibility;
+static char GBHiddenSiblingsKey;
+static dispatch_queue_t GBProfileIOQueue(void) {
+  static dispatch_queue_t queue;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    queue = dispatch_queue_create("dev.grokbot.profile.io", DISPATCH_QUEUE_SERIAL);
+  });
+  return queue;
+}
+static Class GBParagraphViewClass(void) {
+  static Class cls;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ cls = NSClassFromString(@"RCTParagraphComponentView"); });
+  return cls;
+}
 static NSString *GBCurrentProfileScope(void) {
   NSString *scope = [NSString stringWithFormat:@"%@\n%@", (GBNetworkAddress().length ? GBNetworkAddress() : GBConnection.shared.serverURL) ?: @"",
     [NSUserDefaults.standardUserDefaults stringForKey:@"GrokBotLocal.deviceId"] ?: @""];
@@ -27,13 +42,31 @@ void GBResetProfileView(UIView *view) {
   for (UIView *child in view.subviews) {
     NSNumber *hidden = objc_getAssociatedObject(child, &GBOriginalVisibility);
     if (hidden) {
-      child.hidden = hidden.boolValue;
+      BOOL original = hidden.boolValue;
+      if (child.hidden != original) child.hidden = original;
       objc_setAssociatedObject(child, &GBOriginalVisibility, nil,
                                OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
   }
+  NSHashTable<UIView *> *siblings = objc_getAssociatedObject(view, &GBHiddenSiblingsKey);
+  if (siblings) {
+    for (UIView *sibling in siblings) {
+      NSNumber *hidden = objc_getAssociatedObject(sibling, &GBOriginalVisibility);
+      if (hidden) {
+        BOOL original = hidden.boolValue;
+        if (sibling.hidden != original) sibling.hidden = original;
+        objc_setAssociatedObject(sibling, &GBOriginalVisibility, nil,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+      }
+    }
+    objc_setAssociatedObject(view, &GBHiddenSiblingsKey, nil,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
 }
-NSString *GBProfileName(void) { return GBUserProfile[@"displayName"] ?: GBL(@"本地用户", @"Local user"); }
+NSString *GBProfileName(void) {
+  NSString *value = GBUserProfile[@"displayName"];
+  return [value isKindOfClass:NSString.class] && value.length ? value : GBL(@"本地用户", @"Local user");
+}
 NSString *GBProfileHostName(void) {
   NSString *value = GBUserProfile[@"hostName"];
   return [value isKindOfClass:NSString.class] && value.length ? value : @"Grok Bot Host";
@@ -68,32 +101,43 @@ void GBRestoreProfileCache(void) {
 void GBClearProfileCache(void) {
   GBProfileScope = nil;
   GBSetProfile(@{});
-  [NSFileManager.defaultManager removeItemAtURL:GBProfileCacheURL() error:nil];
+  NSURL *url = GBProfileCacheURL();
+  if (!url) return;
+  dispatch_sync(GBProfileIOQueue(), ^{
+    [NSFileManager.defaultManager removeItemAtURL:url error:nil];
+  });
 }
 static void GBSaveProfileCache(void) {
   NSMutableDictionary *profile = [GBUserProfile mutableCopy];
+  if (!profile) return;
   if (profile[@"avatarDataUrl"] == NSNull.null) [profile removeObjectForKey:@"avatarDataUrl"];
   if (profile[@"updatedAt"] == NSNull.null) [profile removeObjectForKey:@"updatedAt"];
-  NSDictionary *cache = @{@"scope":GBProfileScope ?: GBCurrentProfileScope(), @"profile":profile};
-  NSData *data = [NSPropertyListSerialization dataWithPropertyList:cache format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
+  NSString *scope = [GBProfileScope ?: GBCurrentProfileScope() copy];
+  NSDictionary *cache = @{@"scope":scope, @"profile":[profile copy]};
   NSURL *url = GBProfileCacheURL();
-  [NSFileManager.defaultManager createDirectoryAtURL:url.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
-  [data writeToURL:url options:NSDataWritingAtomic | NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication error:nil];
-  [NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:url.path error:nil];
+  if (!url) return;
+  dispatch_async(GBProfileIOQueue(), ^{
+    NSData *data = [NSPropertyListSerialization dataWithPropertyList:cache format:NSPropertyListBinaryFormat_v1_0 options:0 error:nil];
+    if (!data) return;
+    [NSFileManager.defaultManager createDirectoryAtURL:url.URLByDeletingLastPathComponent withIntermediateDirectories:YES attributes:nil error:nil];
+    [data writeToURL:url options:NSDataWritingAtomic | NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication error:nil];
+    [NSFileManager.defaultManager setAttributes:@{NSFilePosixPermissions:@0600} ofItemAtPath:url.path error:nil];
+  });
 }
 static void GBProfileRequest(NSString *method, NSDictionary *body,
                              void (^complete)(NSDictionary *, NSError *)) {
-  if (!GBConnection.shared.deviceToken.length)
-    return;
-  GBRestoreProfileCache();
   NSString *serverURL = GBConnection.shared.serverURL;
   NSString *deviceToken = GBConnection.shared.deviceToken;
-  NSMutableURLRequest *r = [NSMutableURLRequest
-      requestWithURL:[NSURL URLWithString:[GBConnection.shared.serverURL
-                                              stringByAppendingString:@"/local/profile"]]];
+  if (!serverURL.length || !deviceToken.length)
+    return;
+  GBRestoreProfileCache();
+  NSURL *url = [NSURL URLWithString:[serverURL stringByAppendingString:@"/local/profile"]];
+  if (!url)
+    return;
+  NSMutableURLRequest *r = [NSMutableURLRequest requestWithURL:url];
   r.HTTPMethod = method;
   r.timeoutInterval = 20;
-  [r setValue:[@"Bearer " stringByAppendingString:GBConnection.shared.deviceToken]
+  [r setValue:[@"Bearer " stringByAppendingString:deviceToken]
       forHTTPHeaderField:@"Authorization"];
   if (body) {
     r.HTTPBody = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
@@ -104,15 +148,23 @@ static void GBProfileRequest(NSString *method, NSDictionary *body,
         completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
           NSDictionary *value =
               data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+          NSInteger status = [response isKindOfClass:NSHTTPURLResponse.class]
+              ? ((NSHTTPURLResponse *)response).statusCode : 0;
           dispatch_async(dispatch_get_main_queue(), ^{
             if (![serverURL isEqual:GBConnection.shared.serverURL] ||
                 ![deviceToken isEqual:GBConnection.shared.deviceToken]) return;
-            if (error || ((NSHTTPURLResponse *)response).statusCode != 200 ||
+            if (error || status != 200 ||
                 ![value isKindOfClass:NSDictionary.class] ||
-                ![value[@"displayName"] isKindOfClass:NSString.class]) {
+                ![value[@"displayName"] isKindOfClass:NSString.class] ||
+                ![value[@"displayName"] length]) {
               if (complete)
                 complete(nil,
                          error ?: [NSError errorWithDomain:@"GrokBotProfile" code:1 userInfo:nil]);
+              return;
+            }
+            if ([value isEqualToDictionary:GBUserProfile]) {
+              if (complete)
+                complete(value, nil);
               return;
             }
             GBSetProfile(value);
@@ -230,24 +282,34 @@ void GBRefreshProfile(void) { GBProfileRequest(@"GET", nil, nil); }
   NSItemProvider *provider = results.firstObject.itemProvider;
   if (![provider canLoadObjectOfClass:UIImage.class])
     return;
+  __weak typeof(self) weakSelf = self;
   [provider loadObjectOfClass:UIImage.class
             completionHandler:^(id<NSItemProviderReading> object, NSError *error) {
               if (error || ![object isKindOfClass:UIImage.class])
                 return;
               UIImage *source = (UIImage *)object;
+              if (source.size.width <= 0 || source.size.height <= 0)
+                return;
+              UIGraphicsImageRenderer *r =
+                  [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(256, 256)];
+              UIImage *image = [r imageWithActions:^(UIGraphicsImageRendererContext *c) {
+                CGFloat scale = MAX(256.0 / source.size.width, 256.0 / source.size.height);
+                CGSize size = CGSizeMake(source.size.width * scale, source.size.height * scale);
+                [source drawInRect:CGRectMake((256.0 - size.width) / 2.0,
+                                              (256.0 - size.height) / 2.0,
+                                              size.width, size.height)];
+              }];
+              NSData *png = UIImagePNGRepresentation(image);
+              if (!png.length)
+                return;
+              NSString *encoded = [@"data:image/png;base64,"
+                  stringByAppendingString:[png base64EncodedStringWithOptions:0]];
               dispatch_async(dispatch_get_main_queue(), ^{
-                UIGraphicsImageRenderer *r =
-                    [[UIGraphicsImageRenderer alloc] initWithSize:CGSizeMake(256, 256)];
-                UIImage *image = [r imageWithActions:^(UIGraphicsImageRendererContext *c) {
-                  CGFloat scale = MAX(256 / source.size.width, 256 / source.size.height);
-                  CGSize size = CGSizeMake(source.size.width * scale, source.size.height * scale);
-                  [source drawInRect:CGRectMake((256 - size.width) / 2, (256 - size.height) / 2,
-                                                size.width, size.height)];
-                }];
-                self.avatarData = [@"data:image/png;base64,"
-                    stringByAppendingString:[UIImagePNGRepresentation(image)
-                                                base64EncodedStringWithOptions:0]];
-                [self paint:image];
+                typeof(self) strongSelf = weakSelf;
+                if (!strongSelf)
+                  return;
+                strongSelf.avatarData = encoded;
+                [strongSelf paint:image];
               });
             }];
 }
@@ -301,12 +363,19 @@ BOOL GBReplaceProfileView(UIView *view) {
   if (!GBConnection.shared.deviceToken.length)
     return NO;
   NSString *label = view.accessibilityLabel;
-  BOOL avatar = [label isEqual:@"dev-gateway@localhost avatar"];
-  BOOL row = [label isEqual:@"dev-gateway@localhost"] && view.bounds.size.width > 300 &&
+  if (![label hasPrefix:@"dev-gateway@localhost"])
+    return NO;
+  UIView *cover = [view viewWithTag:731993];
+  if (cover && cover.accessibilityLabel.length) {
+    NSString *suffix = [@", " stringByAppendingString:cover.accessibilityLabel];
+    if (label.length > suffix.length && [label hasSuffix:suffix])
+      label = [label substringToIndex:label.length - suffix.length];
+  }
+  BOOL avatar = [label isEqualToString:@"dev-gateway@localhost avatar"];
+  BOOL row = [label isEqualToString:@"dev-gateway@localhost"] && view.bounds.size.width > 300 &&
              view.bounds.size.height > 50;
   if (!avatar && !row)
     return NO;
-  UIView *cover = [view viewWithTag:731993];
   if (!cover) {
     cover = row ? [UIButton buttonWithType:UIButtonTypeCustom] : [UIView new];
     cover.tag = 731993;
@@ -320,7 +389,8 @@ BOOL GBReplaceProfileView(UIView *view) {
       [(UIButton *)cover addTarget:GBProfileEntry.class
                             action:@selector(open)
                   forControlEvents:UIControlEventTouchUpInside];
-      view.userInteractionEnabled = YES;
+      if (!view.userInteractionEnabled)
+        view.userInteractionEnabled = YES;
     } else {
       cover.userInteractionEnabled = NO;
       cover.layer.cornerRadius = view.bounds.size.width / 2;
@@ -330,6 +400,7 @@ BOOL GBReplaceProfileView(UIView *view) {
     image.tag = 731994;
     image.contentMode = UIViewContentModeScaleAspectFill;
     image.clipsToBounds = YES;
+    image.backgroundColor = UIColor.tertiarySystemGroupedBackgroundColor;
     [cover addSubview:image];
     UILabel *initial = [UILabel new];
     initial.tag = 731995;
@@ -355,9 +426,19 @@ BOOL GBReplaceProfileView(UIView *view) {
       [cover addSubview:chevron];
     }
     [view addSubview:cover];
+  } else {
+    if (!CGRectEqualToRect(cover.frame, view.bounds))
+      cover.frame = view.bounds;
+    if (avatar) {
+      CGFloat coverRadius = view.bounds.size.width / 2;
+      if (cover.layer.cornerRadius != coverRadius)
+        cover.layer.cornerRadius = coverRadius;
+    }
   }
-  cover.layer.zPosition = 1000;
-  [view bringSubviewToFront:cover];
+  if (cover.layer.zPosition != 1000)
+    cover.layer.zPosition = 1000;
+  if (view.subviews.lastObject != cover)
+    [view bringSubviewToFront:cover];
   if (avatar) {
     for (UIView *child in view.subviews) {
       if (child == cover)
@@ -365,45 +446,78 @@ BOOL GBReplaceProfileView(UIView *view) {
       if (!objc_getAssociatedObject(child, &GBOriginalVisibility))
         objc_setAssociatedObject(child, &GBOriginalVisibility, @(child.hidden),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-      child.hidden = YES;
+      if (!child.hidden)
+        child.hidden = YES;
     }
-  }
-  if (avatar) {
     // Fabric renders the original letter as an absolute-positioned sibling of
     // its image. Hide only that text inside the avatar rectangle, not row text.
     UIView *container = view.superview;
-    CGRect avatarRect = [view convertRect:view.bounds toView:container];
-    for (UIView *sibling in container.subviews) {
-      if (sibling == view || ![NSStringFromClass(sibling.class) isEqual:@"RCTParagraphComponentView"])
-        continue;
-      CGRect textRect = [sibling convertRect:sibling.bounds toView:container];
-      if (!CGRectContainsRect(avatarRect, textRect)) continue;
-      if (!objc_getAssociatedObject(sibling, &GBOriginalVisibility))
-        objc_setAssociatedObject(sibling, &GBOriginalVisibility, @(sibling.hidden),
-                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-      sibling.hidden = YES;
+    Class paragraphClass = GBParagraphViewClass();
+    if (container && paragraphClass) {
+      CGRect avatarRect = [view convertRect:view.bounds toView:container];
+      NSHashTable<UIView *> *hiddenSiblings = objc_getAssociatedObject(view, &GBHiddenSiblingsKey);
+      for (UIView *sibling in container.subviews) {
+        if (sibling == view || ![sibling isKindOfClass:paragraphClass])
+          continue;
+        CGRect textRect = [sibling convertRect:sibling.bounds toView:container];
+        if (!CGRectContainsRect(avatarRect, textRect)) continue;
+        if (!objc_getAssociatedObject(sibling, &GBOriginalVisibility))
+          objc_setAssociatedObject(sibling, &GBOriginalVisibility, @(sibling.hidden),
+                                   OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        if (!hiddenSiblings) {
+          hiddenSiblings = NSHashTable.weakObjectsHashTable;
+          objc_setAssociatedObject(view, &GBHiddenSiblingsKey, hiddenSiblings,
+                                   OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        }
+        [hiddenSiblings addObject:sibling];
+        if (!sibling.hidden)
+          sibling.hidden = YES;
+      }
     }
   }
   CGRect imageFrame = row ? CGRectMake(18, 15, 40, 40) : cover.bounds;
   UIImageView *image = (UIImageView *)[cover viewWithTag:731994];
-  image.frame = imageFrame;
-  image.layer.cornerRadius = imageFrame.size.width / 2;
-  image.image = GBProfileAvatar();
-  image.backgroundColor = UIColor.tertiarySystemGroupedBackgroundColor;
+  if (!CGRectEqualToRect(image.frame, imageFrame))
+    image.frame = imageFrame;
+  CGFloat imageRadius = imageFrame.size.width / 2;
+  if (image.layer.cornerRadius != imageRadius)
+    image.layer.cornerRadius = imageRadius;
+  UIImage *avatarImage = GBProfileAvatar();
+  if (image.image != avatarImage)
+    image.image = avatarImage;
+  NSString *displayName = GBProfileName();
+  NSString *initialText = displayName.length
+      ? [displayName substringWithRange:[displayName rangeOfComposedCharacterSequenceAtIndex:0]]
+      : @"";
   UILabel *initial = (UILabel *)[cover viewWithTag:731995];
-  initial.frame = imageFrame;
-  initial.hidden = image.image != nil;
-  initial.text = [GBProfileName()
-      substringWithRange:[GBProfileName() rangeOfComposedCharacterSequenceAtIndex:0]];
+  if (!CGRectEqualToRect(initial.frame, imageFrame))
+    initial.frame = imageFrame;
+  BOOL hideInitial = (avatarImage != nil);
+  if (initial.hidden != hideInitial)
+    initial.hidden = hideInitial;
+  if (![initial.text isEqualToString:initialText])
+    initial.text = initialText;
   if (row) {
     UILabel *name = (UILabel *)[cover viewWithTag:731996];
-    name.frame = CGRectMake(68, 14, cover.bounds.size.width - 112, 22);
-    name.text = GBProfileName();
+    CGRect nameFrame = CGRectMake(68, 14, cover.bounds.size.width - 112, 22);
+    if (!CGRectEqualToRect(name.frame, nameFrame))
+      name.frame = nameFrame;
+    if (![name.text isEqualToString:displayName])
+      name.text = displayName;
     UILabel *subtitle = (UILabel *)[cover viewWithTag:731997];
-    subtitle.frame = CGRectMake(68, 38, cover.bounds.size.width - 112, 18);
-    subtitle.text = GBProfileHostName();
-    [cover viewWithTag:731998].frame = CGRectMake(cover.bounds.size.width - 34, 27, 10, 16);
-    cover.accessibilityLabel = [NSString stringWithFormat:GBL(@"个人资料，%@", @"Profile, %@"), GBProfileName()];
+    CGRect subtitleFrame = CGRectMake(68, 38, cover.bounds.size.width - 112, 18);
+    if (!CGRectEqualToRect(subtitle.frame, subtitleFrame))
+      subtitle.frame = subtitleFrame;
+    NSString *hostName = GBProfileHostName();
+    if (![subtitle.text isEqualToString:hostName])
+      subtitle.text = hostName;
+    UIView *chevron = [cover viewWithTag:731998];
+    CGRect chevronFrame = CGRectMake(cover.bounds.size.width - 34, 27, 10, 16);
+    if (!CGRectEqualToRect(chevron.frame, chevronFrame))
+      chevron.frame = chevronFrame;
+    NSString *coverLabel = [NSString stringWithFormat:GBL(@"个人资料，%@", @"Profile, %@"), displayName];
+    if (![cover.accessibilityLabel isEqualToString:coverLabel])
+      cover.accessibilityLabel = coverLabel;
   }
   return YES;
 }
