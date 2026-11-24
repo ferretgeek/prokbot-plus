@@ -1,4 +1,6 @@
-import { catalogContextPolicy, defaultPolicy, effortLevels, parseModelPolicy, validatePolicy, EFFORTS } from '../runtime/model-policy.mjs';
+import { catalogContextPolicy, defaultPolicy, effortLevels, parseModelPolicy, resolveModelCapabilities, summaryThresholdFor, validatePolicy, EFFORTS } from '../runtime/model-policy.mjs';
+import { extractProviderContextWindow, extractProviderEfforts, normalizeModelId } from '../runtime/model-specs.mjs';
+import { contextCacheFilePath, contextEntryKey, readContextCache, recordCatalogSync, resolveEffectiveContext } from '../runtime/model-context-cache.mjs';
 import { createModelRouter } from '../runtime/model-router.mjs';
 import { anthropicEndpoint, anthropicHeaders } from '../runtime/anthropic-messages.mjs';
 import { createModelSession } from '../runtime/model-session.mjs';
@@ -62,10 +64,62 @@ function compatibilityPolicy(route) {
   return policy;
 }
 
+const MAX_CATALOG_BYTES = 16 * 1024 * 1024;
+const CODEX_MANIFEST_CLIENT_VERSION = '0.160.0';
+
+function extractCatalogModelId(item) {
+  if (typeof item?.id === 'string' && item.id.trim()) return item.id.trim();
+  if (typeof item?.slug === 'string' && item.slug.trim()) return item.slug.trim();
+  if (typeof item?.name === 'string' && item.name.trim()) return item.name.trim().replace(/^models\//, '');
+  if (typeof item?.model === 'string' && item.model.trim()) return item.model.trim();
+  return '';
+}
+
+async function readBoundedJson(response, maxBytes = MAX_CATALOG_BYTES) {
+  const declared = Number(response.headers?.get?.('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) {
+    await response.body?.cancel().catch(() => {});
+    check(false, 502, '模型列表响应过大');
+  }
+  if (!response.body || typeof response.body.getReader !== 'function') {
+    if (typeof response.text === 'function') {
+      const text = await response.text();
+      check(Buffer.byteLength(text, 'utf8') <= maxBytes, 502, '模型列表响应过大');
+      return JSON.parse(text);
+    }
+    return response.json();
+  }
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      const bytes = value instanceof Uint8Array ? value : Buffer.from(value);
+      size += bytes.byteLength;
+      if (size > maxBytes) {
+        await reader.cancel().catch(() => {});
+        check(false, 502, '模型列表响应过大');
+      }
+      if (bytes.byteLength) chunks.push(bytes);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return JSON.parse(Buffer.concat(chunks, size).toString('utf8'));
+}
+
 export class Models {
-  constructor(dataDir, { filename = join(dataDir, 'model.env') } = {}) {
+  constructor(dataDir, { filename = join(dataDir, 'model.env'), fetchImpl, autoSync = false } = {}) {
     this.filename = filename;
     this.dataDir = dataDir;
+    this.fetchImpl = fetchImpl;
+    this.autoSync = Boolean(autoSync);
+    this.contextCachePath = contextCacheFilePath(dataDir);
+    this.syncInFlight = null;
+    this.syncAbort = new AbortController();
+    this.closed = false;
     this.tail = Promise.resolve();
   }
   async current() {
@@ -86,9 +140,30 @@ export class Models {
   async publicConfig() {
     const current = await this.current();
     const { apiKey, jevApiKey, routing, ...summary } = current;
+    const pub = publicModelRouting(routing);
+    const cache = await readContextCache(this.contextCachePath);
+    const providersById = new Map((routing.providers ?? []).map(item => [item.id, item]));
+    const profiles = pub.profiles.map(profile => {
+      const provider = providersById.get(profile.providerId);
+      const effectiveContext = provider
+        ? resolveEffectiveContext({ ...profile, apiFormat: provider.apiFormat, baseUrl: provider.baseUrl }, { cache })
+        : {
+          contextWindowTokens: profile.contextWindowTokens ?? 0,
+          summaryThresholdTokens: profile.summaryThresholdTokens ?? 0,
+          contextSource: (profile.contextWindowTokens ?? 0) > 0 ? 'manual' : 'unknown',
+          contextMode: profile.contextMode ?? ((profile.contextWindowTokens ?? 0) > 0 ? 'manual' : 'auto'),
+        };
+      return { ...profile, effectiveContext };
+    });
+    const providerSync = {};
+    for (const provider of routing.providers ?? []) {
+      if (cache.providers?.[provider.id]) providerSync[provider.id] = cache.providers[provider.id];
+    }
     return {
-      ...publicModelRouting(routing),
+      ...pub,
+      profiles,
       ...summary,
+      contextSync: { updatedAt: cache.updatedAt, providers: providerSync },
       hasApiKey: Boolean(apiKey), hasJevApiKey: Boolean(jevApiKey),
       configured: isConfiguredModelRouting(routing),
       reload: await this.reloadStatus(),
@@ -182,6 +257,7 @@ export class Models {
       await this.write(config);
       const request = { revision: randomUUID(), requestedAt: new Date().toISOString() };
       await writePrivate(join(this.dataDir, 'model-reload-request.json'), `${JSON.stringify(request)}\n`);
+      if (this.autoSync) void this.syncAllProviders().catch(() => {});
       return this.publicConfig();
     });
     this.tail = pending.catch(() => {});
@@ -207,25 +283,266 @@ export class Models {
       const { route } = await this.routeFor(input, { profileId: input.profileId, direct: true });
       provider = route;
     }
-    let response;
     const anthropic = provider.apiFormat === 'anthropic';
-    try {
-      response = await fetch(anthropic ? anthropicEndpoint(provider.baseUrl, 'models') : `${provider.baseUrl}/models`, {
-        redirect: 'error', headers: anthropic ? anthropicHeaders(provider.apiKey) : { authorization: `Bearer ${provider.apiKey}` },
-        signal: AbortSignal.timeout(15_000),
+    const fetcher = this.fetchImpl ?? globalThis.fetch;
+    const baseEndpoint = anthropic ? anthropicEndpoint(provider.baseUrl, 'models') : `${provider.baseUrl}/models`;
+    const headers = anthropic ? anthropicHeaders(provider.apiKey) : { authorization: `Bearer ${provider.apiKey}` };
+    const MAX_MODELS = 2000;
+    const seen = new Set();
+    const seenCursors = new Set();
+    const models = [];
+    let afterId = '';
+
+    for (let page = 0; page < 5 && models.length < MAX_MODELS; page++) {
+      let url = baseEndpoint;
+      if (afterId) {
+        const nextUrl = new URL(baseEndpoint);
+        nextUrl.searchParams.set('after_id', afterId);
+        url = nextUrl.href;
+      }
+      let response, body;
+      try {
+        const timeout = AbortSignal.timeout(15_000);
+        const signal = this.syncAbort ? AbortSignal.any([this.syncAbort.signal, timeout]) : timeout;
+        response = await fetcher(url, {
+          redirect: 'error',
+          headers,
+          signal,
+        });
+        if (!response.ok) {
+          await response.body?.cancel().catch(() => {});
+          check(false, 502, `Model catalog HTTP ${response.status}`);
+        }
+        body = await readBoundedJson(response, MAX_CATALOG_BYTES);
+      } catch (error) {
+        if (error?.status) throw error;
+        check(false, 502, '无法读取模型列表');
+      }
+      const list = Array.isArray(body?.data)
+        ? body.data
+        : Array.isArray(body?.models)
+          ? body.models
+          : Array.isArray(body)
+            ? body
+            : null;
+      check(Array.isArray(list), 502, '模型列表格式不兼容');
+      for (const item of list) {
+        if (models.length >= MAX_MODELS) break;
+        const rawId = extractCatalogModelId(item);
+        if (!rawId || rawId.length > 256 || /[\r\n\0]/.test(rawId) || seen.has(rawId)) continue;
+        seen.add(rawId);
+        const supplied = extractProviderEfforts(item);
+        const capacity = extractProviderContextWindow(item);
+        models.push(resolveModelCapabilities(rawId, { reportedEfforts: supplied, reportedCapacity: capacity }));
+      }
+      if (models.length >= MAX_MODELS) break;
+      if (anthropic && body?.has_more === true && typeof body.last_id === 'string' && body.last_id && !seenCursors.has(body.last_id)) {
+        seenCursors.add(body.last_id);
+        afterId = body.last_id;
+      } else {
+        break;
+      }
+    }
+
+    // Best-effort Codex-manifest enrichment for gateways (such as Sub2API) whose bare
+    // GET /models omits context_window / supported_reasoning_levels unless client_version is passed.
+    if (!anthropic && models.length > 0 && models.length < MAX_MODELS && !models.some(item => item.contextSource === 'provider')) {
+      try {
+        const manifestUrl = new URL(baseEndpoint);
+        if (!manifestUrl.searchParams.has('client_version')) {
+          manifestUrl.searchParams.set('client_version', CODEX_MANIFEST_CLIENT_VERSION);
+        }
+        const timeout = AbortSignal.timeout(8_000);
+        const signal = this.syncAbort ? AbortSignal.any([this.syncAbort.signal, timeout]) : timeout;
+        const manifestResp = await fetcher(manifestUrl.href, {
+          redirect: 'error',
+          headers,
+          signal,
+        });
+        if (manifestResp.ok) {
+          const manifestBody = await readBoundedJson(manifestResp, MAX_CATALOG_BYTES);
+          const manifestList = Array.isArray(manifestBody?.models)
+            ? manifestBody.models
+            : Array.isArray(manifestBody?.data)
+              ? manifestBody.data
+              : null;
+          if (Array.isArray(manifestList)) {
+            const indexById = new Map(models.map((entry, idx) => [entry.id, idx]));
+            for (const item of manifestList) {
+              const rawId = extractCatalogModelId(item);
+              if (!rawId || rawId.length > 256 || /[\r\n\0]/.test(rawId)) continue;
+              const supplied = extractProviderEfforts(item);
+              const capacity = extractProviderContextWindow(item);
+              if (!capacity && !supplied) continue;
+              const existingIdx = indexById.get(rawId);
+              if (existingIdx !== undefined) {
+                const current = models[existingIdx];
+                const merged = resolveModelCapabilities(rawId, {
+                  reportedEfforts: supplied ?? (current.source === 'provider' ? current.efforts : undefined),
+                  reportedCapacity: capacity ?? (current.contextSource === 'provider' ? current.contextWindowTokens : undefined),
+                });
+                models[existingIdx] = merged;
+              } else if (models.length < MAX_MODELS && !seen.has(rawId)) {
+                seen.add(rawId);
+                indexById.set(rawId, models.length);
+                models.push(resolveModelCapabilities(rawId, { reportedEfforts: supplied, reportedCapacity: capacity }));
+              }
+            }
+          }
+        } else {
+          await manifestResp.body?.cancel().catch(() => {});
+        }
+      } catch {
+        /* Optional enrichment; never fail a successful /models catalog. */
+      }
+    }
+    const cacheProvider = {
+      id: provider.id ?? provider.providerId ?? 'default',
+      apiFormat: provider.apiFormat,
+      baseUrl: provider.baseUrl,
+    };
+    await recordCatalogSync(this.contextCachePath, cacheProvider, models, { status: 'ok' }).catch(() => {});
+    return { models };
+  }
+  async syncAllProviders({ force = false } = {}) {
+    if (this.closed) return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, providers: {} };
+    if (this.syncInFlight && !force) return this.syncInFlight;
+    const run = (async () => {
+      const current = await this.current();
+      const providers = (current.routing?.providers ?? []).filter(item => item.baseUrl && item.apiKey);
+      if (!providers.length || this.closed) {
+        return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, providers: {} };
+      }
+      const results = {};
+      let ok = 0, failed = 0, modelsDetected = 0, providerReported = 0;
+      const queue = [...providers];
+      const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+        while (queue.length && !this.closed) {
+          const provider = queue.shift();
+          try {
+            const { models } = await this.catalog({ provider });
+            const detected = models.filter(item => item.contextWindowTokens > 0).length;
+            const reported = models.filter(item => item.contextSource === 'provider' && item.contextWindowTokens > 0).length;
+            ok++;
+            modelsDetected += detected;
+            providerReported += reported;
+            results[provider.id] = { status: 'ok', modelCount: models.length, detectedCount: detected, providerReportedCount: reported };
+          } catch (error) {
+            if (this.closed) return;
+            failed++;
+            const message = String(error?.message ?? error).slice(0, 240);
+            await recordCatalogSync(this.contextCachePath, provider, [], { status: 'error', error: message }).catch(() => {});
+            results[provider.id] = { status: 'error', error: message };
+          }
+        }
       });
-    } catch { check(false, 502, '无法读取模型列表'); }
-    check(response.ok, 502, `Model catalog HTTP ${response.status}`);
-    const body = await response.json();
-    check(Array.isArray(body.data), 502, '模型列表格式不兼容');
-    return { models: body.data.filter(item => typeof item.id === 'string').slice(0, 200).map(item => {
-      const supplied = item.supported_reasoning_efforts ?? item.supported_efforts ?? item.reasoning_effort?.values ?? item.capabilities?.reasoning_efforts;
-      const levels = Array.isArray(supplied) ? EFFORTS.filter(level => supplied.includes(level)) : null;
-      const capacity = [item.context_window, item.max_input_tokens, item.context_length]
-        .find(value => Number.isSafeInteger(value) && value > 0 && value <= 100_000_000);
-      return { id: item.id, efforts: levels ?? effortLevels(item.id), source: levels ? 'provider' : effortLevels(item.id).length ? 'reference' : 'manual',
-        ...catalogContextPolicy(item.id, capacity) };
-    }) };
+      await Promise.all(workers);
+      return { synced: providers.length, ok, failed, modelsDetected, providerReported, providers: results };
+    })();
+    this.syncInFlight = run.finally(() => {
+      if (this.syncInFlight === run) this.syncInFlight = null;
+    });
+    return this.syncInFlight;
+  }
+  async resolve(input = {}) {
+    check(input && typeof input === 'object' && !Array.isArray(input), 400, '参数无效');
+    const resolveFromCacheOrSpec = (id, provider, cache, liveByProvider) => {
+      if (provider) {
+        const normalizedId = normalizeModelId(id);
+        const providerLive = liveByProvider?.get(provider.id);
+        const live = providerLive?.get(id) ?? (normalizedId ? providerLive?.get(normalizedId) : undefined);
+        if (live && live.contextWindowTokens > 0) return live.id === id ? live : { ...live, id };
+        const key = contextEntryKey({ apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, model: id });
+        const normalizedKey = normalizedId && normalizedId !== id.toLowerCase()
+          ? contextEntryKey({ apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, model: normalizedId })
+          : null;
+        const cached = cache?.catalog?.[key] ?? (normalizedKey ? cache?.catalog?.[normalizedKey] : undefined);
+        if (cached && cached.source === 'provider' && cached.contextWindowTokens > 0) {
+          const base = resolveModelCapabilities(id, { reportedCapacity: cached.contextWindowTokens, reportedEfforts: cached.efforts?.length ? cached.efforts : undefined });
+          return { ...base, contextSource: 'provider' };
+        }
+        const spec = resolveModelCapabilities(id);
+        if (spec.contextWindowTokens > 0) return spec;
+        const observed = cache?.observed?.[key];
+        if (observed && Number.isSafeInteger(observed.contextWindowTokens) && observed.contextWindowTokens >= 1_024) {
+          return {
+            ...spec,
+            contextWindowTokens: observed.contextWindowTokens,
+            summaryThresholdTokens: summaryThresholdFor(observed.contextWindowTokens),
+            contextSource: 'observed',
+          };
+        }
+        return spec;
+      }
+      return resolveModelCapabilities(id);
+    };
+
+    if (Array.isArray(input.profiles)) {
+      check(input.profiles.length <= 128, 400, '单次最多识别 128 个模型');
+      const previous = await this.current();
+      const providersById = new Map((previous.routing?.providers ?? []).map(item => [item.id, item]));
+      if (Array.isArray(input.providers)) {
+        for (const draft of input.providers) {
+          try {
+            const validated = validateModelProvider(draft, { previous: previous.routing });
+            providersById.set(validated.id, validated);
+          } catch { /* Draft provider without key yet: fall back to saved/specs. */ }
+        }
+      }
+      const liveByProvider = new Map();
+      if (input.preferUpstream !== false) {
+        const providerIds = [...new Set(input.profiles.map(item => item?.providerId).filter(id => id && providersById.has(id)))];
+        const queue = [...providerIds];
+        const workers = Array.from({ length: Math.min(3, queue.length) }, async () => {
+          while (queue.length) {
+            const providerId = queue.shift();
+            const provider = providersById.get(providerId);
+            if (!provider?.baseUrl || !provider?.apiKey) continue;
+            try {
+              const { models } = await this.catalog({ provider });
+              liveByProvider.set(providerId, new Map(models.map(item => [item.id, item])));
+            } catch { /* Unreachable upstream must not block built-in spec resolution. */ }
+          }
+        });
+        await Promise.all(workers);
+      }
+      const cache = await readContextCache(this.contextCachePath);
+      return {
+        models: input.profiles.map(raw => {
+          const id = clean(raw?.model, '模型名称', 256);
+          const provider = raw?.providerId ? providersById.get(raw.providerId) : undefined;
+          return resolveFromCacheOrSpec(id, provider, cache, liveByProvider);
+        }),
+      };
+    }
+
+    if (Array.isArray(input.models)) {
+      check(input.models.length <= 128, 400, '单次最多识别 128 个模型');
+      return {
+        models: input.models.map((raw) => {
+          const id = clean(raw, '模型名称', 256);
+          return resolveModelCapabilities(id);
+        }),
+      };
+    }
+    const id = clean(input.model, '模型名称', 256);
+    let provider;
+    if (input.providerId || input.provider) {
+      const previous = await this.current();
+      if (input.provider) {
+        try { provider = validateModelProvider(input.provider, { previous: previous.routing }); }
+        catch { provider = undefined; }
+      } else {
+        provider = (previous.routing?.providers ?? []).find(item => item.id === input.providerId);
+      }
+    }
+    const cache = provider ? await readContextCache(this.contextCachePath) : undefined;
+    return { model: resolveFromCacheOrSpec(id, provider, cache) };
+  }
+  async close() {
+    this.closed = true;
+    this.syncAbort.abort(new DOMException('Models service closed', 'AbortError'));
+    await Promise.allSettled([this.syncInFlight, this.tail]);
   }
   async classify(input) {
     const current = await this.current();

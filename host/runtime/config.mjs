@@ -35,10 +35,12 @@ export async function loadModelConfig({ env = process.env } = {}) {
   const path = env.GROKBOT_MODEL_ENV ?? resolve(root, '.runtime/model.env');
   const values = envValues(await readFile(path, 'utf8'));
   const legacy = legacyConfig(values, env);
+  const dataDirectory = resolve(env.GROKBOT_DATA_DIR ?? resolve(path, '..'));
   const common = {
     jevApiKey: legacy.jevApiKey,
-    usageDirectory: resolve(env.GROKBOT_DATA_DIR ?? resolve(path, '..'), 'usage'),
-    routingDirectory: resolve(env.GROKBOT_DATA_DIR ?? resolve(path, '..'), 'routing'),
+    dataDirectory,
+    usageDirectory: resolve(dataDirectory, 'usage'),
+    routingDirectory: resolve(dataDirectory, 'routing'),
   };
   if (!values[MODEL_ROUTING_ENV]) {
     if (!legacy.baseUrl || !legacy.apiKey) throw new Error('Missing model configuration');

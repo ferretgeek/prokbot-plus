@@ -4,6 +4,7 @@ import { validateContextPolicy } from './context-policy.mjs';
 import { EFFORTS, effortLevels } from './model-policy.mjs';
 
 export const API_FORMATS = Object.freeze(['openai', 'openai-responses', 'anthropic']);
+export const CONTEXT_MODES = Object.freeze(['auto', 'manual']);
 export const MODEL_ROUTING_ENV = 'GROKBOT_MODEL_ROUTING';
 
 const MAX_PROVIDERS = 32;
@@ -59,13 +60,24 @@ function profileContext(value) {
 function contextForProfile(value, previous) {
   const hasContext = Object.prototype.hasOwnProperty.call(value, 'contextWindowTokens');
   const hasThreshold = Object.prototype.hasOwnProperty.call(value, 'summaryThresholdTokens');
+  const hasMode = Object.prototype.hasOwnProperty.call(value, 'contextMode') && value.contextMode !== undefined;
   // A provider catalog is optional. Never invent a capacity: it would make the
   // Harness defer compaction past the actual context limit of an unknown model.
   const defaults = previous ?? {};
-  return profileContext({
+  const policy = profileContext({
     contextWindowTokens: hasContext ? value.contextWindowTokens : (defaults.contextWindowTokens ?? 0),
     summaryThresholdTokens: hasThreshold ? value.summaryThresholdTokens : (defaults.summaryThresholdTokens ?? 0),
   });
+  let contextMode;
+  if (hasMode) {
+    if (!CONTEXT_MODES.includes(value.contextMode)) fail('Invalid context mode');
+    contextMode = value.contextMode;
+  } else if (CONTEXT_MODES.includes(defaults.contextMode)) {
+    contextMode = defaults.contextMode;
+  } else {
+    contextMode = policy.contextWindowTokens > 0 ? 'manual' : 'auto';
+  }
+  return { ...policy, contextMode };
 }
 
 function routeEffort(value, profile) {
@@ -209,6 +221,7 @@ function candidate(profile, provider, route) {
     apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, apiKey: provider.apiKey,
     model: profile.model, efforts: [...profile.efforts], effort: route.effort,
     contextWindowTokens: profile.contextWindowTokens, summaryThresholdTokens: profile.summaryThresholdTokens,
+    contextMode: profile.contextMode ?? (profile.contextWindowTokens > 0 ? 'manual' : 'auto'),
   };
 }
 

@@ -2,9 +2,78 @@
 // API format. Formats share request selection, cancellation, usage and completion.
 import { randomUUID } from 'node:crypto';
 import { ModelRequestError } from './model-common.mjs';
+import { isInputTokenLimitError, parseContextLimitFromError } from './model-errors.mjs';
+import { summaryThresholdFor } from './model-policy.mjs';
+import { contextEntryKey, persistObservedCeiling, readContextCacheSync, resolveEffectiveContext } from './model-context-cache.mjs';
 import { chatEndpoint, chatTurn, convertChatMessages, convertChatTools } from './openai-chat.mjs';
 import { responsesEndpoint, responsesTurn } from './openai-responses.mjs';
 import { anthropicEndpoint, anthropicTurn } from './anthropic-messages.mjs';
+
+export const OBSERVED_CEILING_TTL_MS = 6 * 60 * 60 * 1000;
+export const MAX_OBSERVED_CEILINGS = 256;
+const DEFAULT_OBSERVED_CEILINGS = new Map();
+
+export function clearObservedContextCeilings() {
+  DEFAULT_OBSERVED_CEILINGS.clear();
+}
+
+function resolveCandidateContext(candidate, observedCeilings, contextCachePath, now = Date.now()) {
+  const cache = contextCachePath ? readContextCacheSync(contextCachePath) : undefined;
+  const resolved = resolveEffectiveContext(candidate, {
+    cache,
+    observedCeilings,
+    now,
+    observedMemoryTtlMs: OBSERVED_CEILING_TTL_MS,
+  });
+  return {
+    contextWindowTokens: resolved.contextWindowTokens,
+    summaryThresholdTokens: resolved.summaryThresholdTokens,
+  };
+}
+
+function recordObservedCeiling(candidate, observedLimit, observedCeilings, contextCachePath, now = Date.now()) {
+  if (!observedCeilings || !Number.isSafeInteger(observedLimit) || observedLimit < 1_024) return null;
+  const current = resolveCandidateContext(candidate, observedCeilings, contextCachePath, now);
+  const effectiveWindow = current.contextWindowTokens ?? 0;
+  const effectiveThreshold = current.summaryThresholdTokens ?? 0;
+  const observedThreshold = summaryThresholdFor(observedLimit);
+  if (effectiveWindow > 0 && observedLimit > effectiveWindow) return null;
+  if (effectiveWindow > 0 && observedLimit === effectiveWindow &&
+      effectiveThreshold > 0 && effectiveThreshold <= observedThreshold) return null;
+  const key = contextEntryKey(candidate);
+  let existing = observedCeilings.get(key);
+  if (existing && Number.isFinite(existing.observedAt) && now - existing.observedAt >= OBSERVED_CEILING_TTL_MS) {
+    observedCeilings.delete(key);
+    existing = undefined;
+  }
+  const nextWindow = existing ? Math.min(existing.contextWindowTokens, observedLimit) : observedLimit;
+  const nextThreshold = summaryThresholdFor(nextWindow);
+  const entry = { contextWindowTokens: nextWindow, summaryThresholdTokens: nextThreshold, observedAt: now };
+  if (existing) {
+    observedCeilings.delete(key);
+  } else if (observedCeilings.size >= MAX_OBSERVED_CEILINGS) {
+    for (const [entryKey, item] of observedCeilings) {
+      if (Number.isFinite(item?.observedAt) && now - item.observedAt >= OBSERVED_CEILING_TTL_MS) {
+        observedCeilings.delete(entryKey);
+      }
+    }
+    while (observedCeilings.size >= MAX_OBSERVED_CEILINGS) {
+      const oldestKey = observedCeilings.keys().next().value;
+      if (oldestKey === undefined) break;
+      observedCeilings.delete(oldestKey);
+    }
+  }
+  observedCeilings.set(key, entry);
+  if (contextCachePath) {
+    void persistObservedCeiling(contextCachePath, candidate, entry).catch(error => {
+      console.warn(`[model-session] Unable to persist observed context ceiling: ${error.code ?? error.name}`);
+    });
+  }
+  if (!existing || nextWindow < existing.contextWindowTokens) {
+    console.warn(`[model-session] Observed provider context ceiling ${nextWindow} for ${candidate.model}; clamping compaction threshold to ${nextThreshold}`);
+  }
+  return entry;
+}
 
 export { ModelRequestError };
 export const SUPPORTED_MODELS = Object.freeze([
@@ -67,6 +136,7 @@ function requestCandidate(value, defaults) {
     requestOptions: value?.requestOptions ?? defaults.requestOptions,
     contextWindowTokens: value?.contextWindowTokens ?? defaults.contextWindowTokens,
     summaryThresholdTokens: value?.summaryThresholdTokens ?? defaults.summaryThresholdTokens,
+    contextMode: value?.contextMode ?? defaults.contextMode,
     profileId: value?.profileId ?? defaults.profileId,
     profileName: value?.profileName ?? defaults.profileName,
     providerId: value?.providerId ?? defaults.providerId,
@@ -148,8 +218,9 @@ function usageValues(raw = {}, contextWindowTokens = 0) {
 
 export function createModelSession({ baseUrl, apiKey, model, onRequestId, apiFormat = 'openai', policy,
   fetchImpl = globalThis.fetch, headers = {}, requestOptions = {}, contextWindowTokens = 0,
-  summaryThresholdTokens = 0, mapError = error => error, onUsage = async () => {}, selectRequest,
-  onFallback = async () => {}, idleTimeoutMs = 300_000, profileId, providerId, efforts } = {}) {
+  summaryThresholdTokens = 0, contextMode, mapError = error => error, onUsage = async () => {}, selectRequest,
+  onFallback = async () => {}, idleTimeoutMs = 300_000, profileId, providerId, efforts,
+  observedCeilings = DEFAULT_OBSERVED_CEILINGS, contextCachePath } = {}) {
   if (typeof model !== 'string' || !model.trim() || model !== model.trim() || model.length > 256 || /[\r\n\0]/.test(model)) {
     throw new TypeError('model must be an explicitly selected, nonempty model ID');
   }
@@ -170,7 +241,7 @@ export function createModelSession({ baseUrl, apiKey, model, onRequestId, apiFor
   // the tool loop would make the next step invalid when the fallback stripped it.
   let preferredKey;
   const defaults = { baseUrl, apiKey, apiFormat, model, requestOptions, contextWindowTokens,
-    summaryThresholdTokens, profileId, providerId, efforts };
+    summaryThresholdTokens, contextMode, profileId, providerId, efforts };
   const effortsFor = id => policy?.models?.find(entry => entry.id === id)?.efforts;
   let resolvedModelId;
   let selectedContext = { contextWindowTokens, summaryThresholdTokens };
@@ -245,13 +316,14 @@ export function createModelSession({ baseUrl, apiKey, model, onRequestId, apiFor
             : configured;
           const primary = ordered[0];
           let candidates = ordered;
-          const requestContext = { contextWindowTokens: primary.contextWindowTokens,
-            summaryThresholdTokens: primary.summaryThresholdTokens };
+          let requestContext = resolveCandidateContext(primary, observedCeilings, contextCachePath);
           if (trackModel) { selectedContext = requestContext; earlyCompaction = undefined; }
           let turn;
           let activeIterator;
           for (let attempt = 0; attempt < candidates.length; attempt++) {
             const candidate = candidates[attempt];
+            requestContext = resolveCandidateContext(candidate, observedCeilings, contextCachePath);
+            if (trackModel) selectedContext = requestContext;
             const format = FORMATS[candidate.apiFormat];
             const attemptController = new AbortController();
             const onCancel = () => attemptController.abort(controller.signal.reason);
@@ -294,6 +366,14 @@ export function createModelSession({ baseUrl, apiKey, model, onRequestId, apiFor
               // A cancellation can arrive while onFallback() is still awaiting. Do
               // not attach another request to an already-canceled controller.
               controller.signal.throwIfAborted();
+              if (isInputTokenLimitError(error)) {
+                const observedLimit = parseContextLimitFromError(error.message);
+                const recorded = recordObservedCeiling(candidate, observedLimit, observedCeilings, contextCachePath);
+                if (recorded && trackModel) {
+                  requestContext = resolveCandidateContext(candidate, observedCeilings, contextCachePath);
+                  selectedContext = requestContext;
+                }
+              }
               if (quotaExhausted(error)) {
                 const remaining = candidates.slice(attempt);
                 const skipped = skippedCredentialCandidates(remaining);

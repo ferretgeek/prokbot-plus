@@ -4,6 +4,10 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## Unreleased
+
+- **模型上下文自动同步与自愈 / Automatic upstream model context sync & runtime self-healing**：新增四层上下文容量感知与后台自动同步机制（`model-specs.mjs`、`model-context-cache.mjs`）。支持从多格式上游 `/models`（含 Anthropic 分页、OpenRouter / vLLM / Gemini / LiteLLM 字段及支持 Codex 清单协议网关的 `?client_version=` 补充查询）自动提取真实上下文上限与可用思考强度，结合保守内置模型规格表与运行时溢出错误解析，持久化写入按 SHA-256 分键的 `model-context-cache.json`（不存明文 API Key 或服务地址）。服务端在启动、保存模型配置及每 6 小时自动同步，并新增 `POST /admin/api/model/resolve`、`POST /admin/api/model/sync-contexts` 与档案 `contextMode`（`auto` / `manual`）模式；运行时下一回合即可热生效，无需重启 Host。Adds four-layer context-window awareness and background automatic upstream sync (`model-specs.mjs`, `model-context-cache.mjs`). Extracts provider-reported context limits and reasoning efforts across multi-schema `/models` APIs (including Anthropic pagination, OpenRouter/vLLM/Gemini/LiteLLM fields, and best-effort Codex-manifest `?client_version=` enrichment), falls back to a conservative published reference table, and persists runtime overflow ceilings in SHA-256-keyed `model-context-cache.json` (no plaintext API keys or base URLs). The Host syncs on startup, config save, and every 6 hours, adds `POST /admin/api/model/resolve`, `POST /admin/api/model/sync-contexts`, and per-profile `contextMode` (`auto` / `manual`), applying updates on the next turn without restarting Host.
+
 ## ProkBot Plus 1.11.0 (2026-11-24)
 
 管理页「技能」在中文界面下显示内置技能和应用附带技能的中文名称和简介，由 @jun9100 贡献（[#17](https://github.com/ferretgeek/prokbot-plus/pull/17)）。只需升级 Host，客户端都不用重新生成。The admin Skills page shows built-in and app-bundled skills in Chinese when the interface is in Chinese, contributed by @jun9100 (#17). Only the Host needs upgrading; no client rebuild is needed.

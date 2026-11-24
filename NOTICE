@@ -249,6 +249,22 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-24)
       editor dialog title and Sharing skill picker.
     - Contributed by @jun9100 (GitHub pull request #17).
 
+20. Automatic upstream model context sync and runtime ceiling self-healing.
+    - host/runtime/model-specs.mjs (new), model-context-cache.mjs (new),
+      model-policy.mjs, model-routing.mjs, model-session.mjs, model-errors.mjs,
+      config.mjs and host-extensions.mjs: multi-schema provider context-window
+      extraction (including optional Codex-manifest ?client_version= enrichment
+      and gateway region-prefix normalization), conservative published model
+      reference table, persistent shared context cache
+      (model-context-cache.json) with SHA-256 keyed entries, per-profile
+      contextMode ("auto" | "manual"), and runtime overflow ceiling parsing and
+      clamping.
+    - host/server/models.mjs, index.mjs, public/model.js and
+      public/locales-en.js: startup, save-triggered and 6-hour background
+      upstream catalog sync, POST /admin/api/model/resolve and
+      POST /admin/api/model/sync-contexts endpoints, Admin UI auto-fill,
+      auto-follow mode and live context source indicators.
+
 Third-party components
 ----------------------
 
