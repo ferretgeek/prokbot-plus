@@ -1,7 +1,7 @@
 {
-  "checkedOn": "2026-11-24",
+  "checkedOn": "2026-11-25",
   "windows": { "version": "1.2.3", "build": "a5927fa2ba82336a29f9343babd28b4c903abbb2", "archiveBytes": 127618944, "observedArchiveSha256": "85b9e8d10b9ede921b315bb5a1b52db7e0f3438d162aacedfc388c778217765b", "observedAsarSha256": "b1354ec5ae877e94115a643edd4b2e7487929f0a1dfb398411ab314b488ee0d2" },
   "mac": { "version": "1.2.3", "build": "a5927fa2ba82336a29f9343babd28b4c903abbb2", "archiveBytes": 159560653, "observedArchiveSha256": "b7c6268d40bf92b43b6f2eddd733e4d5b5d36e229d2201d06298a19b0e62da08" },
   "linux": { "version": "1.2.3", "build": "a5927fa2ba82336a29f9343babd28b4c903abbb2", "archiveBytes": 117301248, "observedArchiveSha256": "5917521542680b07813a429911f01bfdd191ec6b5409fe5eab623ad5fbf3b08a", "observedAsarSha256": "e12f70375a3a95359e48153daf5f30a2cf20cdcab9f2b3e59e2d513ba090eede" },
-  "ios": { "version": "1.27.0", "store": "us", "trackId": 6794501026 }
+  "ios": { "version": "1.28.0", "store": "us", "trackId": 6794501026 }
 }

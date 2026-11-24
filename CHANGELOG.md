@@ -4,6 +4,10 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## 未发布 / Unreleased
+
+- **官方版本记录 / Official release record**：官方 iOS 已到 1.28.0（2026-11-24 上架，更新说明只写了「Bug fixes and improvements」）。首页版本表和徽章已更新。本项目仍支持 1.27.0，已经装好的客户端不受影响；Windows、Mac 和 Linux 仍是 1.2.3（2026-11-25 核对）。Official iOS is now 1.28.0 (released 2026-11-24; the release notes only say "Bug fixes and improvements"). The homepage version table and badge are updated. This project still supports 1.27.0, and installed clients are unaffected. Windows, Mac and Linux remain at 1.2.3 (checked 2026-11-25).
+
 ## ProkBot Plus 1.12.0 (2026-11-24)
 
 Bot 做多步任务时不再悄悄停下，回合进行中客户端一直显示「工作中」，由 @jun9100 贡献（[#18](https://github.com/ferretgeek/prokbot-plus/pull/18)）。只需升级 Host，客户端都不用重新生成。Bots no longer stop silently partway through multi-step tasks, and clients keep showing that the Bot is working until the turn ends, contributed by @jun9100 (#18). Only the Host needs upgrading; no client rebuild is needed.
