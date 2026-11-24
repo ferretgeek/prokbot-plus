@@ -26,19 +26,22 @@ function assignLocalized(target, localizedName, localizedDescription) {
   if (localizedDescription) target.localizedDescription = { ...localizedDescription }; else delete target.localizedDescription;
 }
 
-function copyVersionMeta({ id, at, name, description, localizedName, localizedDescription }) {
+// Localized copy belongs to the English text it translates; a rename by an older Host or the API drops it.
+function localizedCopy({ name, description, localizedName, localizedDescription }) {
   return {
-    id, at, name, description,
-    ...(localizedName ? { localizedName: { ...localizedName } } : {}),
-    ...(localizedDescription ? { localizedDescription: { ...localizedDescription } } : {}),
+    ...(localizedName?.en === name ? { localizedName: { ...localizedName } } : {}),
+    ...(localizedDescription?.en === description ? { localizedDescription: { ...localizedDescription } } : {}),
   };
+}
+
+function copyVersionMeta({ id, at, name, description, localizedName, localizedDescription }) {
+  return { id, at, name, description, ...localizedCopy({ name, description, localizedName, localizedDescription }) };
 }
 
 function copyItem({ versions, localizedName, localizedDescription, ...item }) {
   return {
     ...item,
-    ...(localizedName ? { localizedName: { ...localizedName } } : {}),
-    ...(localizedDescription ? { localizedDescription: { ...localizedDescription } } : {}),
+    ...localizedCopy({ ...item, localizedName, localizedDescription }),
     versions: versions.map(copyVersionMeta),
   };
 }
@@ -68,22 +71,17 @@ export class Skills {
     check(item, 404, 'Skill not found');
     const content = item.versions.find(entry => entry.id === (version ?? item.current));
     check(content, 404, 'Skill version not found');
-    return {
-      ...copyItem(item),
-      content: {
-        ...content,
-        ...(content.localizedName ? { localizedName: { ...content.localizedName } } : {}),
-        ...(content.localizedDescription ? { localizedDescription: { ...content.localizedDescription } } : {}),
-      },
-    };
+    const { localizedName, localizedDescription, ...rest } = content;
+    return { ...copyItem(item), content: { ...rest, ...localizedCopy(content) } };
   }
-  /** Seed a built-in Host skill once, or backfill its localization on existing unmodified entries. */
+  /** Seed a built-in Host skill once, or backfill its localization on existing unmodified entries.
+   *  Existing entries are not read back, so a damaged entry cannot stop the admin service at startup. */
   async seed(input) {
     check(input && typeof input === 'object' && !Array.isArray(input), 400, 'Invalid skill');
     const id = packageId(input.id);
     const existing = this.store.value.skills.find(item => item.id === id);
-    if (!existing) return this.publish(input, 'host');
-    if (existing.source !== 'host') return this.get(existing.id);
+    if (!existing) { await this.publish(input, 'host'); return; }
+    if (existing.source !== 'host') return;
     const name = textField(input.name, 100, 'skill name');
     const description = textField(input.description, 2000, 'skill description');
     const localizedName = optionalLocalized(input.localizedName, name, 100, 'skill name');
@@ -91,7 +89,7 @@ export class Skills {
     const needsUpdate = target =>
       (localizedName && target.name === name && !sameLocalized(target.localizedName, localizedName)) ||
       (localizedDescription && target.description === description && !sameLocalized(target.localizedDescription, localizedDescription));
-    if (!needsUpdate(existing) && !existing.versions.some(needsUpdate)) return this.get(existing.id);
+    if (!needsUpdate(existing) && !existing.versions.some(needsUpdate)) return;
     await this.store.mutate(state => {
       const item = state.skills.find(entry => entry.id === id);
       if (!item || item.source !== 'host') return;
@@ -108,7 +106,6 @@ export class Skills {
       for (const version of item.versions) apply(version);
       if (changed) state.revision++;
     });
-    return this.get(id);
   }
   async publish(input, source = 'host') {
     const content = validateSkill(input), revision = digest(JSON.stringify(content));

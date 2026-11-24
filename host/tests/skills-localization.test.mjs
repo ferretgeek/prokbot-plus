@@ -286,3 +286,23 @@ test('public i18n localizedText resolves zh-CN and en skill copy with fallback',
   assert.equal(en.localizedText({ 'zh-CN': '仅中文' }, 'English fallback'), 'English fallback');
   assert.equal(en.localizedText(undefined, 'Custom Skill'), 'Custom Skill');
 });
+
+test('localized copy shows only for the English text it translates, and seeding never reads entries back', async t => {
+  const dataDir = await tempDir(t);
+  const skills = await new Skills(dataDir, { hostDataDir: join(dataDir, 'host-data') }).load();
+  await skills.seed(localExportSkill);
+  // An older Host renames the skill without knowing about localization.
+  await skills.store.mutate(state => {
+    const item = state.skills.find(entry => entry.id === localExportSkill.id);
+    item.name = 'Renamed on an older Host';
+    item.versions.find(version => version.id === item.current).name = 'Renamed on an older Host';
+  });
+  const listed = skills.list().find(entry => entry.id === localExportSkill.id);
+  assert.equal(listed.localizedName, undefined);
+  assert.deepEqual(listed.localizedDescription, localExportSkill.localizedDescription);
+  assert.equal(skills.get(localExportSkill.id).content.localizedName, undefined);
+
+  // main starts with a dangling current version; seeding must not turn that into a startup failure.
+  await skills.store.mutate(state => { state.skills.find(entry => entry.id === localExportSkill.id).current = 'missing'; });
+  await skills.seed(localExportSkill);
+});
