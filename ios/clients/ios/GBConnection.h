@@ -16,3 +16,6 @@
 FOUNDATION_EXPORT void GBReloadReactHost(void);
 FOUNDATION_EXPORT void GBOpenAgent(NSString *agentId);
 FOUNDATION_EXPORT void GBTrackModifiedView(UIView *view);
+FOUNDATION_EXPORT BOOL GBHasAncestorPluginTag(UIView *view, NSInteger tag);
+FOUNDATION_EXPORT void GBRemoveDescendantPluginTag(UIView *view, NSInteger tag);
+FOUNDATION_EXPORT BOOL GBIsGlobalSettingsContext(UIView *view);

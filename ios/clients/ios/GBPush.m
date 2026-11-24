@@ -392,6 +392,13 @@ BOOL GBReplacePushView(UIView *view) {
     authorizedStates = [NSSet setWithArray:@[@"authorized", @"provisional", @"ephemeral"]];
   });
   if (!control || !control.accessibilityLabel.length || ![switchLabels containsObject:control.accessibilityLabel]) return NO;
+  // Scope global push replacement to the App Settings screen so per-Bot
+  // "Notifications" toggles inside Bot Settings keep their native behavior.
+  if (!GBIsGlobalSettingsContext(view)) {
+    if (objc_getAssociatedObject(control, &GBOriginalSwitchTargets) != nil)
+      GBResetPushView(view);
+    return NO;
+  }
   NSString *identity = GBPushStateKey();
   NSDictionary *state = [GBDevicePushStateIdentity isEqual:identity] ? GBDevicePushState :
     [NSUserDefaults.standardUserDefaults dictionaryForKey:identity];

@@ -80,6 +80,7 @@
 @end
 BOOL GBReplaceUsageView(UIView *view) {
   if (!GBConnection.shared.isPaired || view.bounds.size.width < 300 || view.bounds.size.height < 44) return NO;
+  if (GBHasAncestorPluginTag(view, 731989)) return NO;
   static NSSet<NSString *> *labels;
   static dispatch_once_t once;
   dispatch_once(&once, ^{ labels = [NSSet setWithArray:@[@"用量", @"Usage"]]; });
@@ -95,6 +96,8 @@ BOOL GBReplaceUsageView(UIView *view) {
     }
   }
   if (![labels containsObject:label]) return NO;
+  GBRemoveDescendantPluginTag(view, 731989);
+  if (button && button.superview != view) button = nil;
   if (!button) {
     button = [UIButton buttonWithType:UIButtonTypeCustom]; button.tag = 731989;
     button.frame = view.bounds;

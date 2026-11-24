@@ -238,13 +238,39 @@ static NSString *GBStripPluginLabelSuffix(NSString *label, UIView *view) {
   }
   return result;
 }
-static BOOL GBHasAncestorPluginTag(UIView *view, NSInteger tag) {
+static void GBClearHostSettingsIdentifier(UIView *view) {
+  if ([view.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"])
+    view.accessibilityIdentifier = nil;
+}
+BOOL GBHasAncestorPluginTag(UIView *view, NSInteger tag) {
   for (UIView *v = view.superview; v; v = v.superview) {
     if (v.tag == tag) return YES;
     for (UIView *sub in v.subviews)
       if (sub.tag == tag) return YES;
   }
   return NO;
+}
+static void GBRemoveDescendantPluginTagAtDepth(UIView *view, NSInteger tag, NSUInteger depth) {
+  if (!view || depth > 8) return;
+  for (UIView *child in [view.subviews copy]) {
+    if (child.tag == tag) continue;
+    NSMutableArray<UIView *> *stale = nil;
+    for (UIView *sub in child.subviews) {
+      if (sub.tag == tag) {
+        if (!stale) stale = [NSMutableArray array];
+        [stale addObject:sub];
+      }
+    }
+    for (UIView *sub in stale) {
+      if (tag == 731991) GBClearHostSettingsIdentifier(child);
+      else if (tag == 731993) GBResetProfileView(child);
+      [sub removeFromSuperview];
+    }
+    GBRemoveDescendantPluginTagAtDepth(child, tag, depth + 1);
+  }
+}
+void GBRemoveDescendantPluginTag(UIView *view, NSInteger tag) {
+  GBRemoveDescendantPluginTagAtDepth(view, tag, 0);
 }
 static BOOL GBSubtreeHasStyledHostButton(UIView *root, UIView *excluding) {
   if (!root || root == excluding || root.hidden || root.alpha < 0.01) return NO;
@@ -274,10 +300,15 @@ static NSSet<NSString *> *GBSettingsContextLabels(void) {
 }
 static BOOL GBSubtreeContainsSettingsMarker(UIView *root, NSSet<NSString *> *markers, NSUInteger depth) {
   if (!root || root.hidden || root.alpha < 0.01 || depth > 24) return NO;
-  if (root.tag == 731993 || root.tag == 731989) return YES;
-  NSString *raw = [root isKindOfClass:UILabel.class] ? ((UILabel *)root).text : root.accessibilityLabel;
+  if (root.tag == 731993 || root.tag == 731989 || root.tag == 731999) return YES;
+  NSString *raw = nil;
+  if ([root isKindOfClass:UILabel.class]) {
+    raw = ((UILabel *)root).text;
+  } else if (root.bounds.size.height <= 240.0 && root.subviews.count <= 12) {
+    raw = root.accessibilityLabel;
+  }
   if (raw.length && raw.length <= 64) {
-    NSString *trimmed = [raw stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *trimmed = GBTrimWhitespaceIfNeeded(raw);
     if ([markers containsObject:trimmed]) return YES;
   }
   for (UIView *child in root.subviews) {
@@ -285,10 +316,10 @@ static BOOL GBSubtreeContainsSettingsMarker(UIView *root, NSSet<NSString *> *mar
   }
   return NO;
 }
-static BOOL GBIsSettingsSignOutContext(UIView *view) {
-  // Scope Sign out interception to the enclosing Settings/Account screen
-  // controller so similarly labeled buttons inside Connected Apps or OAuth
-  // sub-screens cannot accidentally disconnect the Host.
+BOOL GBIsGlobalSettingsContext(UIView *view) {
+  // Scope global Settings interceptions (Sign out, global Push switch) to the
+  // enclosing App Settings screen so similarly labeled controls in Bot Settings
+  // or Connected Apps sub-screens cannot be hijacked.
   UIView *scope = nil;
   for (UIResponder *responder = view.nextResponder; responder; responder = responder.nextResponder) {
     if ([responder isKindOfClass:UIViewController.class]) {
@@ -300,9 +331,8 @@ static BOOL GBIsSettingsSignOutContext(UIView *view) {
   if (!scope) return NO;
   return GBSubtreeContainsSettingsMarker(scope, GBSettingsContextLabels(), 0);
 }
-static void GBClearHostSettingsIdentifier(UIView *view) {
-  if ([view.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"])
-    view.accessibilityIdentifier = nil;
+static BOOL GBIsSettingsSignOutContext(UIView *view) {
+  return GBIsGlobalSettingsContext(view);
 }
 @interface GBInterface : NSObject
 + (void)showConnection;
@@ -514,11 +544,14 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
   BOOL isFabricView = fabricViewClass && [view isKindOfClass:fabricViewClass];
   if (isFabricView && paired && [signOutLabels containsObject:label] &&
       bounds.size.width >= 60 && bounds.size.height >= 36) {
+    if (GBHasAncestorPluginTag(view, 731988))
+      return;
     if (!checkedSettingsSignOut) {
       isSettingsSignOut = GBIsSettingsSignOutContext(view);
       checkedSettingsSignOut = YES;
     }
     if (isSettingsSignOut) {
+      GBRemoveDescendantPluginTag(view, 731988);
       UIButton *existing = (UIButton *)[view viewWithTag:731988];
       if (existing) {
         if (!CGRectEqualToRect(existing.frame, bounds)) existing.frame = bounds;
@@ -546,6 +579,7 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
       bounds.size.height >= 40) {
     if (GBHasAncestorPluginTag(view, 731991))
       return;
+    GBRemoveDescendantPluginTag(view, 731991);
     if (![view.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"])
       view.accessibilityIdentifier = @"grokbot.host.settings";
     GBTrackModifiedView(view);
@@ -561,14 +595,18 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
       bounds.size.height >= 40) {
     if (GBHasAncestorPluginTag(view, 731991))
       return;
+    GBRemoveDescendantPluginTag(view, 731991);
     if (![view.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"])
       view.accessibilityIdentifier = @"grokbot.host.settings";
     GBTrackModifiedView(view);
     [self installHostButtonOn:view styled:NO];
     return;
   }
-  if ([computerLabels containsObject:label] && bounds.size.width > 300 &&
+  if (isFabricView && [computerLabels containsObject:label] && bounds.size.width > 300 &&
       bounds.size.height >= 44) {
+    if (GBHasAncestorPluginTag(view, 731999))
+      return;
+    GBRemoveDescendantPluginTag(view, 731999);
     UIButton *existing = (UIButton *)[view viewWithTag:731999];
     if (existing) {
       if (!CGRectEqualToRect(existing.frame, bounds)) existing.frame = bounds;
@@ -593,6 +631,7 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
     // Unpaired full-width Debug entry opens local Host setup.
     if (GBHasAncestorPluginTag(view, 731991))
       return;
+    GBRemoveDescendantPluginTag(view, 731991);
     if (![view.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"])
       view.accessibilityIdentifier = @"grokbot.host.settings";
     GBTrackModifiedView(view);
@@ -611,20 +650,26 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
   }
   if (tracked && view.accessibilityIdentifier != nil)
     GBClearHostSettingsIdentifier(view);
-  if ([libraryLabels containsObject:label] && paired &&
-      bounds.size.width > 20) {
+  if (isFabricView && [libraryLabels containsObject:label] && paired &&
+      bounds.size.width > 20 && bounds.size.height >= 28) {
+    if (GBHasAncestorPluginTag(view, 731992))
+      return;
+    GBRemoveDescendantPluginTag(view, 731992);
     UIButton *existing = (UIButton *)[view viewWithTag:731992];
     if (existing) {
       if (!CGRectEqualToRect(existing.frame, bounds)) existing.frame = bounds;
+      NSString *libraryLabel = GBL(@"资料库", @"Library");
+      if (![existing.accessibilityLabel isEqualToString:libraryLabel])
+        existing.accessibilityLabel = libraryLabel;
     } else {
-      UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
+      // Transparent touch overlay preserving the original row/pill visuals
+      // without drawing a second centered title over the native row text.
+      UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
       button.tag = 731992;
       button.frame = bounds;
       button.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-      button.backgroundColor = view.backgroundColor ?: UIColor.clearColor;
-      [button setTitle:GBL(@"资料库", @"Library") forState:UIControlStateNormal];
-      button.titleLabel.font = [UIFont systemFontOfSize:14];
-      [button setTitleColor:UIColor.secondaryLabelColor forState:UIControlStateNormal];
+      button.accessibilityIdentifier = @"grokbot.library.open";
+      button.accessibilityLabel = GBL(@"资料库", @"Library");
       [button addTarget:self
                     action:@selector(showLibrary)
           forControlEvents:UIControlEventTouchUpInside];

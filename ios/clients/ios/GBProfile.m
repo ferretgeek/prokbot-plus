@@ -376,6 +376,11 @@ BOOL GBReplaceProfileView(UIView *view) {
              view.bounds.size.height > 50;
   if (!avatar && !row)
     return NO;
+  if (GBHasAncestorPluginTag(view, 731993))
+    return NO;
+  GBRemoveDescendantPluginTag(view, 731993);
+  if (cover && cover.superview != view)
+    cover = nil;
   if (!cover) {
     cover = row ? [UIButton buttonWithType:UIButtonTypeCustom] : [UIView new];
     cover.tag = 731993;
