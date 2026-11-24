@@ -237,6 +237,17 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-24)
       desktop clients. ci/release-packages.py builds a seventh, Linux package.
     - Contributed by @jun9100 (GitHub pull request #16).
 
+19. Host turn continuity and working-indicator reliability.
+    - host/runtime/turn-continuity.mjs (new), recovered-host-flow.mjs,
+      recovered-engine.mjs, recovered-harness.mjs, recovered-host-execution.mjs
+      and model-errors.mjs: detect unreported tool work after multi-SendToUser,
+      tool-first, parallel or plain-text/reasoning endings with bounded closing
+      continuations; enable in-loop empty/missing-SendToUser retries after
+      non-delivery tool results; map output length truncation to
+      OutputTokensLimitExceededError for automatic max-tokens continuation; and
+      keep live session activity populated at turn start and across mid-turn
+      SendToUser updates so clients consistently display working state.
+
 Third-party components
 ----------------------
 

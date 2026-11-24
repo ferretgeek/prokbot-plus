@@ -4,6 +4,13 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## 未发布 / Unreleased
+
+- **Host 持续工作与工作中状态修复 / Host sustained work & working indicator**：
+  - 修复多步任务（例如发过 2 条以上进度 `SendToUser`、先调工具再发进度、并行 `SendToUser`+工具调用、或工具执行后仅输出思考/纯文本未调用 `SendToUser`）结束时因 `turnEndedOnSilentToolCalls` 返回 `false` 且仅补发一次提示而悄无声息中断的问题；新增 `host/runtime/turn-continuity.mjs`，在 `recovered-host-flow.mjs` 与 `recovered-host-execution.mjs` 中准确识别最后一次成功发送后的静默工具工作，并支持有界继续提醒（最多 3 次）。Fixed silent mid-task stops after multi-step tool work (2+ progress `SendToUser` messages, tool-first turns, parallel `SendToUser` + tool calls, or reasoning-only/plain-text endings without `SendToUser`) where `turnEndedOnSilentToolCalls` returned `false` and closing nudges ran at most once; added `host/runtime/turn-continuity.mjs` wired through `recovered-host-flow.mjs` and `recovered-host-execution.mjs` with bounded closing continuations (up to 3).
+  - 默认在本地 Host 启用引擎内空响应重试（`enableEmptyResponseRetry: true`），并修正 `recovered-engine.mjs` 在前置进度 `SendToUser` 之后跳过工具结果空响应/漏发 `SendToUser` 重试的问题；同时在 `model-errors.mjs` 中将 `length` 截断映射为 `OutputTokensLimitExceededError`，让 `runWithMaxTokensRetry` 能自动提示拆分并续做，而不是直接中止整轮。Enabled engine-level `enableEmptyResponseRetry` by default in `recovered-harness.mjs`, fixed `recovered-engine.mjs` so an earlier progress `SendToUser` no longer suppresses post-tool empty/missing-`SendToUser` retries, and mapped `length` truncation in `model-errors.mjs` to `OutputTokensLimitExceededError` so `runWithMaxTokensRetry` can automatically continue instead of aborting the turn.
+  - 修复桌面端 1.2.3 左下角工作中提示在回合刚开始或中段 `SendToUser` 后长时间空白的问题：`RunLifecycle.beginSessionRun` 在进入运行态时立即写入 `{ kind: 'thinking' }`，中段 `send-message` 保持 `thinking` 而不是清空 `currentActivity`，回合结束时再清空。Fixed Desktop 1.2.3's bottom-left working indicator going blank at turn start or after mid-turn `SendToUser` updates by seeding `{ kind: 'thinking' }` on `beginSessionRun` and retaining `thinking` across mid-turn `send-message` updates until `turn-ended` / `endSessionRun`.
+
 ## ProkBot Plus 1.10.0 (2026-11-24)
 
 新增 Linux 桌面客户端（x64 / ARM64），由 @jun9100 贡献（[#16](https://github.com/ferretgeek/prokbot-plus/pull/16)），发布多了第七个工具包 `prokbot-plus-linux.zip`。Linux 客户端在本机执行命令要配合这一版的 Host。Windows 和 Mac 共用的主进程只加了 Linux 分支，和 iOS、Android、网页版一样不用重新生成。Adds a Linux desktop client for x64 and ARM64, contributed by @jun9100 (#16), and a seventh tool package, `prokbot-plus-linux.zip`. Local commands from the Linux client need this release's Host. The main process Windows and Mac share only gains Linux branches, so like iOS, Android and the web client they need no rebuild.
