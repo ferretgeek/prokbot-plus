@@ -36,14 +36,17 @@ export function clampSupportedEffort(effort, supportedEfforts) {
   if (!effort || effort === 'default' || effort === 'auto' || !Array.isArray(supportedEfforts) || !supportedEfforts.length) {
     return effort;
   }
-  if (supportedEfforts.includes(effort)) return effort;
+  // Never downgrade an active reasoning effort to 'none'; fall back to model default instead.
+  const candidates = effort === 'none' ? supportedEfforts : supportedEfforts.filter(level => level !== 'none');
+  if (!candidates.length) return 'default';
+  if (candidates.includes(effort)) return effort;
   let index = EFFORTS.indexOf(effort);
-  if (index < 0) return supportedEfforts[0];
+  if (index < 0) return candidates[0];
   while (index >= 0) {
-    if (supportedEfforts.includes(EFFORTS[index])) return EFFORTS[index];
+    if (candidates.includes(EFFORTS[index])) return EFFORTS[index];
     index--;
   }
-  return supportedEfforts[0];
+  return candidates[0];
 }
 
 /** Recommended compaction settings for a model: provider-reported first, then curated reference spec. */

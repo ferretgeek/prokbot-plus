@@ -36,6 +36,7 @@ import {
 import { createInference } from '../runtime/host-extensions.mjs';
 import { loadModelConfig } from '../runtime/config.mjs';
 import {
+  clearObservedCache,
   contextCacheFilePath,
   invalidateContextCache,
   observedCacheFilePath,
@@ -44,7 +45,7 @@ import {
   readContextCacheSync,
   recordCatalogSync,
   resolveEffectiveContext,
-  resolveEffectiveEfforts,
+  updateContextCache,
 } from '../runtime/model-context-cache.mjs';
 import { validateModelRouting } from '../runtime/model-routing.mjs';
 import { ModelRequestError } from '../runtime/model-common.mjs';
@@ -374,6 +375,7 @@ test('Layer 4: createModelSession self-heals unknown (0) and overestimated conte
     model: 'relay-model',
     profileId: 'relay-prof',
     providerId: 'relay',
+    contextMode: 'auto',
     contextWindowTokens: 0,
     summaryThresholdTokens: 0,
     observedCeilings: ceilingsA,
@@ -581,6 +583,7 @@ test('Observed ceiling key isolation, equal-window reserve clamping, TTL expiry,
     apiKey: 'test-key',
     model: 'small-32k-model',
     profileId: 'shared-profile-id',
+    contextMode: 'auto',
     contextWindowTokens: 0,
     summaryThresholdTokens: 0,
     observedCeilings: ceilings,
@@ -789,6 +792,7 @@ test('Observed ceiling key isolation, equal-window reserve clamping, TTL expiry,
     apiFormat: 'openai',
     apiKey: 'test-key',
     model: 'cap-model',
+    contextMode: 'auto',
     contextWindowTokens: 0,
     summaryThresholdTokens: 0,
     observedCeilings: capped,
@@ -1172,7 +1176,8 @@ test('Manual mode immunity, comparison-form immediate persistence, clearObserved
   assert.equal(manualCeilings.size, 0);
   assert.deepEqual(manualSession.getLocalContextPolicy(), { contextWindowTokens: 128_000, summaryThresholdTokens: 96_000 });
 
-  // Even if an observed ceiling exists on disk (e.g. from an earlier auto session), manual mode ignores it (day 29 included)
+  // Even if a 28-day-old observed ceiling exists on disk (e.g. from an earlier auto session without a subsequent clear), manual mode ignores it (day 29 included)
+  await updateContextCache(cachePath, draft => { draft.clearedObserved = { allAt: 0, keys: {} }; });
   await persistObservedCeiling(cachePath, { apiFormat: 'openai', baseUrl: 'https://relay.example/v1', model: 'relay-model' }, {
     contextWindowTokens: 8_192,
     observedAt: Date.now() - 28 * 24 * 60 * 60 * 1000,
@@ -1495,7 +1500,9 @@ test('Upstream reasoning effort sync and runtime clamping when upstream drops se
 
   // Runtime clamps route effort 'xhigh' down to 'high' after upstream drops 'xhigh'
   assert.equal(clampSupportedEffort('xhigh', ['low', 'medium', 'high']), 'high');
-  assert.equal(clampSupportedEffort('high', ['none']), 'none');
+  assert.equal(clampSupportedEffort('high', ['none']), 'default');
+  assert.equal(clampSupportedEffort('none', ['none']), 'none');
+  assert.equal(clampSupportedEffort('minimal', ['none', 'low', 'high']), 'low');
   const cachePath = contextCacheFilePath(dir);
   let sentLunaBody;
   const lunaSession = createModelSession({
@@ -1613,10 +1620,12 @@ test('CLI host-admin and legacy save path: explicit --context/--efforts become m
     MODEL_API_KEY: 'sk-1',
   };
 
-  // 1. model-set --model gpt-5-chat-latest WITHOUT --context must NOT store reference guess (400K/128K)
+  // 1. model-set --model gpt-5-chat-latest WITHOUT --context or --efforts preserves existing auto mode and never stores reference guesses
   await exec(process.execPath, [hostAdminCli, 'model-set', '--model', 'gpt-5-chat-latest'], { env: cliEnv, timeout: 8000 });
   let current = await models.current();
   assert.equal(current.routing.profiles[0].contextWindowTokens, 0, 'CLI without --context must not store reference table guess');
+  assert.equal(current.routing.profiles[0].contextMode, 'auto', 'CLI without --context must preserve auto mode');
+  assert.equal(current.routing.profiles[0].effortsMode, 'auto', 'CLI without --efforts must preserve auto mode');
 
   // 2. model-set --context 128000 --efforts low,high overrides auto mode to manual
   await exec(process.execPath, [hostAdminCli, 'model-set', '--model', 'gpt-5-chat-latest', '--context', '128000', '--efforts', 'low,high'], { env: cliEnv, timeout: 8000 });
@@ -1631,4 +1640,244 @@ test('CLI host-admin and legacy save path: explicit --context/--efforts become m
   current = await models.current();
   assert.equal(current.routing.profiles[0].contextWindowTokens, 256_000);
   assert.deepEqual(current.routing.profiles[0].efforts, ['low', 'high']);
+});
+
+test('Legacy env (0 context) stays manual at runtime, manual-only Hosts skip background sync, pre-clear observations do not resurrect, and Chat/Responses omit reasoning on none-only clamp', async t => {
+  const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-round2-fixes-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const cachePath = contextCacheFilePath(dir);
+
+  // 1. Legacy env without GROKBOT_MODEL_ROUTING and OPENAI_CONTEXT_WINDOW_TOKENS=0 stays manual in loadModelConfig + createInference
+  const legacyEnvPath = join(dir, 'model.env');
+  await writeFile(legacyEnvPath, [
+    'MODEL_API_FORMAT=openai',
+    'OPENAI_BASE_URL=https://legacy.example/v1',
+    'OPENAI_API_KEY=sk-legacy',
+    'OPENAI_MODEL=legacy-zero-model',
+    'OPENAI_CONTEXT_WINDOW_TOKENS=0',
+    `GROKBOT_MODEL_POLICY=${JSON.stringify({
+      mode: 'manual',
+      effort: 'default',
+      classifierModel: 'jev-latest',
+      models: [{ id: 'legacy-zero-model', efforts: [] }],
+      routes: {
+        routine: { model: 'legacy-zero-model', effort: 'auto' },
+        reasoning: { model: 'legacy-zero-model', effort: 'auto' },
+        expert: { model: 'legacy-zero-model', effort: 'auto' },
+      },
+    })}`,
+    'JEV_API_KEY=',
+    '',
+  ].join('\n'), 'utf8');
+
+  await recordCatalogSync(
+    cachePath,
+    { id: 'default', apiFormat: 'openai', baseUrl: 'https://legacy.example/v1' },
+    [{ id: 'legacy-zero-model', contextWindowTokens: 32_768, contextSource: 'provider', efforts: ['low', 'high'], source: 'provider' }],
+  );
+
+  const loadedLegacy = await loadModelConfig({ env: { GROKBOT_MODEL_ENV: legacyEnvPath, GROKBOT_DATA_DIR: dir } });
+  assert.equal(loadedLegacy.contextMode, 'manual');
+  assert.equal(loadedLegacy.effortsMode, 'manual');
+  assert.deepEqual(
+    resolveEffectiveContext(
+      { apiFormat: 'openai', baseUrl: 'https://legacy.example/v1', model: 'legacy-zero-model', contextWindowTokens: 0, summaryThresholdTokens: 0 },
+      { cache: await readContextCache(cachePath) },
+    ),
+    { contextWindowTokens: 0, summaryThresholdTokens: 0, contextSource: 'unknown', contextMode: 'manual' },
+  );
+
+  class StubErr extends Error {}
+  const stubLib = {
+    PrivacyMode: { NO_STORAGE: 'no-storage' },
+    ConnectError: StubErr, ActionRequiredError: StubErr, NonRetriableError: StubErr,
+    InputTokenLimitError: StubErr,
+    Code: { ResourceExhausted: 8, Unavailable: 14, Internal: 13 },
+  };
+  let legacyCalls = 0;
+  const legacyInference = createInference(loadedLegacy, stubLib, {}, {
+    fetchImpl: async () => {
+      legacyCalls++;
+      if (legacyCalls <= 2) {
+        return new Response(JSON.stringify({
+          error: { code: 'context_length_exceeded', message: 'This model maximum context length is 16384 tokens.' },
+        }), { status: 400, headers: { 'content-type': 'application/json' } });
+      }
+      return sseOk('Legacy OK');
+    },
+  });
+  const legacyOverflowSession = legacyInference.port.createSession(() => {}, {});
+  await assert.rejects(async () => {
+    for await (const _ of legacyOverflowSession.getExecutor([{ role: 'user', content: 'huge' }]).stream({}, 'leg-1', []).fullStream) {}
+  });
+  // Second overflow must NOT persist to model-context-observed.json or clamp contextWindowTokens
+  const legacyOverflowSession2 = legacyInference.port.createSession(() => {}, {});
+  await assert.rejects(async () => {
+    for await (const _ of legacyOverflowSession2.getExecutor([{ role: 'user', content: 'huge' }]).stream({}, 'leg-2', []).fullStream) {}
+  });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.deepEqual(legacyOverflowSession2.getLocalContextPolicy(), { contextWindowTokens: 0, summaryThresholdTokens: 0 });
+  assert.equal(Object.keys((await readContextCache(cachePath)).observed).length, 0);
+
+  const legacyOkSession = legacyInference.port.createSession(() => {}, {});
+  const legacyOkStream = legacyOkSession.getExecutor([{ role: 'user', content: 'ok' }]).stream({}, 'leg-3', []);
+  for await (const _ of legacyOkStream.fullStream) {}
+  assert.equal((await legacyOkStream.extendedUsage).maxTokens, 0);
+
+  // 2. Pre-clear observation (observedAt <= clearedAt) must be dropped, never bumped to clearedAt + 1
+  const candidateA = { apiFormat: 'openai', baseUrl: 'https://relay-a.example/v1', model: 'm-a' };
+  const tBeforeClear = Date.now() - 10_000;
+  await clearObservedCache(cachePath, { now: tBeforeClear + 5_000 });
+  const dropped = await persistObservedCeiling(cachePath, candidateA, { contextWindowTokens: 16_384, observedAt: tBeforeClear });
+  assert.equal(dropped, null, 'pre-clear observation must be dropped rather than resurrected');
+  assert.equal((await readContextCache(cachePath)).observed[Object.keys((await readContextCache(cachePath)).observed)[0]], undefined);
+
+  // 3. Background sync skips manual-only profiles and only queries providers with at least one auto profile
+  const syncedHosts = [];
+  const syncModels = new Models(join(dir, 'sync-skip'), {
+    autoSync: true,
+    fetchImpl: async (url) => {
+      const href = String(url);
+      syncedHosts.push(new URL(href).host);
+      return new Response(JSON.stringify({ data: [{ id: 'm1', context_window: 131_072 }] }), { status: 200 });
+    },
+  });
+  t.after(() => syncModels.close());
+  await syncModels.save({
+    version: 1,
+    migrateLegacyRouting: true,
+    providers: [
+      { id: 'p-manual', name: 'Manual Only', apiFormat: 'openai', baseUrl: 'https://manual-only.example/v1', apiKey: 'sk-m' },
+      { id: 'p-auto', name: 'Has Auto', apiFormat: 'openai', baseUrl: 'https://has-auto.example/v1', apiKey: 'sk-a' },
+    ],
+    profiles: [
+      { id: 'prof-m', name: 'M', providerId: 'p-manual', model: 'm1', efforts: [], effortsMode: 'manual', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'manual' },
+    ],
+    defaultRoute: { profileId: 'prof-m', effort: 'default', fallbacks: [] },
+    botRoutes: {},
+  });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.deepEqual(syncedHosts, [], 'save with only manual profiles must skip background /models');
+  const skippedBg = await syncModels.syncAllProviders();
+  assert.equal(skippedBg.synced, 0);
+  assert.deepEqual(syncedHosts, []);
+
+  // Manual force sync still queries all providers
+  const forcedAll = await syncModels.syncAllProviders({ force: true });
+  assert.equal(forcedAll.synced, 2);
+  assert.equal(syncedHosts.includes('manual-only.example'), true);
+  assert.equal(syncedHosts.includes('has-auto.example'), true);
+
+  // Mixed setup: background sync queries ONLY p-auto, never p-manual
+  syncedHosts.length = 0;
+  await syncModels.save({
+    version: 1,
+    providers: [
+      { id: 'p-manual', name: 'Manual Only', apiFormat: 'openai', baseUrl: 'https://manual-only.example/v1' },
+      { id: 'p-auto', name: 'Has Auto', apiFormat: 'openai', baseUrl: 'https://has-auto.example/v1' },
+    ],
+    profiles: [
+      { id: 'prof-m', name: 'M', providerId: 'p-manual', model: 'm1', efforts: [], effortsMode: 'manual', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'manual' },
+      { id: 'prof-a', name: 'A', providerId: 'p-auto', model: 'm1', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+    ],
+    defaultRoute: { profileId: 'prof-a', effort: 'default', fallbacks: [] },
+    botRoutes: {},
+  });
+  await syncModels.syncAllProviders();
+  assert.deepEqual(syncedHosts, ['has-auto.example']);
+
+  // 4. Editing one provider preserves observed ceilings on untouched providers
+  const splitDir = join(dir, 'per-provider-clear');
+  const splitCache = contextCacheFilePath(splitDir);
+  const splitModels = new Models(splitDir, { fetchImpl: async () => sseOk() });
+  t.after(() => splitModels.close());
+  await splitModels.save({
+    version: 1,
+    migrateLegacyRouting: true,
+    providers: [
+      { id: 'pa', name: 'A', apiFormat: 'openai', baseUrl: 'https://a.example/v1', apiKey: 'sk-a' },
+      { id: 'pb', name: 'B', apiFormat: 'openai', baseUrl: 'https://b.example/v1', apiKey: 'sk-b' },
+    ],
+    profiles: [
+      { id: 'pa-prof', name: 'PA', providerId: 'pa', model: 'model-a', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+      { id: 'pb-prof', name: 'PB', providerId: 'pb', model: 'model-b', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+    ],
+    defaultRoute: { profileId: 'pa-prof', effort: 'default', fallbacks: [] },
+    botRoutes: {},
+  });
+  const obsAt = Date.now() + 50;
+  await persistObservedCeiling(splitCache, { apiFormat: 'openai', baseUrl: 'https://a.example/v1', model: 'model-a' }, { contextWindowTokens: 32_768, observedAt: obsAt });
+  await persistObservedCeiling(splitCache, { apiFormat: 'openai', baseUrl: 'https://b.example/v1', model: 'model-b' }, { contextWindowTokens: 16_384, observedAt: obsAt });
+  // Edit only pb's baseUrl
+  await splitModels.save({
+    version: 1,
+    providers: [
+      { id: 'pa', name: 'A', apiFormat: 'openai', baseUrl: 'https://a.example/v1' },
+      { id: 'pb', name: 'B', apiFormat: 'openai', baseUrl: 'https://b-v2.example/v1' },
+    ],
+    profiles: [
+      { id: 'pa-prof', name: 'PA', providerId: 'pa', model: 'model-a', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+      { id: 'pb-prof', name: 'PB', providerId: 'pb', model: 'model-b', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+    ],
+    defaultRoute: { profileId: 'pa-prof', effort: 'default', fallbacks: [] },
+    botRoutes: {},
+  });
+  const splitPub = await splitModels.publicConfig();
+  assert.equal(splitPub.profiles.find(p => p.id === 'pa-prof').effectiveContext.contextWindowTokens, 32_768);
+  assert.equal(splitPub.profiles.find(p => p.id === 'pb-prof').effectiveContext.observed, undefined);
+
+  // 5. Auto fallback to configuredWindow deducts Anthropic output reserve (200K -> 102K)
+  const anthAutoFallback = resolveEffectiveContext(
+    { apiFormat: 'anthropic', baseUrl: 'https://anth.example/v1', model: 'claude-sonnet-4-5', contextMode: 'auto', contextWindowTokens: 200_000, summaryThresholdTokens: 150_000 },
+    { cache: undefined },
+  );
+  assert.equal(anthAutoFallback.contextWindowTokens, 200_000);
+  assert.equal(anthAutoFallback.summaryThresholdTokens, 102_000);
+  assert.equal(anthAutoFallback.contextSource, 'configured');
+
+  // 6. OpenAI Chat session with efforts=['none'] and effort='high' (plus stale requestOptions) sends no reasoning_effort or thinking
+  const noneCacheDir = join(dir, 'none-effort');
+  const noneCachePath = contextCacheFilePath(noneCacheDir);
+  await recordCatalogSync(
+    noneCachePath,
+    { id: 'p-none', apiFormat: 'openai', baseUrl: 'https://none.example/v1' },
+    [{ id: 'deepseek-chat', contextWindowTokens: 128_000, contextSource: 'provider', efforts: ['none'], source: 'provider' }],
+  );
+  let sentChatBody;
+  const chatNoneSession = createModelSession({
+    baseUrl: 'https://none.example/v1',
+    apiKey: 'sk-1',
+    apiFormat: 'openai',
+    model: 'deepseek-chat',
+    effort: 'high',
+    efforts: ['high'],
+    effortsMode: 'auto',
+    contextMode: 'auto',
+    requestOptions: { reasoning_effort: 'high', thinking: { type: 'enabled' } },
+    contextCachePath: noneCachePath,
+    fetchImpl: async (_url, init) => {
+      sentChatBody = JSON.parse(init.body);
+      return sseOk('OK');
+    },
+  });
+  const chatNoneStream = chatNoneSession.getExecutor([{ role: 'user', content: 'hi' }]).stream({}, 'none-chat-1', []);
+  for await (const _ of chatNoneStream.fullStream) {}
+  assert.equal(sentChatBody.reasoning_effort, undefined, 'active effort clamped against ["none"] must not send reasoning_effort');
+  assert.equal(sentChatBody.thinking, undefined, 'active effort clamped against ["none"] must not leak stale thinking option');
+
+  // 7. Rate-limit exclusion only blocks 429 or primary rate-limit errors, not real context overflows mentioning TPM/rate limit
+  const incidentalContextErr = new ModelRequestError(
+    "This model's maximum context length is 128000 tokens. Please reduce prompt length (separate from rate limit / TPM quotas).",
+    { status: 400 },
+  );
+  assert.equal(isInputTokenLimitError(incidentalContextErr), true);
+  assert.deepEqual(parseContextLimitDetailsFromError(incidentalContextErr.message), {
+    limit: 128_000,
+    reserve: 0,
+    isComparison: false,
+  });
+  const primaryRateErr = new ModelRequestError('Rate limit reached for tokens per minute (TPM): maximum context length note', { status: 400 });
+  assert.equal(isInputTokenLimitError(primaryRateErr), false);
+  const status429Err = new ModelRequestError('maximum context length is 128000 tokens', { status: 429 });
+  assert.equal(isInputTokenLimitError(status429Err), false);
 });

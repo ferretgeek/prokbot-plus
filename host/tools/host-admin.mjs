@@ -130,7 +130,7 @@ async function loginForModel({ listing = false } = {}) {
   const model = options.model || current.model || (listing ? 'model-list' : '');
   if (!baseUrl) fail('请用 --base-url 指定模型接口地址');
   if (!model) fail('请用 --model 指定模型 ID');
-  return { apiFormat, baseUrl, model, apiKey, jevApiKey: '' };
+  return { request: { apiFormat, baseUrl, model, apiKey, jevApiKey: '' }, current };
 }
 async function efforts(config) {
   if (options.efforts) return { efforts: options.efforts };
@@ -178,24 +178,33 @@ switch (command) {
     print(await api('/admin/api/model'));
     break;
   case 'model-catalog': {
-    const { models } = await api('/admin/api/model/catalog', 'POST', await loginForModel({ listing: true }));
+    const { request } = await loginForModel({ listing: true });
+    const { models } = await api('/admin/api/model/catalog', 'POST', request);
     for (const item of models) {
       console.log(`${item.id}\t${item.efforts.join(',') || '-'}\t${item.contextSource === 'provider' ? item.contextWindowTokens : ''}`);
     }
     break;
   }
   case 'model-set': {
-    const base = await loginForModel();
+    const { request: base, current } = await loginForModel();
     const levels = await efforts(base);
     const effort = options.effort ?? 'default';
     if (effort !== 'default' && !levels.efforts.includes(effort))
       fail(`${base.model} 支持的思考强度为 [${levels.efforts.join(', ') || '无'}]；可用 --efforts 手动指定`);
+    const activeProfileId = current.defaultRoute?.profileId ?? 'default';
+    const activeProfile = (current.profiles ?? []).find(item => item.id === activeProfileId);
+    const contextMode = options.context !== undefined
+      ? 'manual'
+      : (activeProfile?.contextMode === 'auto' ? 'auto' : undefined);
+    const effortsMode = options.efforts !== undefined
+      ? 'manual'
+      : (activeProfile?.effortsMode === 'auto' ? 'auto' : undefined);
     const contextWindowTokens = Number(options.context ?? levels.contextWindowTokens ?? 0);
     const config = {
       ...base,
       contextWindowTokens,
-      ...(options.context !== undefined ? { contextMode: 'manual' } : {}),
-      ...(options.efforts !== undefined ? { effortsMode: 'manual' } : {}),
+      ...(contextMode ? { contextMode } : {}),
+      ...(effortsMode ? { effortsMode } : {}),
       policy: {
         mode: 'manual',
         effort,
@@ -203,9 +212,9 @@ switch (command) {
         models: [{
           id: base.model,
           efforts: levels.efforts,
-          ...(options.efforts !== undefined ? { effortsMode: 'manual' } : {}),
+          ...(effortsMode ? { effortsMode } : {}),
           ...(contextWindowTokens ? { contextWindowTokens } : options.context !== undefined ? { contextWindowTokens: 0 } : {}),
-          ...(options.context !== undefined ? { contextMode: 'manual' } : {}),
+          ...(contextMode ? { contextMode } : {}),
         }],
         routes: Object.fromEntries(['routine', 'reasoning', 'expert'].map(tier => [tier, { model: base.model, effort: 'auto' }])),
       },

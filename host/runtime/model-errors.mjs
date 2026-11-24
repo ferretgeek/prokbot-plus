@@ -10,6 +10,7 @@ const RATE_LIMIT_CODES = new Set(['rate_limit_error', 'rate_limit_exceeded']);
 
 const OUTPUT_TOKEN_LIMIT_SUBJECT_RE = /\b(?:max_(?:output_|completion_)?tokens|output\s+tokens?|completion\s+tokens?)\b/i;
 const RATE_LIMIT_OR_THROUGHPUT_RE = /(?:\b(?:tokens?\s+per\s+(?:minute|second|hour|day)|requests?\s+per\s+(?:minute|second|hour|day)|rate[\s_-]?limit|tpm|rpm|tpd)\b|每分钟|速率限制|限流)/i;
+const RATE_LIMIT_PRIMARY_RE = /^(?:\s*(?:rate[\s_-]?limit|tpm|rpm|tpd|速率限制|限流)\b)|(?:rate[\s_-]?limit|tokens?\s+per\s+(?:minute|second|hour|day)|requests?\s+per\s+(?:minute|second|hour|day)|tpm|rpm|tpd)\s*(?:exceeded|reached|hit|limit)|exceed(?:s|ed)?\s+(?:the\s+)?(?:maximum\s+)?(?:tokens?\s+per\s+(?:minute|second|hour|day)|requests?\s+per\s+(?:minute|second|hour|day)|rate[\s_-]?limit|tpm|rpm|tpd)\b/i;
 const COMPARISON_CONTEXT_RE = /(?:\d{1,3}(?:,\d{3})+|\d+)\s*(?:\+\s*(?:\d{1,3}(?:,\d{3})+|\d+)\s*)?>\s*(?:\d{1,3}(?:,\d{3})+|\d{4,9})\b/;
 const EXPLICIT_INPUT_CEILING_RE = /(?:maximum context length|max_model_len|prompt\s+(?:is\s+)?too\s+long)/i;
 
@@ -34,6 +35,14 @@ const INPUT_TOKEN_LIMIT_MESSAGE_RE = new RegExp([
   '最大上下文',
   '上下文(?:长度|窗口)?上限',
 ].join('|'), 'i');
+
+function isRateLimitOnly(text, { status, code } = {}) {
+  if (status === 429 || RATE_LIMIT_CODES.has(code)) return true;
+  if (!RATE_LIMIT_OR_THROUGHPUT_RE.test(text)) return false;
+  if (RATE_LIMIT_PRIMARY_RE.test(text)) return true;
+  if (COMPARISON_CONTEXT_RE.test(text) || EXPLICIT_INPUT_CEILING_RE.test(text)) return false;
+  return !INPUT_TOKEN_LIMIT_MESSAGE_RE.test(text);
+}
 
 const CONTEXT_LIMIT_PATTERNS = [
   // Comparison forms ("... > <limit>") take precedence so a sent token count is never mistaken for the ceiling.
@@ -88,7 +97,7 @@ export function isInputTokenLimitError(error) {
   if (['context_length_exceeded', 'input_token_limit_exceeded', 'prompt_too_long'].includes(code)) {
     return true;
   }
-  if (![400, 413, 422].includes(status) || RATE_LIMIT_OR_THROUGHPUT_RE.test(message) || isOutputTokenLimitOnly(message)) {
+  if (![400, 413, 422].includes(status) || isRateLimitOnly(message, { status, code }) || isOutputTokenLimitOnly(message)) {
     return false;
   }
   return INPUT_TOKEN_LIMIT_MESSAGE_RE.test(message);
@@ -100,7 +109,7 @@ export function isInputTokenLimitError(error) {
  */
 export function parseContextLimitDetailsFromError(message) {
   const text = String(message ?? '');
-  if (!text || RATE_LIMIT_OR_THROUGHPUT_RE.test(text) || isOutputTokenLimitOnly(text)) return undefined;
+  if (!text || isRateLimitOnly(text) || isOutputTokenLimitOnly(text)) return undefined;
   for (const entry of CONTEXT_LIMIT_PATTERNS) {
     const match = entry.re.exec(text);
     if (!match) continue;

@@ -235,11 +235,17 @@ export class Models {
     const providerId = active?.providerId ?? 'default', profileId = active?.profileId ?? 'default';
     const rawPolicyModel = Array.isArray(input.policy?.models) ? input.policy.models.find(item => item?.id === model) : undefined;
     const capability = policy.models.find(item => item.id === model) ?? { efforts: effortLevels(model) };
-    const explicitContext = own(input, 'contextWindowTokens') || own(rawPolicyModel ?? {}, 'contextWindowTokens') || own(rawPolicyModel ?? {}, 'summaryThresholdTokens');
+    const rawContextWindow = own(rawPolicyModel ?? {}, 'contextWindowTokens')
+      ? rawPolicyModel.contextWindowTokens
+      : (own(input, 'contextWindowTokens') ? input.contextWindowTokens : undefined);
+    const rawSummaryThreshold = own(rawPolicyModel ?? {}, 'summaryThresholdTokens')
+      ? rawPolicyModel.summaryThresholdTokens
+      : undefined;
+    const explicitPositiveContext = Number(rawContextWindow) > 0 || Number(rawSummaryThreshold) > 0;
     const explicitEfforts = own(rawPolicyModel ?? {}, 'efforts');
     const contextMode = own(input, 'contextMode') ? input.contextMode
       : own(rawPolicyModel ?? {}, 'contextMode') ? rawPolicyModel.contextMode
-        : explicitContext ? 'manual' : undefined;
+        : explicitPositiveContext ? 'manual' : undefined;
     const effortsMode = own(input, 'effortsMode') ? input.effortsMode
       : own(rawPolicyModel ?? {}, 'effortsMode') ? rawPolicyModel.effortsMode
         : explicitEfforts ? 'manual' : undefined;
@@ -303,6 +309,7 @@ export class Models {
   }
   save(input) {
     const pending = this.tail.then(async () => {
+      const previous = await this.current();
       const config = await this.validated(input);
       if (own(input, 'contextSync') && input.contextSync && typeof input.contextSync === 'object') {
         const { autoSync, codexManifestProbe } = input.contextSync;
@@ -311,19 +318,40 @@ export class Models {
         }
       }
       await this.write(config);
+      const prevProvidersById = new Map((previous.routing?.providers ?? []).map(item => [item.id, item]));
+      const prevProfilesById = new Map((previous.routing?.profiles ?? []).map(item => [item.id, item]));
       const providersById = new Map((config.routing?.providers ?? []).map(item => [item.id, item]));
-      const keysToClear = (config.routing?.profiles ?? []).map(profile => {
+      const changedProviderIds = new Set();
+      for (const provider of config.routing?.providers ?? []) {
+        const prev = prevProvidersById.get(provider.id);
+        if (!prev || prev.apiFormat !== provider.apiFormat || prev.baseUrl !== provider.baseUrl || prev.apiKey !== provider.apiKey) {
+          changedProviderIds.add(provider.id);
+        }
+      }
+      const allProfileKeys = [];
+      const changedProfileKeys = [];
+      for (const profile of config.routing?.profiles ?? []) {
         const provider = providersById.get(profile.providerId);
-        return provider ? contextEntryKey({ apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, model: profile.model }) : null;
-      }).filter(Boolean);
+        if (!provider) continue;
+        const key = contextEntryKey({ apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, model: profile.model });
+        allProfileKeys.push(key);
+        const prev = prevProfilesById.get(profile.id);
+        if (changedProviderIds.has(profile.providerId) || !prev || prev.providerId !== profile.providerId ||
+            prev.model !== profile.model || prev.contextMode !== profile.contextMode ||
+            prev.contextWindowTokens !== profile.contextWindowTokens ||
+            prev.summaryThresholdTokens !== profile.summaryThresholdTokens) {
+          changedProfileKeys.push(key);
+        }
+      }
+      const keysToClear = changedProfileKeys.length ? changedProfileKeys : allProfileKeys;
       if (keysToClear.length) {
-        await clearObservedCache(this.contextCachePath, { keys: keysToClear }).catch(() => {});
+        await clearObservedCache(this.contextCachePath, { keys: [...new Set(keysToClear)] }).catch(() => {});
       }
       const request = { revision: randomUUID(), requestedAt: new Date().toISOString() };
       await writePrivate(join(this.dataDir, 'model-reload-request.json'), `${JSON.stringify(request)}\n`);
       if (this.autoSync) {
         const syncSettings = await this.getSyncSettings();
-        if (syncSettings.autoSync) void this.syncAllProviders().catch(() => {});
+        if (syncSettings.autoSync) void this.syncAllProviders({ onlyAuto: true }).catch(() => {});
       }
       return this.publicConfig();
     });
@@ -481,12 +509,19 @@ export class Models {
     }
     return { models };
   }
-  async syncAllProviders({ force = false, clearObserved = false } = {}) {
+  async syncAllProviders({ force = false, clearObserved = false, onlyAuto = !force } = {}) {
     if (this.closed) return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, effortsDetected: 0, providerEfforts: 0, providers: {} };
     if (this.syncInFlight && !force) return this.syncInFlight;
     const run = (async () => {
       const current = await this.current();
-      const providers = (current.routing?.providers ?? []).filter(item => item.baseUrl && item.apiKey);
+      const autoProviderIds = onlyAuto
+        ? new Set((current.routing?.profiles ?? [])
+          .filter(profile => profile.contextMode === 'auto' || profile.effortsMode === 'auto')
+          .map(profile => profile.providerId))
+        : null;
+      const providers = (current.routing?.providers ?? []).filter(
+        item => item.baseUrl && item.apiKey && (!autoProviderIds || autoProviderIds.has(item.id)),
+      );
       if (!providers.length || this.closed) {
         return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, effortsDetected: 0, providerEfforts: 0, providers: {} };
       }
@@ -527,10 +562,11 @@ export class Models {
       await Promise.all(workers);
       return { synced: providers.length, ok, failed, modelsDetected, providerReported, effortsDetected, providerEfforts, providers: results };
     })();
-    this.syncInFlight = run.finally(() => {
-      if (this.syncInFlight === run) this.syncInFlight = null;
+    const tracked = run.finally(() => {
+      if (this.syncInFlight === tracked) this.syncInFlight = null;
     });
-    return this.syncInFlight;
+    this.syncInFlight = tracked;
+    return tracked;
   }
   async resolve(input = {}) {
     check(input && typeof input === 'object' && !Array.isArray(input), 400, '参数无效');

@@ -171,7 +171,7 @@ export async function createSelfHostServer(options = {}) {
   const modelContextSyncTimer = options.modelAutoSync !== false && modelContextSyncIntervalMs > 0
     ? setInterval(() => {
       void models.getSyncSettings().then(syncSettings => {
-        if (syncSettings.autoSync) return models.syncAllProviders();
+        if (syncSettings.autoSync) return models.syncAllProviders({ onlyAuto: true });
       }).catch(error => console.warn(`[models] periodic context sync failed: ${error.message}`));
     }, modelContextSyncIntervalMs)
     : null;
@@ -975,7 +975,7 @@ export async function createSelfHostServer(options = {}) {
       void network.start(`127.0.0.1:${server.address().port}`).catch(() => {});
       if (options.modelAutoSync !== false) {
         void models.getSyncSettings().then(syncSettings => {
-          if (syncSettings.autoSync) return models.syncAllProviders();
+          if (syncSettings.autoSync) return models.syncAllProviders({ onlyAuto: true });
         }).catch(error => console.warn(`[models] startup context sync failed: ${error.message}`));
       }
       return server.address();

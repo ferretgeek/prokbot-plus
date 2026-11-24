@@ -44,7 +44,7 @@ export async function loadModelConfig({ env = process.env } = {}) {
   };
   if (!values[MODEL_ROUTING_ENV]) {
     if (!legacy.baseUrl || !legacy.apiKey) throw new Error('Missing model configuration');
-    return { ...legacy, ...common, modelBaseUrls: [legacy.baseUrl] };
+    return { ...legacy, contextMode: 'manual', effortsMode: 'manual', ...common, modelBaseUrls: [legacy.baseUrl] };
   }
   const { config: modelRouting } = parseModelRouting(values[MODEL_ROUTING_ENV], legacy);
   const route = modelRouteForAgent(modelRouting);

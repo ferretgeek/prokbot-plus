@@ -51,7 +51,7 @@ function resolveCandidateEfforts(candidate, cache, fallbackEfforts, rawEffort) {
 function recordObservedCeiling(candidate, parsedError, observedCeilings, contextCachePath, { maxTokens, now = Date.now() } = {}) {
   const observedLimit = parsedError?.limit;
   if (!observedCeilings || !Number.isSafeInteger(observedLimit) || observedLimit < 1_024) return null;
-  if (candidate.contextMode === 'manual' || (!candidate.contextMode && candidate.contextWindowTokens > 0)) {
+  if (candidate.contextMode !== 'auto') {
     return null;
   }
   const key = contextEntryKey(candidate);
@@ -386,6 +386,12 @@ export function createModelSession({ baseUrl, apiKey, model, onRequestId, apiFor
             const { efforts: resolvedEfforts, effort: resolvedEffort } = resolveCandidateEfforts(
               candidate, attemptCache, effortsFor(candidate.model), rawEffort,
             );
+            let attemptRequestOptions = candidate.requestOptions;
+            if (resolvedEffort !== rawEffort && attemptRequestOptions &&
+                (Object.hasOwn(attemptRequestOptions, 'reasoning_effort') || Object.hasOwn(attemptRequestOptions, 'thinking'))) {
+              const { reasoning_effort: _ignoredEffort, thinking: _ignoredThinking, ...rest } = attemptRequestOptions;
+              attemptRequestOptions = rest;
+            }
             selectedEffort = resolvedEffort;
             reportedCandidate = candidate;
             try {
@@ -393,7 +399,7 @@ export function createModelSession({ baseUrl, apiKey, model, onRequestId, apiFor
                 headers, model: candidate.model, messages, tools,
                 effort: resolvedEffort,
                 efforts: resolvedEfforts, maxTokens: options.maxTokens,
-                requestOptions: candidate.requestOptions, signal: attemptSignal, waitForIO: attemptWaitForIO,
+                requestOptions: attemptRequestOptions, signal: attemptSignal, waitForIO: attemptWaitForIO,
                 state: adaptations.get(adaptationKey), notifyRequest,
                 providerId: candidate.providerId,
                 onModel: value => { reportedModel = value; }, onId: value => { reportedId = value; },

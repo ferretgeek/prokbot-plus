@@ -150,15 +150,7 @@ export function readContextCacheSync(filePath) {
   if (!filePath) return emptyCache();
   const catalogData = readJsonFileSyncCached(filePath, normalizeCatalogFile, emptyCatalogFile);
   const observedFile = readJsonFileSyncCached(observedCacheFilePath(filePath), normalizeObservedFile, emptyObservedFile);
-  // Also support legacy single-file caches that embedded `observed` directly in model-context-cache.json.
-  const legacyRaw = readCacheByPath.get(filePath);
-  const mergedObserved = {
-    observed: {
-      ...(legacyRaw?.legacyObserved ?? {}),
-      ...observedFile.observed,
-    },
-  };
-  return mergeCache(catalogData, mergedObserved);
+  return mergeCache(catalogData, observedFile);
 }
 
 async function readJsonFile(path, normalize, empty) {
@@ -172,17 +164,11 @@ async function readJsonFile(path, normalize, empty) {
 
 export async function readContextCache(filePath) {
   if (!filePath) return emptyCache();
-  let rawCatalog = null;
-  try {
-    rawCatalog = JSON.parse(await readFile(filePath, 'utf8'));
-  } catch {
-    rawCatalog = null;
-  }
-  const catalogData = normalizeCatalogFile(rawCatalog);
-  const observedFile = await readJsonFile(observedCacheFilePath(filePath), normalizeObservedFile, emptyObservedFile);
-  const legacyObserved = rawCatalog?.observed && typeof rawCatalog.observed === 'object' && !Array.isArray(rawCatalog.observed)
-    ? rawCatalog.observed : {};
-  return mergeCache(catalogData, { observed: { ...legacyObserved, ...observedFile.observed } });
+  const [catalogData, observedFile] = await Promise.all([
+    readJsonFile(filePath, normalizeCatalogFile, emptyCatalogFile),
+    readJsonFile(observedCacheFilePath(filePath), normalizeObservedFile, emptyObservedFile),
+  ]);
+  return mergeCache(catalogData, observedFile);
 }
 
 function normalizeEfforts(list) {
@@ -254,6 +240,11 @@ export function updateContextCache(filePath, mutator) {
       current.updatedAt = new Date(now).toISOString();
       current.settings = normalizeSettings(current.settings);
       current.clearedObserved = normalizeClearedObserved(current.clearedObserved);
+      const validClearedKeys = Object.entries(current.clearedObserved.keys)
+        .filter(([, ts]) => Number.isFinite(ts) && ts > 0 && now - ts < OBSERVED_PERSIST_TTL_MS)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, MAX_OBSERVED_ENTRIES);
+      current.clearedObserved.keys = Object.fromEntries(validClearedKeys);
       current.catalog = pruneMapByTimestamp(current.catalog, MAX_CATALOG_ENTRIES, 'syncedAt', 0, now, { allowEffortsOnly: true });
       return current;
     },
@@ -387,11 +378,14 @@ export async function persistObservedCeiling(filePath, candidate, entry) {
     return null;
   }
   const key = contextEntryKey(candidate);
-  const catalogData = await readJsonFile(filePath, normalizeCatalogFile, emptyCatalogFile);
-  const clearedAt = clearedTimestampFor(catalogData.clearedObserved, key);
-  const rawNow = Number.isFinite(entry.observedAt) ? entry.observedAt : Date.now();
-  const observedAt = rawNow <= clearedAt ? clearedAt + 1 : rawNow;
+  const observedAt = Number.isFinite(entry.observedAt) ? entry.observedAt : Date.now();
+  const initialCatalog = await readJsonFile(filePath, normalizeCatalogFile, emptyCatalogFile);
+  const initialClearedAt = clearedTimestampFor(initialCatalog.clearedObserved, key);
+  if (initialClearedAt > 0 && observedAt <= initialClearedAt) {
+    return null;
+  }
 
+  let persistedEntry = null;
   await enqueueFileUpdate(
     observedPath,
     path => readJsonFile(path, normalizeObservedFile, emptyObservedFile),
@@ -401,13 +395,18 @@ export async function persistObservedCeiling(filePath, candidate, entry) {
       current.observed = pruneMapByTimestamp(current.observed, MAX_OBSERVED_ENTRIES, 'observedAt', OBSERVED_PERSIST_TTL_MS, now);
       return current;
     },
-    (draft, now) => {
+    async (draft, now) => {
+      const catalogData = await readJsonFile(filePath, normalizeCatalogFile, emptyCatalogFile);
       // Drop entries that have been cleared by the Admin Server.
       for (const [existingKey, item] of Object.entries(draft.observed)) {
         const keyClearedAt = clearedTimestampFor(catalogData.clearedObserved, existingKey);
         if (keyClearedAt > 0 && (!Number.isFinite(item?.observedAt) || item.observedAt <= keyClearedAt)) {
           delete draft.observed[existingKey];
         }
+      }
+      const clearedAt = clearedTimestampFor(catalogData.clearedObserved, key);
+      if (clearedAt > 0 && observedAt <= clearedAt) {
+        return;
       }
       const existing = draft.observed[key];
       const validExisting = existing && Number.isFinite(existing.observedAt) && now - existing.observedAt < OBSERVED_PERSIST_TTL_MS
@@ -424,9 +423,10 @@ export async function persistObservedCeiling(filePath, candidate, entry) {
         summaryThresholdTokens: nextThreshold,
         observedAt,
       };
+      persistedEntry = { ...entry, observedAt };
     },
   );
-  return { ...entry, observedAt };
+  return persistedEntry;
 }
 
 /**
@@ -437,7 +437,7 @@ export async function persistObservedCeiling(filePath, candidate, entry) {
  *     2. Configured profile snapshot (if positive)
  *     3. Active observed overflow ceiling (never superseded by periodic sync; cleared only explicitly or on TTL expiry)
  *     Never falls back to built-in reference guesses.
- * - contextMode === 'manual' (default for legacy profiles):
+ * - contextMode === 'manual' (default for legacy profiles or omitted contextMode):
  *     Configured profile values, never clamped by observed ceilings.
  */
 export function resolveEffectiveContext(candidate = {}, {
@@ -452,7 +452,7 @@ export function resolveEffectiveContext(candidate = {}, {
     ? candidate.contextWindowTokens : 0;
   const configuredThreshold = Number.isSafeInteger(candidate.summaryThresholdTokens) && candidate.summaryThresholdTokens > 0
     ? candidate.summaryThresholdTokens : 0;
-  const autoFollow = candidate.contextMode === 'auto' || (candidate.contextMode === undefined && configuredWindow === 0);
+  const autoFollow = candidate.contextMode === 'auto';
   const key = contextEntryKey(candidate);
   const clearedAt = clearedTimestampFor(cache?.clearedObserved, key);
 
@@ -519,9 +519,10 @@ export function resolveEffectiveContext(candidate = {}, {
     contextSource = 'provider';
   } else if (configuredWindow > 0) {
     baseWindow = configuredWindow;
+    const reserveAware = summaryThresholdFor(configuredWindow, { apiFormat: candidate.apiFormat, model: candidate.model, maxTokens });
     baseThreshold = configuredThreshold > 0 && configuredThreshold < configuredWindow
-      ? configuredThreshold
-      : summaryThresholdFor(configuredWindow, { apiFormat: candidate.apiFormat, model: candidate.model, maxTokens });
+      ? Math.min(configuredThreshold, reserveAware)
+      : reserveAware;
     contextSource = 'configured';
   }
 

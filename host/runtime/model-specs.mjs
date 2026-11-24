@@ -1,7 +1,7 @@
 // Curated conservative reference context-window specifications for well-known
-// published model families. Used only as Layer 2 fallback when an upstream
-// provider's /models catalog omits context capacity (e.g. official OpenAI,
-// DeepSeek, xAI, and most One-API / New-API relays).
+// published model families. Shown as optional suggestions in the admin UI
+// (never applied automatically in `auto` mode) when a provider's /models
+// catalog omits context capacity.
 //
 // Safety rule: never match unknown or unpublished model variants (such as
 // fictional test IDs or custom fine-tunes) so the Harness never defers
