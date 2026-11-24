@@ -17,6 +17,7 @@ import { startLocalWebhooks } from './host-webhooks.mjs';
 import { startLocalFederation } from './host-federation.mjs';
 import { createLocalServiceRuntime } from './media-runtime.mjs';
 import { modelRouteForAgent } from './model-routing.mjs';
+import { contextCacheFilePath } from './model-context-cache.mjs';
 
 const unsubscribe = () => () => {};
 export function unavailable(capability) {
@@ -73,6 +74,7 @@ export function createInference(config, library, services, { fetchImpl, sessionF
           const routerConfig = !config.modelRouting && options?.isSummarizationSession && config.policy
             ? { ...config, policy: { ...config.policy, mode: 'manual' } } : config;
           return sessionFactory({ ...sessionConfig, onRequestId,
+            contextCachePath: contextCacheFilePath(config.dataDirectory),
             selectRequest: createModelRouter(routerConfig, { agentId, onDecision: decision => console.info('[model-router]', JSON.stringify(decision)) }),
             onFallback: event => recordRouting(config.routingDirectory, { kind: 'model-fallback', status: 'fallback', agentId,
               session: options?.isSummarizationSession ? 'summary' : 'chat', ...event }),

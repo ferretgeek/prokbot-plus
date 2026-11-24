@@ -4,6 +4,8 @@ import { validateContextPolicy } from './context-policy.mjs';
 import { EFFORTS, effortLevels } from './model-policy.mjs';
 
 export const API_FORMATS = Object.freeze(['openai', 'openai-responses', 'anthropic']);
+export const CONTEXT_MODES = Object.freeze(['auto', 'manual']);
+export const EFFORTS_MODES = Object.freeze(['auto', 'manual']);
 export const MODEL_ROUTING_ENV = 'GROKBOT_MODEL_ROUTING';
 
 const MAX_PROVIDERS = 32;
@@ -57,15 +59,39 @@ function profileContext(value) {
 }
 
 function contextForProfile(value, previous) {
-  const hasContext = Object.prototype.hasOwnProperty.call(value, 'contextWindowTokens');
-  const hasThreshold = Object.prototype.hasOwnProperty.call(value, 'summaryThresholdTokens');
+  const hasContext = Object.prototype.hasOwnProperty.call(value, 'contextWindowTokens') && value.contextWindowTokens !== undefined;
+  const hasThreshold = Object.prototype.hasOwnProperty.call(value, 'summaryThresholdTokens') && value.summaryThresholdTokens !== undefined;
+  const hasMode = Object.prototype.hasOwnProperty.call(value, 'contextMode') && value.contextMode !== undefined;
   // A provider catalog is optional. Never invent a capacity: it would make the
   // Harness defer compaction past the actual context limit of an unknown model.
   const defaults = previous ?? {};
-  return profileContext({
+  const policy = profileContext({
     contextWindowTokens: hasContext ? value.contextWindowTokens : (defaults.contextWindowTokens ?? 0),
     summaryThresholdTokens: hasThreshold ? value.summaryThresholdTokens : (defaults.summaryThresholdTokens ?? 0),
   });
+  let contextMode;
+  if (hasMode) {
+    if (!CONTEXT_MODES.includes(value.contextMode)) fail('Invalid context mode');
+    contextMode = value.contextMode;
+  } else if ((hasContext && policy.contextWindowTokens > 0) || (hasThreshold && policy.summaryThresholdTokens > 0)) {
+    contextMode = 'manual';
+  } else if (CONTEXT_MODES.includes(defaults.contextMode)) {
+    contextMode = defaults.contextMode;
+  } else {
+    contextMode = 'manual';
+  }
+  return { ...policy, contextMode };
+}
+
+function effortsModeForProfile(value, previous) {
+  const hasMode = Object.prototype.hasOwnProperty.call(value, 'effortsMode') && value.effortsMode !== undefined;
+  if (hasMode) {
+    if (!EFFORTS_MODES.includes(value.effortsMode)) fail('Invalid efforts mode');
+    return value.effortsMode;
+  }
+  if (Object.prototype.hasOwnProperty.call(value, 'efforts') && value.efforts !== undefined) return 'manual';
+  if (EFFORTS_MODES.includes(previous?.effortsMode)) return previous.effortsMode;
+  return 'manual';
 }
 
 function routeEffort(value, profile) {
@@ -129,8 +155,10 @@ export function legacyModelRouting(legacy = {}) {
   const profile = model ? {
     id: 'default', name: '默认模型', providerId: 'default', model,
     efforts: Array.isArray(previous?.efforts) ? previous.efforts.filter(level => EFFORTS.includes(level)) : effortLevels(model),
+    effortsMode: 'manual',
     ...profileContext({ contextWindowTokens: previous?.contextWindowTokens ?? legacy.contextWindowTokens ?? 0,
       summaryThresholdTokens: previous?.summaryThresholdTokens ?? 0 }),
+    contextMode: 'manual',
   } : null;
   const provider = (baseUrl || apiKey || profile) ? { id: 'default', name: '默认服务', apiFormat, baseUrl, apiKey } : null;
   return { version: 1, providers: provider ? [provider] : [], profiles: profile ? [profile] : [],
@@ -176,8 +204,11 @@ export function validateModelRouting(input, { previous } = {}) {
     const providerId = identifier(item.providerId, 'provider ID');
     if (!providersById.has(providerId)) fail(`Unknown provider: ${providerId}`);
     const model = modelId(item.model);
-    const context = contextForProfile(item, previousProfiles.get(id));
-    return { id, name: text(item.name, 'profile name', 120), providerId, model, efforts: levels(item.efforts, model), ...context };
+    const previousProfile = previousProfiles.get(id);
+    const profileEfforts = levels(item.efforts, model);
+    const effortsMode = effortsModeForProfile(item, previousProfile);
+    const context = contextForProfile(item, previousProfile);
+    return { id, name: text(item.name, 'profile name', 120), providerId, model, efforts: profileEfforts, effortsMode, ...context };
   });
   const profilesById = new Map(profiles.map(item => [item.id, item]));
   const defaultRoute = normalizeRoute(input.defaultRoute, profilesById, 'default route');
@@ -208,7 +239,9 @@ function candidate(profile, provider, route) {
     profileId: profile.id, profileName: profile.name, providerId: provider.id, providerName: provider.name,
     apiFormat: provider.apiFormat, baseUrl: provider.baseUrl, apiKey: provider.apiKey,
     model: profile.model, efforts: [...profile.efforts], effort: route.effort,
+    effortsMode: profile.effortsMode ?? 'manual',
     contextWindowTokens: profile.contextWindowTokens, summaryThresholdTokens: profile.summaryThresholdTokens,
+    contextMode: profile.contextMode ?? 'manual',
   };
 }
 

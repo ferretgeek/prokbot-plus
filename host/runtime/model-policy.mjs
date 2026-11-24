@@ -1,28 +1,79 @@
 import { validateContextPolicy } from './context-policy.mjs';
 import { chatReasoning } from './openai-chat.mjs';
 import { claudeTraits } from './anthropic-messages.mjs';
+import { normalizeModelId, parseReportedCapacity, referenceContextWindow } from './model-specs.mjs';
 export const TIERS = ['routine', 'reasoning', 'expert'];
 export const EFFORTS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 
-function catalogCapacity(value) {
-  return Number.isSafeInteger(value) && value > 0 && value <= 100_000_000 ? value : undefined;
+/** Compute a compaction threshold (75% of input budget after output reserve) for a context window. */
+export function summaryThresholdFor(contextWindowTokens, { apiFormat, model, maxTokens, outputReserve } = {}) {
+  if (!Number.isSafeInteger(contextWindowTokens) || contextWindowTokens < 2) return 0;
+  let reserve = 0;
+  if (Number.isSafeInteger(outputReserve) && outputReserve > 0) {
+    reserve = outputReserve;
+  } else if (apiFormat === 'anthropic') {
+    const traits = claudeTraits(model || '');
+    reserve = Number.isSafeInteger(maxTokens) && maxTokens > 0
+      ? Math.min(maxTokens, traits.maxOutput)
+      : Math.min(64_000, traits.maxOutput);
+  } else if (Number.isSafeInteger(maxTokens) && maxTokens > 0) {
+    reserve = maxTokens;
+  }
+  let budget = contextWindowTokens;
+  if (reserve > 0 && contextWindowTokens > reserve) {
+    budget = contextWindowTokens - reserve;
+  } else if (reserve > 0) {
+    // Context window is at or below the default output cap; fall back to half the window.
+    budget = Math.max(2, Math.floor(contextWindowTokens * 0.5));
+    return budget < 2_000 ? Math.max(1, budget) : Math.max(1, Math.floor(budget / 1_000) * 1_000);
+  }
+  if (budget < 2_000) return Math.max(1, Math.floor(budget * 0.75));
+  return Math.max(1, Math.floor(budget * 0.75 / 1_000) * 1_000);
 }
 
-function summaryThreshold(contextWindowTokens) {
-  if (contextWindowTokens < 2) return 0;
-  return Math.max(1, Math.floor(contextWindowTokens * 0.75 / 1_000) * 1_000);
+/** Clamp an explicit reasoning effort to the closest supported level in the catalog list. */
+export function clampSupportedEffort(effort, supportedEfforts) {
+  if (!effort || effort === 'default' || effort === 'auto' || !Array.isArray(supportedEfforts) || !supportedEfforts.length) {
+    return effort;
+  }
+  // Never downgrade an active reasoning effort to 'none'; fall back to model default instead.
+  const candidates = effort === 'none' ? supportedEfforts : supportedEfforts.filter(level => level !== 'none');
+  if (!candidates.length) return 'default';
+  if (candidates.includes(effort)) return effort;
+  let index = EFFORTS.indexOf(effort);
+  if (index < 0) return candidates[0];
+  while (index >= 0) {
+    if (candidates.includes(EFFORTS[index])) return EFFORTS[index];
+    index--;
+  }
+  return candidates[0];
 }
 
-/** Recommended compaction settings for a model chosen from a provider catalog. */
+/** Recommended compaction settings for a model: provider-reported first, then curated reference spec. */
 export function catalogContextPolicy(model, reportedCapacity) {
-  const capacity = catalogCapacity(reportedCapacity);
-  if (capacity) return { contextWindowTokens: capacity, summaryThresholdTokens: summaryThreshold(capacity), contextSource: 'provider' };
+  const capacity = parseReportedCapacity(reportedCapacity);
+  if (capacity) {
+    return {
+      contextWindowTokens: capacity,
+      summaryThresholdTokens: summaryThresholdFor(capacity),
+      contextSource: 'provider',
+    };
+  }
+  const ref = referenceContextWindow(model);
+  if (ref) {
+    return {
+      contextWindowTokens: ref.contextWindowTokens,
+      summaryThresholdTokens: summaryThresholdFor(ref.contextWindowTokens),
+      contextSource: 'reference',
+      matchedFamily: ref.family,
+    };
+  }
   return { contextWindowTokens: 0, summaryThresholdTokens: 0, contextSource: 'unknown' };
 }
 
 /** Reference levels for well-known model families; a provider catalog overrides them. */
 export function effortLevels(model) {
-  const id = String(model).toLowerCase();
+  const id = normalizeModelId(model) || String(model).toLowerCase();
   if (/deepseek-v4/.test(id)) return ['none', 'low', 'high', 'max'];
   if (/^claude-/.test(id)) {
     const traits = claudeTraits(id);
@@ -36,6 +87,20 @@ export function effortLevels(model) {
   if (/^gpt-5\.[2-9]/.test(id)) return ['none', 'low', 'medium', 'high', 'xhigh'];
   if (/^grok-4/.test(id)) return ['minimal', 'low', 'medium', 'high', 'xhigh'];
   return [];
+}
+
+/** Resolve both thinking efforts and context-window specs for one model ID. */
+export function resolveModelCapabilities(model, { reportedEfforts, reportedCapacity } = {}) {
+  const levels = Array.isArray(reportedEfforts)
+    ? EFFORTS.filter(level => reportedEfforts.includes(level))
+    : null;
+  const fallbackEfforts = effortLevels(model);
+  return {
+    id: String(model ?? '').trim(),
+    efforts: levels ?? fallbackEfforts,
+    source: levels ? 'provider' : fallbackEfforts.length ? 'reference' : 'manual',
+    ...catalogContextPolicy(model, reportedCapacity),
+  };
 }
 export function defaultPolicy(model = 'deepseek-v4.1-flash') {
   return { mode: 'manual', effort: 'default', classifierModel: 'jev-latest',
