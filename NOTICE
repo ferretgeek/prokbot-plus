@@ -247,6 +247,7 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-24)
     - host/server/public/i18n.js, app-package.js, skills.js and sharing.js
       render localized skill names and descriptions in the Skills list,
       editor dialog title and Sharing skill picker.
+    - Contributed by @jun9100 (GitHub pull request #17).
 
 Third-party components
 ----------------------

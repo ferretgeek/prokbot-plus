@@ -4,9 +4,12 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
-## Unreleased
+## ProkBot Plus 1.11.0 (2026-11-24)
 
-- **技能页本地化 / Skills page localization**：为 `Skills` 目录和 `bundledSkills` 增加可选的 `localizedName` / `localizedDescription` 字段，补齐内置技能（`learn-from-demonstration`、`export-bot-template`）的中英文文案，并把应用包里已有的双语附带技能文案透传到技能目录；旧版 `skill-catalog.json` 升级启动时会自动回填未改名的内置技能和应用附带技能翻译，不改动版本摘要、启用状态或用户自定义编辑。管理页「技能」列表、编辑弹窗标题和「分享 → 发布技能」下拉框均按浏览器语言显示。Added optional `localizedName` and `localizedDescription` metadata to the `Skills` catalog and `bundledSkills`, localized built-in Host skills (`learn-from-demonstration`, `export-bot-template`), and forwarded bilingual bundled skill copy from app packages into `skill-catalog.json`. Existing Hosts upgrading from earlier releases automatically backfill translations for unmodified built-in and app-bundled skills on startup without changing revision hashes, enabled state, or custom edits. The admin Skills list, editor dialog title, and Sharing skill picker now render localized titles and descriptions for the browser locale.
+管理页「技能」在中文界面下显示内置技能和应用附带技能的中文名称和简介，由 @jun9100 贡献（[#17](https://github.com/ferretgeek/prokbot-plus/pull/17)）。只需升级 Host，客户端都不用重新生成。The admin Skills page shows built-in and app-bundled skills in Chinese when the interface is in Chinese, contributed by @jun9100 (#17). Only the Host needs upgrading; no client rebuild is needed.
+
+- **技能页中文 / Skills page in Chinese**：「从演示中学习」「导出 Bot 模板」两个内置技能和应用附带的技能按界面语言显示名称和简介，「分享」页的技能下拉框也一样。升级时只给没改过名称和简介的条目补上翻译，禁用状态、改过的 SKILL.md 和自己改的名字都保留；名称改过的技能显示你起的名字。Bot 读到的技能内容不变。The built-in skills Learn from demonstration and Export Bot template, and skills bundled with apps, show their names and descriptions in the interface language, as does the skill picker on the Sharing page. The upgrade adds translations only to entries whose name and description are unchanged; disabled skills, edited SKILL.md files and custom names are kept, and a renamed skill shows your name. What Bots read from skills is unchanged.
+- **测试 / Testing**：在独立测试实例上从 1.10.0 带数据升级（一个禁用并改过 SKILL.md 的内置技能、一个改了名的内置技能、两个自建技能）：中文界面显示中文，英文界面显示英文，禁用状态、改动和自定义名称都保留，Bot 读取的技能文件除了改名本身没有变化。On an isolated instance upgraded from 1.10.0 with data (a disabled built-in skill with an edited SKILL.md, a renamed built-in skill and two custom skills), the Chinese interface showed Chinese and the English interface English; disabled states, edits and custom names were kept, and the skill file Bots read changed only by the rename itself.
 
 ## ProkBot Plus 1.10.0 (2026-11-24)
 
