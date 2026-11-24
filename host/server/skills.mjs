@@ -4,6 +4,45 @@ import { JsonStore, writePrivate, readJson } from './storage.mjs';
 import { check } from './security.mjs';
 import { digest, packageId, validateFiles, textField } from './package-files.mjs';
 
+const LOCALES = ['en', 'zh-CN'];
+
+function optionalLocalized(value, fallback, max, label) {
+  if (value === undefined || value === null) return undefined;
+  check(typeof value === 'object' && !Array.isArray(value), 400, `Invalid ${label}`);
+  const result = {};
+  for (const locale of LOCALES) {
+    if (value[locale] !== undefined && value[locale] !== '') result[locale] = textField(value[locale], max, label);
+  }
+  if (!Object.keys(result).length) return undefined;
+  return { en: result.en ?? fallback, 'zh-CN': result['zh-CN'] ?? result.en ?? fallback };
+}
+
+function sameLocalized(left, right) {
+  return Boolean(left && right) && LOCALES.every(locale => left[locale] === right[locale]);
+}
+
+function assignLocalized(target, localizedName, localizedDescription) {
+  if (localizedName) target.localizedName = { ...localizedName }; else delete target.localizedName;
+  if (localizedDescription) target.localizedDescription = { ...localizedDescription }; else delete target.localizedDescription;
+}
+
+function copyVersionMeta({ id, at, name, description, localizedName, localizedDescription }) {
+  return {
+    id, at, name, description,
+    ...(localizedName ? { localizedName: { ...localizedName } } : {}),
+    ...(localizedDescription ? { localizedDescription: { ...localizedDescription } } : {}),
+  };
+}
+
+function copyItem({ versions, localizedName, localizedDescription, ...item }) {
+  return {
+    ...item,
+    ...(localizedName ? { localizedName: { ...localizedName } } : {}),
+    ...(localizedDescription ? { localizedDescription: { ...localizedDescription } } : {}),
+    versions: versions.map(copyVersionMeta),
+  };
+}
+
 export function validateSkill(input) {
   check(input && typeof input === 'object' && !Array.isArray(input), 400, 'Invalid skill');
   const id = packageId(input.id), name = textField(input.name, 100, 'skill name');
@@ -23,17 +62,58 @@ export class Skills {
     this.store = new JsonStore(join(dataDir, 'skill-catalog.json'), { version: 1, skills: [], revision: 0 });
   }
   async load() { await this.store.load(); return this; }
-  list() { return this.store.value.skills.map(({ versions, ...item }) => ({ ...item,
-    versions: versions.map(({ id, at, name, description }) => ({ id, at, name, description })) })); }
+  list() { return this.store.value.skills.map(copyItem); }
   get(id, version) {
     const item = this.store.value.skills.find(item => item.id === id);
     check(item, 404, 'Skill not found');
     const content = item.versions.find(entry => entry.id === (version ?? item.current));
     check(content, 404, 'Skill version not found');
-    return { ...item, versions: item.versions.map(({ id, at, name, description }) => ({ id, at, name, description })), content };
+    return {
+      ...copyItem(item),
+      content: {
+        ...content,
+        ...(content.localizedName ? { localizedName: { ...content.localizedName } } : {}),
+        ...(content.localizedDescription ? { localizedDescription: { ...content.localizedDescription } } : {}),
+      },
+    };
+  }
+  /** Seed a built-in Host skill once, or backfill its localization on existing unmodified entries. */
+  async seed(input) {
+    check(input && typeof input === 'object' && !Array.isArray(input), 400, 'Invalid skill');
+    const id = packageId(input.id);
+    const existing = this.store.value.skills.find(item => item.id === id);
+    if (!existing) return this.publish(input, 'host');
+    if (existing.source !== 'host') return this.get(existing.id);
+    const name = textField(input.name, 100, 'skill name');
+    const description = textField(input.description, 2000, 'skill description');
+    const localizedName = optionalLocalized(input.localizedName, name, 100, 'skill name');
+    const localizedDescription = optionalLocalized(input.localizedDescription, description, 2000, 'skill description');
+    const needsUpdate = target =>
+      (localizedName && target.name === name && !sameLocalized(target.localizedName, localizedName)) ||
+      (localizedDescription && target.description === description && !sameLocalized(target.localizedDescription, localizedDescription));
+    if (!needsUpdate(existing) && !existing.versions.some(needsUpdate)) return this.get(existing.id);
+    await this.store.mutate(state => {
+      const item = state.skills.find(entry => entry.id === id);
+      if (!item || item.source !== 'host') return;
+      let changed = false;
+      const apply = target => {
+        if (localizedName && target.name === name && !sameLocalized(target.localizedName, localizedName)) {
+          target.localizedName = { ...localizedName }; changed = true;
+        }
+        if (localizedDescription && target.description === description && !sameLocalized(target.localizedDescription, localizedDescription)) {
+          target.localizedDescription = { ...localizedDescription }; changed = true;
+        }
+      };
+      apply(item);
+      for (const version of item.versions) apply(version);
+      if (changed) state.revision++;
+    });
+    return this.get(id);
   }
   async publish(input, source = 'host') {
     const content = validateSkill(input), revision = digest(JSON.stringify(content));
+    const inputLocalizedName = optionalLocalized(input.localizedName, content.name, 100, 'skill name');
+    const inputLocalizedDescription = optionalLocalized(input.localizedDescription, content.description, 2000, 'skill description');
     await this.store.mutate(state => {
       let item = state.skills.find(item => item.id === content.id);
       if (!item) {
@@ -41,9 +121,21 @@ export class Skills {
         state.skills.push(item);
       }
       check(item.source === source, 409, 'Skill belongs to another source');
-      if (!item.versions.some(item => item.id === revision)) item.versions.push({ ...content, id: revision, at: Date.now() });
+      let version = item.versions.find(entry => entry.id === revision);
+      const localizedName = inputLocalizedName
+        ?? (content.name === item.name ? item.localizedName : undefined)
+        ?? (version?.name === content.name ? version.localizedName : undefined);
+      const localizedDescription = inputLocalizedDescription
+        ?? (content.description === item.description ? item.localizedDescription : undefined)
+        ?? (version?.description === content.description ? version.localizedDescription : undefined);
+      if (!version) {
+        version = { ...content, id: revision, at: Date.now() };
+        item.versions.push(version);
+      }
+      assignLocalized(version, localizedName, localizedDescription);
       item.previous = item.current === revision ? item.previous : item.current;
       item.current = revision; item.name = content.name; item.description = content.description;
+      assignLocalized(item, localizedName, localizedDescription);
       if (typeof input.enabled === 'boolean') item.enabled = input.enabled;
       state.revision++;
     });
@@ -58,6 +150,7 @@ export class Skills {
         const target = restore === 'baseline' ? item.baseline : restore === 'previous' ? item.previous : restore;
         const version = item.versions.find(version => version.id === target); check(version, 404, 'Skill version not found');
         item.previous = item.current; item.current = target; item.name = version.name; item.description = version.description;
+        assignLocalized(item, version.localizedName, version.localizedDescription);
       }
       state.revision++;
     });
@@ -68,17 +161,28 @@ export class Skills {
   }
   async replaceSource(source, inputs) {
     check(source.startsWith('plugin:'), 400, 'Invalid skill source');
-    const contents = inputs.map(input => ({ content: validateSkill(input), enabled: input.enabled === true }));
+    const contents = inputs.map(input => {
+      const content = validateSkill(input);
+      return {
+        content,
+        enabled: input.enabled === true,
+        localizedName: optionalLocalized(input.localizedName, content.name, 100, 'skill name'),
+        localizedDescription: optionalLocalized(input.localizedDescription, content.description, 2000, 'skill description'),
+      };
+    });
     await this.store.mutate(state => {
       for (const item of state.skills) if (item.source === source) item.enabled = false;
-      for (const { content, enabled } of contents) {
+      for (const { content, enabled, localizedName, localizedDescription } of contents) {
         const revision = digest(JSON.stringify(content));
         let item = state.skills.find(item => item.id === content.id);
         if (!item) { item = { id: content.id, source, baseline: revision, current: revision, versions: [] }; state.skills.push(item); }
         check(item.source === source, 409, 'Skill belongs to another source');
-        if (!item.versions.some(version => version.id === revision)) item.versions.push({ ...content, id: revision, at: Date.now() });
+        let version = item.versions.find(version => version.id === revision);
+        if (!version) { version = { ...content, id: revision, at: Date.now() }; item.versions.push(version); }
+        assignLocalized(version, localizedName, localizedDescription);
         item.previous = item.current === revision ? item.previous : item.current;
         Object.assign(item, { current: revision, name: content.name, description: content.description, enabled });
+        assignLocalized(item, localizedName, localizedDescription);
       }
       state.revision++;
     });

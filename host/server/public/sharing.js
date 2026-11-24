@@ -1,4 +1,4 @@
-import { t, html } from './i18n.js';
+import { t, html, localizedText } from './i18n.js';
 import { $, node, item, badge, menu, empty, button, confirmAction, dialog } from './ui.js';
 import { icon } from './icons.js';
 
@@ -90,7 +90,7 @@ export function createSharingEditor({ api, toast, act }) {
   });
   $('#sharing-skill').onclick = () => act($('#sharing-skill'), async () => {
     const skills = await api('/admin/api/skills'), select = $('#sharing-select-form').elements.skill;
-    select.replaceChildren(...skills.map(skill => new Option(skill.name, skill.id)));
+    select.replaceChildren(...skills.map(skill => new Option(localizedText(skill.localizedName, skill.name), skill.id)));
     $('#sharing-select-form [type=submit]').disabled = !skills.length; picker.showModal();
   });
   $('#sharing-select-form').onsubmit = event => { event.preventDefault(); act(event.submitter, async () => {

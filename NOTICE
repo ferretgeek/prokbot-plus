@@ -237,6 +237,17 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-24)
       desktop clients. ci/release-packages.py builds a seventh, Linux package.
     - Contributed by @jun9100 (GitHub pull request #16).
 
+19. Skills page localization.
+    - host/server/skills.mjs, plugin-package.mjs, sharing.mjs and
+      host/runtime/host-teach.mjs store optional localizedName and
+      localizedDescription metadata for built-in Host skills and app-bundled
+      skills and backfill unmodified legacy skill-catalog.json entries on
+      startup without altering revision hashes or materialized cache.json
+      strings.
+    - host/server/public/i18n.js, app-package.js, skills.js and sharing.js
+      render localized skill names and descriptions in the Skills list,
+      editor dialog title and Sharing skill picker.
+
 Third-party components
 ----------------------
 
