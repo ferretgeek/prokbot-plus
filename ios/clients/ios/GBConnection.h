@@ -18,4 +18,10 @@ FOUNDATION_EXPORT void GBOpenAgent(NSString *agentId);
 FOUNDATION_EXPORT void GBTrackModifiedView(UIView *view);
 FOUNDATION_EXPORT BOOL GBHasAncestorPluginTag(UIView *view, NSInteger tag);
 FOUNDATION_EXPORT void GBRemoveDescendantPluginTag(UIView *view, NSInteger tag);
+typedef NS_ENUM(NSInteger, GBSettingsContextState) {
+  GBSettingsContextUnknown = 0,
+  GBSettingsContextNo = 1,
+  GBSettingsContextYes = 2,
+};
+FOUNDATION_EXPORT GBSettingsContextState GBGlobalSettingsContextState(UIView *view);
 FOUNDATION_EXPORT BOOL GBIsGlobalSettingsContext(UIView *view);

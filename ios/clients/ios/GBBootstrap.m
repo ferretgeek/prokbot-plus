@@ -195,6 +195,7 @@ static NSSet<NSString *> *GBAllInterestingLabels(void) {
     [all addObject:@"dev-gateway@localhost avatar"];
     [all addObject:@"账户"];
     [all addObject:@"语言"];
+    [all addObject:@"語言"];
     [all addObject:@"Account"];
     [all addObject:@"Language"];
     set = [all copy];
@@ -343,44 +344,88 @@ static BOOL GBSubtreeContainsSettingsMarker(UIView *root, NSSet<NSString *> *mar
   return NO;
 }
 static char GBSettingsContextCacheKey;
+static char GBSettingsRescanPendingKey;
 static uint64_t GBSettingsContextEpoch = 1;
-static void GBInvalidateNegativeSettingsContextCache(void) {
+static void GBInvalidateSettingsContextCache(void) {
   GBSettingsContextEpoch++;
 }
-BOOL GBIsGlobalSettingsContext(UIView *view) {
+static UIViewController *GBEnclosingViewController(UIView *view) {
+  for (UIResponder *responder = view.nextResponder; responder; responder = responder.nextResponder) {
+    if ([responder isKindOfClass:UIViewController.class])
+      return (UIViewController *)responder;
+  }
+  return nil;
+}
+static BOOL GBSettingsContextCacheLookup(UIViewController *controller, BOOL *matchedOut, uint64_t *epochOut) {
+  if (!controller) return NO;
+  NSNumber *cached = objc_getAssociatedObject(controller, &GBSettingsContextCacheKey);
+  if (!cached) return NO;
+  uint64_t packed = cached.unsignedLongLongValue;
+  if (matchedOut) *matchedOut = (packed & 1ULL) != 0;
+  if (epochOut) *epochOut = packed >> 1;
+  return YES;
+}
+GBSettingsContextState GBGlobalSettingsContextState(UIView *view) {
   // Scope global Settings interceptions (Sign out, global Push switch) to the
   // enclosing App Settings screen so similarly labeled controls in Bot Settings
-  // or Connected Apps sub-screens cannot be hijacked. Cache per view controller
-  // so repeated switch/button layouts do not re-walk the VC subtree.
-  UIViewController *controller = nil;
-  for (UIResponder *responder = view.nextResponder; responder; responder = responder.nextResponder) {
-    if ([responder isKindOfClass:UIViewController.class]) {
-      controller = (UIViewController *)responder;
-      break;
-    }
+  // or Connected Apps sub-screens cannot be hijacked. Cache both YES and NO per
+  // view controller by refresh epoch so recycled controllers re-evaluate, and
+  // preserve existing overlays when a view temporarily leaves the window.
+  UIViewController *controller = GBEnclosingViewController(view);
+  BOOL cachedMatched = NO;
+  uint64_t cachedEpoch = 0;
+  BOOL hasCached = GBSettingsContextCacheLookup(controller, &cachedMatched, &cachedEpoch);
+  if (!view.window) {
+    if (hasCached && cachedEpoch == GBSettingsContextEpoch)
+      return cachedMatched ? GBSettingsContextYes : GBSettingsContextNo;
+    return GBSettingsContextUnknown;
   }
-  if (!controller || !controller.isViewLoaded || !view.window) return NO;
-  NSNumber *cached = objc_getAssociatedObject(controller, &GBSettingsContextCacheKey);
-  if (cached) {
-    uint64_t packed = cached.unsignedLongLongValue;
-    BOOL matched = (packed & 1ULL) != 0;
-    uint64_t epoch = packed >> 1;
-    if (matched || epoch == GBSettingsContextEpoch)
-      return matched;
-  }
+  if (!controller || !controller.isViewLoaded) return GBSettingsContextNo;
+  if (hasCached && cachedEpoch == GBSettingsContextEpoch)
+    return cachedMatched ? GBSettingsContextYes : GBSettingsContextNo;
   BOOL matched = GBSubtreeContainsSettingsMarker(controller.view, GBSettingsContextLabels(), 0);
   uint64_t packed = (GBSettingsContextEpoch << 1) | (matched ? 1ULL : 0ULL);
   objc_setAssociatedObject(controller, &GBSettingsContextCacheKey, @(packed), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  return matched;
+  return matched ? GBSettingsContextYes : GBSettingsContextNo;
 }
-static BOOL GBIsSettingsSignOutContext(UIView *view) {
-  return GBIsGlobalSettingsContext(view);
+BOOL GBIsGlobalSettingsContext(UIView *view) {
+  return GBGlobalSettingsContextState(view) == GBSettingsContextYes;
+}
+static GBSettingsContextState GBIsSettingsSignOutContext(UIView *view) {
+  return GBGlobalSettingsContextState(view);
 }
 @interface GBInterface : NSObject
 + (void)showConnection;
 + (void)confirmSignOut;
++ (void)replaceLogin:(UIView *)view;
 + (void)refresh;
 @end
+static void GBNoteSettingsMarkerOnView(UIView *view) {
+  if (!view || view.hidden || view.alpha < 0.01 || !view.window) return;
+  UIViewController *controller = GBEnclosingViewController(view);
+  if (!controller || !controller.isViewLoaded) return;
+  BOOL cachedMatched = NO;
+  uint64_t cachedEpoch = 0;
+  BOOL hasCached = GBSettingsContextCacheLookup(controller, &cachedMatched, &cachedEpoch);
+  if (hasCached && cachedMatched && cachedEpoch == GBSettingsContextEpoch)
+    return;
+  uint64_t packed = (GBSettingsContextEpoch << 1) | 1ULL;
+  objc_setAssociatedObject(controller, &GBSettingsContextCacheKey, @(packed), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  if (hasCached && !cachedMatched) {
+    // A switch or sign-out row laid out before this Settings marker mounted;
+    // schedule one coalesced pass on this controller instead of waiting for refresh.
+    if ([objc_getAssociatedObject(controller, &GBSettingsRescanPendingKey) boolValue]) return;
+    objc_setAssociatedObject(controller, &GBSettingsRescanPendingKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    __weak UIViewController *weakController = controller;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      UIViewController *strongController = weakController;
+      if (!strongController) return;
+      objc_setAssociatedObject(strongController, &GBSettingsRescanPendingKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+      if (strongController.isViewLoaded && strongController.view.window)
+        [GBInterface replaceLogin:strongController.view];
+    });
+  }
+}
 @implementation GBInterface
 + (void)showLibrary {
   GBShowLibrary();
@@ -555,7 +600,7 @@ static BOOL GBIsSettingsSignOutContext(UIView *view) {
   NSSet<NSString *> *computerLabels = GBComputerLabels();
   BOOL paired = GBConnection.shared.isPaired;
   BOOL checkedSettingsSignOut = NO;
-  BOOL isSettingsSignOut = NO;
+  GBSettingsContextState settingsSignOutState = GBSettingsContextUnknown;
   if (hasPluginChild) {
     NSMutableArray<UIView *> *stale = nil;
     for (UIView *child in subviews) {
@@ -567,10 +612,10 @@ static BOOL GBIsSettingsSignOutContext(UIView *view) {
           remove = YES;
         } else {
           if (!checkedSettingsSignOut) {
-            isSettingsSignOut = GBIsSettingsSignOutContext(view);
+            settingsSignOutState = GBIsSettingsSignOutContext(view);
             checkedSettingsSignOut = YES;
           }
-          if (!isSettingsSignOut) remove = YES;
+          if (settingsSignOutState == GBSettingsContextNo) remove = YES;
         }
       } else if (tag == 731989 && ![usageLabels containsObject:label]) {
         remove = YES;
@@ -597,6 +642,8 @@ static BOOL GBIsSettingsSignOutContext(UIView *view) {
       [child removeFromSuperview];
     }
   }
+  if ([GBSettingsContextLabels() containsObject:label])
+    GBNoteSettingsMarkerOnView(view);
   if ([label hasPrefix:@"dev-gateway@localhost"] && GBReplaceProfileView(view))
     return;
   Class fabricViewClass = GBFabricViewClass();
@@ -606,10 +653,10 @@ static BOOL GBIsSettingsSignOutContext(UIView *view) {
     if (GBHasAncestorPluginTag(view, 731988))
       return;
     if (!checkedSettingsSignOut) {
-      isSettingsSignOut = GBIsSettingsSignOutContext(view);
+      settingsSignOutState = GBIsSettingsSignOutContext(view);
       checkedSettingsSignOut = YES;
     }
-    if (isSettingsSignOut) {
+    if (settingsSignOutState == GBSettingsContextYes) {
       GBRemoveDescendantPluginTag(view, 731988);
       UIButton *existing = (UIButton *)[view viewWithTag:731988];
       if (existing) {
@@ -750,7 +797,7 @@ static BOOL GBIsSettingsSignOutContext(UIView *view) {
   UIWindow *window = GBWindow();
   if (!window)
     return;
-  GBInvalidateNegativeSettingsContextCache();
+  GBInvalidateSettingsContextCache();
   [self replaceLogin:window];
 }
 
@@ -763,6 +810,19 @@ static IMP GBOriginalLayout;
 static NSTimer *GBPresenceTimer;
 static NSTimer *GBNetworkHealthTimer;
 static BOOL GBStartupRefreshed;
+static dispatch_queue_t GBAppIntentsVerifyQueue(void) {
+  static dispatch_queue_t queue;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    queue = dispatch_queue_create("com.grokbot.local.app-intents-verify", DISPATCH_QUEUE_SERIAL);
+  });
+  return queue;
+}
+static void GBVerifyAppIntentCredentialsAsync(void) {
+  dispatch_async(GBAppIntentsVerifyQueue(), ^{
+    GBVerifyAppIntentCredentials();
+  });
+}
 static void GBEnsureNetworkReadyAsync(void) {
   if (!GBNetworkEnabled()) return;
   NSString *serverURL = GBConnection.shared.serverURL;
@@ -1028,7 +1088,7 @@ __attribute__((constructor)) static void GBInitialize(void) {
                         GBStartupRefreshed = YES;
                         GBInstall();
                         GBEnsureNetworkReadyAsync();
-                        GBVerifyAppIntentCredentials();
+                        GBVerifyAppIntentCredentialsAsync();
                         [GBInterface refresh];
                         [[GBNotifications shared] start];
                         GBPushSetForeground(YES);

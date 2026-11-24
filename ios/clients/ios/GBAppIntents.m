@@ -103,90 +103,86 @@ void GBSyncAppIntentCredentials(void) {
         (!paired || [GBLastSyncedServerURL isEqualToString:serverURL])) {
       return;
     }
-  }
-  NSString *defaultGroup = GBAppIntentDefaultAccessGroup();
-  NSString *sharedGroup = GBAppIntentSharedAccessGroup();
-  if (!paired) {
-    GBDeleteAppIntentCredential(@"x.money.agent-connection-code:no-auth",
-                                @"grok-bot", defaultGroup);
-    GBDeleteAppIntentCredential(@"x.money.agent-connection-code:no-auth",
-                                @"grok-bot", sharedGroup);
-    GBDeleteAppIntentCredential(@"x.money.agent-connection-code:no-auth",
-                                @"grok-bot", nil);
-    GBDeleteAppIntentCredential(@"app:no-auth",
-                                @"sand.cursor-tokens", defaultGroup);
-    GBDeleteAppIntentCredential(@"app:no-auth",
-                                @"sand.cursor-tokens", sharedGroup);
-    GBDeleteAppIntentCredential(@"app:no-auth",
-                                @"sand.cursor-tokens", nil);
-    @synchronized (GBSyncLock) {
+    NSString *defaultGroup = GBAppIntentDefaultAccessGroup();
+    NSString *sharedGroup = GBAppIntentSharedAccessGroup();
+    if (!paired) {
+      GBDeleteAppIntentCredential(@"x.money.agent-connection-code:no-auth",
+                                  @"grok-bot", defaultGroup);
+      GBDeleteAppIntentCredential(@"x.money.agent-connection-code:no-auth",
+                                  @"grok-bot", sharedGroup);
+      GBDeleteAppIntentCredential(@"x.money.agent-connection-code:no-auth",
+                                  @"grok-bot", nil);
+      GBDeleteAppIntentCredential(@"app:no-auth",
+                                  @"sand.cursor-tokens", defaultGroup);
+      GBDeleteAppIntentCredential(@"app:no-auth",
+                                  @"sand.cursor-tokens", sharedGroup);
+      GBDeleteAppIntentCredential(@"app:no-auth",
+                                  @"sand.cursor-tokens", nil);
       GBHasSyncedCredentials = YES;
       GBLastSyncedPaired = NO;
       GBLastSyncedServerURL = nil;
+      return;
     }
-    return;
-  }
-  // Original Swift code derives the account ID from a JWT payload. This is an
-  // unsigned local marker, not an authentication credential. Real device auth
-  // is attached only by the local transport below.
-  NSString *(^base64url)(NSDictionary *) = ^NSString *(NSDictionary *value) {
-    NSData *json = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
-    NSString *encoded = [json base64EncodedStringWithOptions:0] ?: @"";
-    return [[[encoded stringByReplacingOccurrencesOfString:@"+" withString:@"-"]
-      stringByReplacingOccurrencesOfString:@"/" withString:@"_"] stringByReplacingOccurrencesOfString:@"=" withString:@""];
-  };
-  NSDictionary *claims = @{
-    @"sub": @"grokbot-local",
-    @"email": @"local@workspace.invalid",
-    @"type": @"sand_mobile",
-    @"iat": @0,
-    @"exp": @4070908800LL
-  };
-  NSString *marker = [NSString stringWithFormat:@"%@.%@.local",
-    base64url(@{@"alg":@"none",@"typ":@"JWT"}), base64url(claims)];
-  NSData *data = [NSJSONSerialization dataWithJSONObject:@{
-    @"accessToken": marker,
-    @"refreshToken": marker,
-    @"backendUrl": serverURL
-  } options:0 error:nil];
-  if (!data.length) return;
-  OSStatus tokenStoreStatus = GBWriteAppIntentCredential(
-      @"app:no-auth", @"sand.cursor-tokens", defaultGroup, data);
-  OSStatus appIntentStatus = GBWriteAppIntentCredential(
-      @"x.money.agent-connection-code:no-auth", @"grok-bot", sharedGroup, data);
-  if (tokenStoreStatus == errSecSuccess && appIntentStatus == errSecSuccess) {
-    @synchronized (GBSyncLock) {
+    // Original Swift code derives the account ID from a JWT payload. This is an
+    // unsigned local marker, not an authentication credential. Real device auth
+    // is attached only by the local transport below.
+    NSString *(^base64url)(NSDictionary *) = ^NSString *(NSDictionary *value) {
+      NSData *json = [NSJSONSerialization dataWithJSONObject:value options:0 error:nil];
+      NSString *encoded = [json base64EncodedStringWithOptions:0] ?: @"";
+      return [[[encoded stringByReplacingOccurrencesOfString:@"+" withString:@"-"]
+        stringByReplacingOccurrencesOfString:@"/" withString:@"_"] stringByReplacingOccurrencesOfString:@"=" withString:@""];
+    };
+    NSDictionary *claims = @{
+      @"sub": @"grokbot-local",
+      @"email": @"local@workspace.invalid",
+      @"type": @"sand_mobile",
+      @"iat": @0,
+      @"exp": @4070908800LL
+    };
+    NSString *marker = [NSString stringWithFormat:@"%@.%@.local",
+      base64url(@{@"alg":@"none",@"typ":@"JWT"}), base64url(claims)];
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@{
+      @"accessToken": marker,
+      @"refreshToken": marker,
+      @"backendUrl": serverURL
+    } options:0 error:nil];
+    if (!data.length) return;
+    OSStatus tokenStoreStatus = GBWriteAppIntentCredential(
+        @"app:no-auth", @"sand.cursor-tokens", defaultGroup, data);
+    OSStatus appIntentStatus = GBWriteAppIntentCredential(
+        @"x.money.agent-connection-code:no-auth", @"grok-bot", sharedGroup, data);
+    if (tokenStoreStatus == errSecSuccess && appIntentStatus == errSecSuccess) {
       GBHasSyncedCredentials = YES;
       GBLastSyncedPaired = YES;
       GBLastSyncedServerURL = [serverURL copy];
     }
-  }
-  if (GBDiagnosticsEnabled()) {
-    NSUInteger tokenStoreLength = 0;
-    NSUInteger appIntentLength = 0;
-    NSUInteger ungroupedTokenStoreLength = 0;
-    NSUInteger sharedTokenStoreLength = 0;
-    OSStatus tokenStoreReadStatus = GBReadAppIntentCredential(
-        @"app:no-auth", @"sand.cursor-tokens", defaultGroup, &tokenStoreLength);
-    OSStatus appIntentReadStatus = GBReadAppIntentCredential(
-        @"x.money.agent-connection-code:no-auth", @"grok-bot",
-        sharedGroup, &appIntentLength);
-    OSStatus ungroupedTokenStoreReadStatus = GBReadAppIntentCredential(
-        @"app:no-auth", @"sand.cursor-tokens", nil, &ungroupedTokenStoreLength);
-    OSStatus sharedTokenStoreReadStatus = GBReadAppIntentCredential(
-        @"app:no-auth", @"sand.cursor-tokens", sharedGroup, &sharedTokenStoreLength);
-    GBDiagnosticsEvent(@"app-intents.credentials", @{
-      @"tokenStoreStatus": @(tokenStoreStatus),
-      @"appIntentStatus": @(appIntentStatus),
-      @"tokenStoreReadStatus": @(tokenStoreReadStatus),
-      @"appIntentReadStatus": @(appIntentReadStatus),
-      @"tokenStoreLength": @(tokenStoreLength),
-      @"appIntentLength": @(appIntentLength),
-      @"ungroupedTokenStoreReadStatus": @(ungroupedTokenStoreReadStatus),
-      @"ungroupedTokenStoreLength": @(ungroupedTokenStoreLength),
-      @"sharedTokenStoreReadStatus": @(sharedTokenStoreReadStatus),
-      @"sharedTokenStoreLength": @(sharedTokenStoreLength)
-    });
+    if (GBDiagnosticsEnabled()) {
+      NSUInteger tokenStoreLength = 0;
+      NSUInteger appIntentLength = 0;
+      NSUInteger ungroupedTokenStoreLength = 0;
+      NSUInteger sharedTokenStoreLength = 0;
+      OSStatus tokenStoreReadStatus = GBReadAppIntentCredential(
+          @"app:no-auth", @"sand.cursor-tokens", defaultGroup, &tokenStoreLength);
+      OSStatus appIntentReadStatus = GBReadAppIntentCredential(
+          @"x.money.agent-connection-code:no-auth", @"grok-bot",
+          sharedGroup, &appIntentLength);
+      OSStatus ungroupedTokenStoreReadStatus = GBReadAppIntentCredential(
+          @"app:no-auth", @"sand.cursor-tokens", nil, &ungroupedTokenStoreLength);
+      OSStatus sharedTokenStoreReadStatus = GBReadAppIntentCredential(
+          @"app:no-auth", @"sand.cursor-tokens", sharedGroup, &sharedTokenStoreLength);
+      GBDiagnosticsEvent(@"app-intents.credentials", @{
+        @"tokenStoreStatus": @(tokenStoreStatus),
+        @"appIntentStatus": @(appIntentStatus),
+        @"tokenStoreReadStatus": @(tokenStoreReadStatus),
+        @"appIntentReadStatus": @(appIntentReadStatus),
+        @"tokenStoreLength": @(tokenStoreLength),
+        @"appIntentLength": @(appIntentLength),
+        @"ungroupedTokenStoreReadStatus": @(ungroupedTokenStoreReadStatus),
+        @"ungroupedTokenStoreLength": @(ungroupedTokenStoreLength),
+        @"sharedTokenStoreReadStatus": @(sharedTokenStoreReadStatus),
+        @"sharedTokenStoreLength": @(sharedTokenStoreLength)
+      });
+    }
   }
 }
 
@@ -195,27 +191,23 @@ void GBVerifyAppIntentCredentials(void) {
   NSString *serverURL = connection.serverURL;
   NSString *deviceToken = connection.deviceToken;
   BOOL paired = serverURL.length > 0 && deviceToken.length > 0;
-  BOOL shouldVerify = NO;
   @synchronized (GBSyncLock) {
-    shouldVerify = paired && GBHasSyncedCredentials && GBLastSyncedPaired &&
-        [GBLastSyncedServerURL isEqualToString:serverURL];
-  }
-  if (shouldVerify) {
-    NSString *defaultGroup = GBAppIntentDefaultAccessGroup();
-    NSString *sharedGroup = GBAppIntentSharedAccessGroup();
-    NSUInteger tokenLen = 0, intentLen = 0;
-    OSStatus tokenRead = GBReadAppIntentCredential(
-        @"app:no-auth", @"sand.cursor-tokens", defaultGroup, &tokenLen);
-    OSStatus intentRead = GBReadAppIntentCredential(
-        @"x.money.agent-connection-code:no-auth", @"grok-bot", sharedGroup, &intentLen);
-    if (tokenRead != errSecSuccess || tokenLen == 0 ||
-        intentRead != errSecSuccess || intentLen == 0) {
-      @synchronized (GBSyncLock) {
+    if (paired && GBHasSyncedCredentials && GBLastSyncedPaired &&
+        [GBLastSyncedServerURL isEqualToString:serverURL]) {
+      NSString *defaultGroup = GBAppIntentDefaultAccessGroup();
+      NSString *sharedGroup = GBAppIntentSharedAccessGroup();
+      NSUInteger tokenLen = 0, intentLen = 0;
+      OSStatus tokenRead = GBReadAppIntentCredential(
+          @"app:no-auth", @"sand.cursor-tokens", defaultGroup, &tokenLen);
+      OSStatus intentRead = GBReadAppIntentCredential(
+          @"x.money.agent-connection-code:no-auth", @"grok-bot", sharedGroup, &intentLen);
+      if (tokenRead != errSecSuccess || tokenLen == 0 ||
+          intentRead != errSecSuccess || intentLen == 0) {
         GBHasSyncedCredentials = NO;
       }
     }
+    GBSyncAppIntentCredentials();
   }
-  GBSyncAppIntentCredentials();
 }
 
 static NSString *GBIntentMethod(NSURLRequest *request) {

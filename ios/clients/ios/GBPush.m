@@ -423,9 +423,13 @@ BOOL GBReplacePushView(UIView *view) {
   if (!control || !control.accessibilityLabel.length || ![switchLabels containsObject:control.accessibilityLabel]) return NO;
   // Scope global push replacement to the App Settings screen so per-Bot
   // "Notifications" toggles inside Bot Settings keep their native behavior.
-  if (!GBIsGlobalSettingsContext(view)) {
-    if (objc_getAssociatedObject(control, &GBOriginalSwitchTargets) != nil ||
-        objc_getAssociatedObject(control, &GBHiddenPushEntryKey) != nil)
+  // When the view temporarily leaves the window without a fresh cache hit,
+  // leave any existing replacement untouched until it re-enters the window.
+  GBSettingsContextState settingsState = GBGlobalSettingsContextState(view);
+  if (settingsState != GBSettingsContextYes) {
+    if (settingsState == GBSettingsContextNo &&
+        (objc_getAssociatedObject(control, &GBOriginalSwitchTargets) != nil ||
+         objc_getAssociatedObject(control, &GBHiddenPushEntryKey) != nil))
       GBResetPushView(view);
     return NO;
   }

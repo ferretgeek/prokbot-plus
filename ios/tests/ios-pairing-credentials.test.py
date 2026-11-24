@@ -47,8 +47,24 @@ class PairingCredentialsTests(unittest.TestCase):
         self.assertIn('NSClassFromString(@"RCTViewComponentView")', bootstrap)
         self.assertIn('@"Sign in with Apple"', bootstrap)
         self.assertIn('@"退出登录"', bootstrap)
-        self.assertIn('GBDeleteAppIntentCredential(@"x.money.agent-connection-code:no-auth",\n                                @"grok-bot", defaultGroup);', app_intents)
-        self.assertIn('GBDeleteAppIntentCredential(@"app:no-auth",\n                                @"sand.cursor-tokens", nil);', app_intents)
+        self.assertIn('GBDeleteAppIntentCredential(@"x.money.agent-connection-code:no-auth",\n                                  @"grok-bot", defaultGroup);', app_intents)
+        self.assertIn('GBDeleteAppIntentCredential(@"app:no-auth",\n                                  @"sand.cursor-tokens", nil);', app_intents)
+        self.assertIn("GBGlobalSettingsContextState", bootstrap)
+        self.assertIn("GBSettingsContextUnknown", bootstrap)
+        self.assertIn("GBInvalidateSettingsContextCache", bootstrap)
+        self.assertIn("GBNoteSettingsMarkerOnView", bootstrap)
+        self.assertIn("GBVerifyAppIntentCredentialsAsync", bootstrap)
+        self.assertNotIn("if (matched || epoch == GBSettingsContextEpoch)", bootstrap)
+        push = (
+            Path(__file__).resolve().parents[1] / "clients" / "ios" / "GBPush.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("GBSettingsContextState settingsState = GBGlobalSettingsContextState(view);", push)
+        self.assertIn("settingsState == GBSettingsContextNo", push)
+        library = (
+            Path(__file__).resolve().parents[1] / "clients" / "ios" / "GBLibrary.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn('[path hasPrefix:@"/api/"]', library)
+        self.assertIn('[path.lastPathComponent isEqualToString:@"openAgentWindowed"]', library)
         connectors = (
             Path(__file__).resolve().parents[1] / "clients" / "ios" / "GBConnectors.m"
         ).read_text(encoding="utf-8")

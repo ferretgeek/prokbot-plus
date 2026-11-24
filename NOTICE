@@ -237,7 +237,8 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-24)
       desktop clients. ci/release-packages.py builds a seventh, Linux package.
     - Contributed by @jun9100 (GitHub pull request #16).
 
-19. iOS injection library thermal, scroll-performance, overlay, and thread-safety hardening.
+19. iOS injection library thermal, scroll-performance, overlay, and
+    thread-safety hardening.
     - ios/clients/ios/ and ios/bin/GrokBotLocal.dylib: eliminated the 120Hz
       Fabric RCTRecursiveAccessibilityLabel addSubview/removeFromSuperview
       thrash loop on plugin buttons, skipped expensive non-target Fabric
