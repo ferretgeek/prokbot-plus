@@ -139,6 +139,74 @@ static Class GBFabricViewClass(void) {
   dispatch_once(&once, ^{ cls = NSClassFromString(@"RCTViewComponentView"); });
   return cls;
 }
+static Class GBSwitchViewClass(void) {
+  static Class cls;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ cls = NSClassFromString(@"RCTSwitchComponentView"); });
+  return cls;
+}
+static Class GBScrollViewClass(void) {
+  static Class cls;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ cls = NSClassFromString(@"RCTScrollViewComponentView"); });
+  return cls;
+}
+static NSHashTable<UIView *> *GBModifiedViews(void) {
+  static NSHashTable<UIView *> *table;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    table = [[NSHashTable alloc] initWithOptions:NSHashTableWeakMemory | NSHashTableObjectPointerPersonality
+                                        capacity:16];
+  });
+  return table;
+}
+void GBTrackModifiedView(UIView *view) {
+  if (!view) return;
+  [GBModifiedViews() addObject:view];
+}
+static BOOL GBIsTrackedModifiedView(UIView *view) {
+  NSHashTable<UIView *> *table = GBModifiedViews();
+  return view != nil && table.count > 0 && [table containsObject:view];
+}
+static void GBUntrackModifiedView(UIView *view) {
+  if (!view) return;
+  [GBModifiedViews() removeObject:view];
+}
+static NSSet<NSString *> *GBAllInterestingLabels(void) {
+  static NSSet<NSString *> *set;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSMutableSet<NSString *> *all = [NSMutableSet setWithCapacity:64];
+    [all unionSet:GBPrimaryLoginLabels()];
+    [all unionSet:GBSecondaryLoginLabels()];
+    [all unionSet:GBSignOutLabels()];
+    [all unionSet:GBUsageLabels()];
+    [all unionSet:GBDebugLabels()];
+    [all unionSet:GBLibraryLabels()];
+    [all unionSet:GBComputerLabels()];
+    [all unionSet:GBToolbarHostLabels()];
+    [all addObject:@"dev-gateway@localhost"];
+    [all addObject:@"dev-gateway@localhost avatar"];
+    [all addObject:@"账户"];
+    [all addObject:@"语言"];
+    [all addObject:@"Account"];
+    [all addObject:@"Language"];
+    set = [all copy];
+  });
+  return set;
+}
+static NSString *GBTrimWhitespaceIfNeeded(NSString *raw) {
+  NSUInteger len = raw.length;
+  if (!len) return raw;
+  unichar first = [raw characterAtIndex:0];
+  unichar last = [raw characterAtIndex:len - 1];
+  if (first > 0x20 && last > 0x20 && first < 0x7f && last < 0x7f)
+    return raw;
+  NSCharacterSet *ws = NSCharacterSet.whitespaceAndNewlineCharacterSet;
+  if (![ws characterIsMember:first] && ![ws characterIsMember:last])
+    return raw;
+  return [raw stringByTrimmingCharactersInSet:ws];
+}
 static BOOL GBCaptureEnabled(void) {
   static BOOL enabled;
   static dispatch_once_t once;
@@ -309,15 +377,58 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
       forControlEvents:UIControlEventTouchUpInside];
   if (!view.userInteractionEnabled) view.userInteractionEnabled = YES;
   [view addSubview:button];
+  GBTrackModifiedView(view);
 }
 + (void)replaceEntry:(UIView *)view {
   if (GBIsPluginTag(view.tag))
     return;
+  if ([view isKindOfClass:UISwitch.class]) {
+    GBReplacePushView(view);
+    return;
+  }
+  BOOL tracked = GBIsTrackedModifiedView(view);
+  CGRect bounds = view.bounds;
+  NSArray<UIView *> *subviews = view.subviews;
+  NSUInteger childCount = subviews.count;
+  // Fast push-switch check before touching accessibilityLabel (which is recursive on Fabric views).
+  if (childCount > 0 && childCount <= 4) {
+    for (UIView *child in subviews) {
+      if ([child isKindOfClass:UISwitch.class]) {
+        if (GBReplacePushView(view))
+          return;
+        break;
+      }
+    }
+  }
+  // Never invoke Fabric's recursive accessibilityLabel on zero-size/hairline views
+  // or large list/scroll/screen containers (e.g. a Bot roster with dozens of rows).
+  if (bounds.size.width < 8.0 || bounds.size.height < 8.0 ||
+      bounds.size.height > 240.0 || childCount > 12) {
+    if (tracked && (bounds.size.height > 240.0 || childCount > 12)) {
+      NSMutableArray<UIView *> *stale = nil;
+      for (UIView *child in subviews) {
+        NSInteger tag = child.tag;
+        if (GBIsPluginTag(tag) && tag != 731990) {
+          if (!stale) stale = [NSMutableArray array];
+          [stale addObject:child];
+        }
+      }
+      for (UIView *child in stale) {
+        if (child.tag == 731991) GBClearHostSettingsIdentifier(view);
+        else if (child.tag == 731993) GBResetProfileView(view);
+        [child removeFromSuperview];
+      }
+    }
+    return;
+  }
   BOOL hasPluginChild = NO;
-  UISwitch *directSwitch = [view isKindOfClass:UISwitch.class] ? (UISwitch *)view : nil;
-  for (UIView *child in view.subviews) {
-    if (GBIsPluginTag(child.tag)) hasPluginChild = YES;
-    if (!directSwitch && [child isKindOfClass:UISwitch.class]) directSwitch = (UISwitch *)child;
+  if (tracked) {
+    for (UIView *child in subviews) {
+      if (GBIsPluginTag(child.tag)) {
+        hasPluginChild = YES;
+        break;
+      }
+    }
   }
   NSString *rawLabel = nil;
   if ([view isKindOfClass:UIButton.class])
@@ -326,15 +437,23 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
     rawLabel = ((UILabel *)view).text;
   else
     rawLabel = view.accessibilityLabel;
-  if (!hasPluginChild && !directSwitch && (rawLabel.length == 0 || rawLabel.length > 96)) {
-    if (view.accessibilityIdentifier != nil) GBClearHostSettingsIdentifier(view);
-    return;
+  if (!hasPluginChild) {
+    if (rawLabel.length == 0 || rawLabel.length > 40) {
+      if (tracked && view.accessibilityIdentifier != nil) GBClearHostSettingsIdentifier(view);
+      return;
+    }
+    NSString *fastLabel = GBTrimWhitespaceIfNeeded(rawLabel);
+    if (!fastLabel.length || ![GBAllInterestingLabels() containsObject:fastLabel]) {
+      if (tracked && view.accessibilityIdentifier != nil) GBClearHostSettingsIdentifier(view);
+      return;
+    }
+    rawLabel = fastLabel;
   }
-  NSString *label = [rawLabel stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  NSString *label = hasPluginChild ? GBTrimWhitespaceIfNeeded(rawLabel) : rawLabel;
   if (hasPluginChild && label.length)
     label = GBStripPluginLabelSuffix(label, view);
-  if (!hasPluginChild && !directSwitch && !label.length) {
-    if (view.accessibilityIdentifier != nil) GBClearHostSettingsIdentifier(view);
+  if (!hasPluginChild && !label.length) {
+    if (tracked && view.accessibilityIdentifier != nil) GBClearHostSettingsIdentifier(view);
     return;
   }
   GBObserveAppLanguage(label);
@@ -345,12 +464,12 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
   NSSet<NSString *> *debugLabels = GBDebugLabels();
   NSSet<NSString *> *libraryLabels = GBLibraryLabels();
   NSSet<NSString *> *computerLabels = GBComputerLabels();
-  BOOL paired = GBConnection.shared.deviceToken.length > 0;
+  BOOL paired = GBConnection.shared.isPaired;
   BOOL checkedSettingsSignOut = NO;
   BOOL isSettingsSignOut = NO;
   if (hasPluginChild) {
     NSMutableArray<UIView *> *stale = nil;
-    for (UIView *child in view.subviews) {
+    for (UIView *child in subviews) {
       NSInteger tag = child.tag;
       if (!GBIsPluginTag(tag)) continue;
       BOOL remove = NO;
@@ -391,12 +510,10 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
   }
   if ([label hasPrefix:@"dev-gateway@localhost"] && GBReplaceProfileView(view))
     return;
-  if (directSwitch && GBReplacePushView(view))
-    return;
   Class fabricViewClass = GBFabricViewClass();
   BOOL isFabricView = fabricViewClass && [view isKindOfClass:fabricViewClass];
   if (isFabricView && paired && [signOutLabels containsObject:label] &&
-      view.bounds.size.width >= 60 && view.bounds.size.height >= 36) {
+      bounds.size.width >= 60 && bounds.size.height >= 36) {
     if (!checkedSettingsSignOut) {
       isSettingsSignOut = GBIsSettingsSignOutContext(view);
       checkedSettingsSignOut = YES;
@@ -404,14 +521,14 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
     if (isSettingsSignOut) {
       UIButton *existing = (UIButton *)[view viewWithTag:731988];
       if (existing) {
-        if (!CGRectEqualToRect(existing.frame, view.bounds)) existing.frame = view.bounds;
+        if (!CGRectEqualToRect(existing.frame, bounds)) existing.frame = bounds;
         NSString *signOutLabel = GBL(@"退出登录", @"Sign out");
         if (![existing.accessibilityLabel isEqualToString:signOutLabel])
           existing.accessibilityLabel = signOutLabel;
       } else {
         UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
         button.tag = 731988;
-        button.frame = view.bounds;
+        button.frame = bounds;
         button.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
         button.accessibilityIdentifier = @"grokbot.host.signout";
         button.accessibilityLabel = GBL(@"退出登录", @"Sign out");
@@ -420,16 +537,18 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
             forControlEvents:UIControlEventTouchUpInside];
         if (!view.userInteractionEnabled) view.userInteractionEnabled = YES;
         [view addSubview:button];
+        GBTrackModifiedView(view);
       }
       return;
     }
   }
-  if (isFabricView && !paired && [primaryLogin containsObject:label] && view.bounds.size.width >= 160 &&
-      view.bounds.size.height >= 40) {
+  if (isFabricView && !paired && [primaryLogin containsObject:label] && bounds.size.width >= 160 &&
+      bounds.size.height >= 40) {
     if (GBHasAncestorPluginTag(view, 731991))
       return;
     if (![view.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"])
       view.accessibilityIdentifier = @"grokbot.host.settings";
+    GBTrackModifiedView(view);
     if ([view viewWithTag:731991]) {
       [self installHostButtonOn:view styled:NO];
     } else {
@@ -438,24 +557,25 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
     }
     return;
   }
-  if (isFabricView && !paired && [secondaryLogin containsObject:label] && view.bounds.size.width >= 160 &&
-      view.bounds.size.height >= 40) {
+  if (isFabricView && !paired && [secondaryLogin containsObject:label] && bounds.size.width >= 160 &&
+      bounds.size.height >= 40) {
     if (GBHasAncestorPluginTag(view, 731991))
       return;
     if (![view.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"])
       view.accessibilityIdentifier = @"grokbot.host.settings";
+    GBTrackModifiedView(view);
     [self installHostButtonOn:view styled:NO];
     return;
   }
-  if ([computerLabels containsObject:label] && view.bounds.size.width > 300 &&
-      view.bounds.size.height >= 44) {
+  if ([computerLabels containsObject:label] && bounds.size.width > 300 &&
+      bounds.size.height >= 44) {
     UIButton *existing = (UIButton *)[view viewWithTag:731999];
     if (existing) {
-      if (!CGRectEqualToRect(existing.frame, view.bounds)) existing.frame = view.bounds;
+      if (!CGRectEqualToRect(existing.frame, bounds)) existing.frame = bounds;
     } else {
       UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
       button.tag = 731999;
-      button.frame = view.bounds;
+      button.frame = bounds;
       button.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
       button.accessibilityLabel = GBL(@"Bot 电脑", @"Bot Computer");
       [button addTarget:self
@@ -463,40 +583,43 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
           forControlEvents:UIControlEventTouchUpInside];
       if (!view.userInteractionEnabled) view.userInteractionEnabled = YES;
       [view addSubview:button];
+      GBTrackModifiedView(view);
     }
     return;
   }
   if (!paired &&
-      [debugLabels containsObject:label] && view.bounds.size.width > 200 &&
-      view.bounds.size.height >= 40) {
+      [debugLabels containsObject:label] && bounds.size.width > 200 &&
+      bounds.size.height >= 40) {
     // Unpaired full-width Debug entry opens local Host setup.
     if (GBHasAncestorPluginTag(view, 731991))
       return;
     if (![view.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"])
       view.accessibilityIdentifier = @"grokbot.host.settings";
+    GBTrackModifiedView(view);
     [self installHostButtonOn:view styled:NO];
     return;
   }
-  if ([GBToolbarHostLabels() containsObject:label] && paired && view.bounds.size.width <= 88) {
+  if ([GBToolbarHostLabels() containsObject:label] && paired && bounds.size.width <= 88) {
     // Keep the original toolbar and link icon; only route the original touch.
     NSString *hostLabel = GBL(@"连接 Host", @"Host Connection");
     if (![view.accessibilityLabel isEqualToString:hostLabel])
       view.accessibilityLabel = hostLabel;
     if (![view.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"])
       view.accessibilityIdentifier = @"grokbot.host.settings";
+    GBTrackModifiedView(view);
     return;
   }
-  if (view.accessibilityIdentifier != nil)
+  if (tracked && view.accessibilityIdentifier != nil)
     GBClearHostSettingsIdentifier(view);
   if ([libraryLabels containsObject:label] && paired &&
-      view.bounds.size.width > 20) {
+      bounds.size.width > 20) {
     UIButton *existing = (UIButton *)[view viewWithTag:731992];
     if (existing) {
-      if (!CGRectEqualToRect(existing.frame, view.bounds)) existing.frame = view.bounds;
+      if (!CGRectEqualToRect(existing.frame, bounds)) existing.frame = bounds;
     } else {
       UIButton *button = [UIButton buttonWithType:UIButtonTypeSystem];
       button.tag = 731992;
-      button.frame = view.bounds;
+      button.frame = bounds;
       button.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
       button.backgroundColor = view.backgroundColor ?: UIColor.clearColor;
       [button setTitle:GBL(@"资料库", @"Library") forState:UIControlStateNormal];
@@ -507,6 +630,7 @@ static void GBClearHostSettingsIdentifier(UIView *view) {
           forControlEvents:UIControlEventTouchUpInside];
       if (!view.userInteractionEnabled) view.userInteractionEnabled = YES;
       [view addSubview:button];
+      GBTrackModifiedView(view);
     }
     return;
   }
@@ -575,25 +699,34 @@ static void GBStartForegroundTimers(void) {
 }
 static void GBLayout(id self, SEL selector) {
   ((void (*)(id, SEL))GBOriginalLayout)(self, selector);
-  // Fabric has populated labels and bounds at this point, before the first
-  // frame is displayed. Update the affected view here, without polling the
-  // entire window while the interface is idle.
-  [GBInterface replaceEntry:self];
+  // Only inspect exact RCTViewComponentView and RCTSwitchComponentView instances.
+  // Skipping subclasses (RCTScrollViewComponentView at 120Hz during scrolling,
+  // RNSVG* avatar nodes, RCTParagraphComponentView, RCTImageComponentView, etc.)
+  // prevents O(N_bots) recursive accessibilityLabel walks on every scroll frame.
+  Class cls = [self class];
+  if (cls == GBFabricViewClass()) {
+    [GBInterface replaceEntry:self];
+  } else if (cls == GBSwitchViewClass()) {
+    GBReplacePushView(self);
+  }
 }
 static void GBRecycle(id self, SEL selector) {
-  GBResetProfileView(self);
-  GBResetPushView(self);
-  if ([self accessibilityIdentifier] != nil)
-    GBClearHostSettingsIdentifier(self);
-  NSMutableArray<UIView *> *stale = nil;
-  for (UIView *child in [self subviews]) {
-    if (GBIsPluginTag(child.tag)) {
-      if (!stale) stale = [NSMutableArray array];
-      [stale addObject:child];
+  if (GBIsTrackedModifiedView(self)) {
+    GBUntrackModifiedView(self);
+    GBResetProfileView(self);
+    GBResetPushView(self);
+    if ([self accessibilityIdentifier] != nil)
+      GBClearHostSettingsIdentifier(self);
+    NSMutableArray<UIView *> *stale = nil;
+    for (UIView *child in [self subviews]) {
+      if (GBIsPluginTag(child.tag)) {
+        if (!stale) stale = [NSMutableArray array];
+        [stale addObject:child];
+      }
     }
+    for (UIView *child in stale)
+      [child removeFromSuperview];
   }
-  for (UIView *child in stale)
-    [child removeFromSuperview];
   ((void (*)(id, SEL))GBOriginalRecycle)(self, selector);
 }
 static void GBTouches(id self, SEL selector, NSSet<UITouch *> *touches, UIEvent *event) {
@@ -604,12 +737,27 @@ static void GBTouches(id self, SEL selector, NSSet<UITouch *> *touches, UIEvent 
       if (GBIsPluginTag(v.tag))
         return;
   NSSet<NSString *> *touchHostLabels = GBTouchHostLabels();
+  BOOL paired = GBConnection.shared.isPaired;
+  Class scrollViewClass = GBScrollViewClass();
   for (UITouch *touch in touches)
-    for (UIView *v = touch.view; v; v = v.superview)
-      if ([touchHostLabels containsObject:v.accessibilityLabel] || [v.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"] || ([v.accessibilityLabel isEqualToString:@"link"] && GBConnection.shared.deviceToken.length)) {
+    for (UIView *v = touch.view; v; v = v.superview) {
+      if ([v.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"]) {
         [GBConnection.shared show];
         return;
       }
+      // Never trigger Fabric's recursive accessibilityLabel on scroll views,
+      // windows, or multi-row containers when a scroll swipe begins.
+      if ([v isKindOfClass:UIScrollView.class] || [v isKindOfClass:UIWindow.class] ||
+          (scrollViewClass && [v isKindOfClass:scrollViewClass]) ||
+          v.bounds.size.height > 160.0 || v.subviews.count > 12)
+        continue;
+      NSString *lbl = v.accessibilityLabel;
+      if (lbl.length > 0 && lbl.length <= 40 &&
+          ([touchHostLabels containsObject:lbl] || (paired && [lbl isEqualToString:@"link"]))) {
+        [GBConnection.shared show];
+        return;
+      }
+    }
   ((void (*)(id, SEL, id, id))GBOriginalTouches)(self, selector, touches, event);
 }
 static id GBSimpleTask(id self, SEL selector, NSURLRequest *request) {

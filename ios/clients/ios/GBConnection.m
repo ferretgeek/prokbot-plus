@@ -9,6 +9,7 @@
 #import "GBLocalize.h"
 #import "GBAppIntents.h"
 #import <Security/Security.h>
+#import <stdatomic.h>
 
 static NSString *const GBURLKey = @"GrokBotLocal.serverURL";
 static NSString *GBService(void) {
@@ -78,6 +79,7 @@ static UIViewController *GBTop(void) {
 @implementation GBConnection {
   NSString *_serverURL;
   NSString *_deviceToken;
+  _Atomic(BOOL) _paired;
   NSURL *_gatewayBundleURL;
 }
 + (instancetype)shared {
@@ -97,8 +99,14 @@ static UIViewController *GBTop(void) {
 - (NSString *)deviceToken {
   @synchronized (self) { return _deviceToken; }
 }
+- (BOOL)isPaired {
+  return atomic_load_explicit(&_paired, memory_order_acquire);
+}
 - (void)setDeviceToken:(NSString *)deviceToken {
-  @synchronized (self) { _deviceToken = [deviceToken copy]; }
+  @synchronized (self) {
+    _deviceToken = [deviceToken copy];
+    atomic_store_explicit(&_paired, _deviceToken.length > 0, memory_order_release);
+  }
 }
 - (NSURL *)gatewayBundleURL {
   @synchronized (self) { return _gatewayBundleURL; }

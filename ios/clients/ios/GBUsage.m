@@ -79,7 +79,7 @@
 + (void)open { GBPresentController([[GBUsageController alloc] initWithStyle:UITableViewStyleInsetGrouped]); }
 @end
 BOOL GBReplaceUsageView(UIView *view) {
-  if (!GBConnection.shared.deviceToken.length || view.bounds.size.width < 300 || view.bounds.size.height < 44) return NO;
+  if (!GBConnection.shared.isPaired || view.bounds.size.width < 300 || view.bounds.size.height < 44) return NO;
   static NSSet<NSString *> *labels;
   static dispatch_once_t once;
   dispatch_once(&once, ^{ labels = [NSSet setWithArray:@[@"用量", @"Usage"]]; });
@@ -102,6 +102,7 @@ BOOL GBReplaceUsageView(UIView *view) {
     [button addTarget:GBUsageEntry.class action:@selector(open) forControlEvents:UIControlEventTouchUpInside];
     if (!view.userInteractionEnabled) view.userInteractionEnabled = YES;
     [view addSubview:button];
+    GBTrackModifiedView(view);
   } else if (!CGRectEqualToRect(button.frame, view.bounds)) {
     button.frame = view.bounds;
   }

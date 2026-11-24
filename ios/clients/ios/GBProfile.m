@@ -360,7 +360,7 @@ void GBShowProfile(void) {
 }
 @end
 BOOL GBReplaceProfileView(UIView *view) {
-  if (!GBConnection.shared.deviceToken.length)
+  if (!GBConnection.shared.isPaired)
     return NO;
   NSString *label = view.accessibilityLabel;
   if (![label hasPrefix:@"dev-gateway@localhost"])
@@ -426,7 +426,9 @@ BOOL GBReplaceProfileView(UIView *view) {
       [cover addSubview:chevron];
     }
     [view addSubview:cover];
+    GBTrackModifiedView(view);
   } else {
+    GBTrackModifiedView(view);
     if (!CGRectEqualToRect(cover.frame, view.bounds))
       cover.frame = view.bounds;
     if (avatar) {

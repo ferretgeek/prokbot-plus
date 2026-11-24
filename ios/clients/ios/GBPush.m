@@ -382,7 +382,7 @@ void GBResetPushView(UIView *view) {
   }
 }
 BOOL GBReplacePushView(UIView *view) {
-  if (!GBConnection.shared.deviceToken.length) return NO;
+  if (!GBConnection.shared.isPaired) return NO;
   UISwitch *control = GBNotificationSwitch(view);
   static NSSet<NSString *> *switchLabels;
   static NSSet<NSString *> *authorizedStates;
@@ -405,6 +405,8 @@ BOOL GBReplacePushView(UIView *view) {
       objc_setAssociatedObject(control, &GBOriginalSwitchTargets, targets, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
       [control removeTarget:nil action:nil forControlEvents:UIControlEventValueChanged];
       [control addTarget:GBPushEntry.class action:@selector(changed:) forControlEvents:UIControlEventValueChanged];
+      GBTrackModifiedView(view);
+      GBTrackModifiedView(control);
     }
     if (state && control.enabled) {
       BOOL shouldBeOn = [state[@"enabled"] boolValue] &&
@@ -436,7 +438,10 @@ BOOL GBReplacePushView(UIView *view) {
     [entry addTarget:entry action:@selector(open) forControlEvents:UIControlEventTouchUpInside];
     if (!row.userInteractionEnabled) row.userInteractionEnabled = YES;
     [row addSubview:entry];
+    GBTrackModifiedView(row);
+    GBTrackModifiedView(view);
   } else {
+    GBTrackModifiedView(row);
     if (entry.originalSwitch != control) entry.originalSwitch = control;
     if (!CGRectEqualToRect(entry.frame, rowFrame)) entry.frame = rowFrame;
   }

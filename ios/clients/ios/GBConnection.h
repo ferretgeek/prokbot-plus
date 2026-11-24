@@ -3,6 +3,7 @@
 + (instancetype)shared;
 @property(nonatomic, readonly) NSString *serverURL;
 @property(nonatomic, readonly) NSString *deviceToken;
+@property(nonatomic, readonly, getter=isPaired) BOOL paired;
 @property(nonatomic, readonly) NSURL *gatewayBundleURL;
 @property(nonatomic, strong) NSURL *resourcesURL;
 @property(nonatomic, copy) void (^didConnect)(void);
@@ -11,5 +12,7 @@
 - (void)show;
 - (void)disconnect;
 @end
+@class UIView;
 FOUNDATION_EXPORT void GBReloadReactHost(void);
 FOUNDATION_EXPORT void GBOpenAgent(NSString *agentId);
+FOUNDATION_EXPORT void GBTrackModifiedView(UIView *view);
