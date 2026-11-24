@@ -1,18 +1,24 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   CLOSING_SEND_NUDGE_PROMPT,
   MAX_CLOSING_SEND_NUDGES,
+  MAX_EMPTY_RESPONSE_RETRIES_PER_TURN,
+  MAX_OUTPUT_TOKEN_RETRIES_PER_STEP,
+  MAX_VISIBILITY_REMINDERS_PER_TURN,
   THINKING_ACTIVITY,
   createSendToUserVisibilityReminder,
   detectSilentToolCallEnding,
   hasTrailingNonDeliveryToolResult,
   hasVisibilityReminderSinceLastWork,
+  isClosingSendNudgePrompt,
   wrapActionHandler,
   wrapAnysphereAgent,
+  wrapCreateTurnAgentComposition,
   wrapCreateTurnSettle,
   wrapResolveNamedActivityHold,
   wrapRunLifecycle,
@@ -24,6 +30,7 @@ import { constructRecoveredHostFlow } from '../runtime/recovered-host-flow.mjs';
 import { constructRecoveredEngine } from '../runtime/recovered-engine.mjs';
 import { constructRecoveredHarness } from '../runtime/recovered-harness.mjs';
 import { installRecoveredHostExecutionAndSession } from '../runtime/recovered-host-execution.mjs';
+import { loadRecoveredHostCore } from '../runtime/recovered-host-core.mjs';
 
 const toolCall = (toolName, toolCallId) => ({ type: 'tool-call', toolName, toolCallId, args: {} });
 const toolResult = (toolName, toolCallId, { isError = false } = {}) => ({
@@ -33,7 +40,6 @@ const toolResult = (toolName, toolCallId, { isError = false } = {}) => ({
 });
 
 test('detectSilentToolCallEnding catches multi-SendToUser, tool-first, parallel, and plain-text/reasoning silent endings', () => {
-  // Multi-progress SendToUser followed by MCP write tools, ending on tool results.
   const multiAckToolEnd = [
     { role: 'user', content: 'Permission granted, try creating the issue and comment now.' },
     { role: 'assistant', content: [toolCall('SendToUser', 'send-1')] },
@@ -49,19 +55,16 @@ test('detectSilentToolCallEnding catches multi-SendToUser, tool-first, parallel,
   ];
   assert.equal(detectSilentToolCallEnding(multiAckToolEnd), true);
 
-  // Same turn ending on reasoning-only assistant step (no text, no tool call).
   assert.equal(detectSilentToolCallEnding([
     ...multiAckToolEnd,
     { role: 'assistant', content: [{ type: 'reasoning', text: 'Both operations succeeded.' }] },
   ]), true);
 
-  // Same turn ending on invisible plain assistant text (forgot SendToUser).
   assert.equal(detectSilentToolCallEnding([
     ...multiAckToolEnd,
     { role: 'assistant', content: [{ type: 'text', text: 'Issue #1 and comment were created.' }] },
   ]), true);
 
-  // Tool call before first SendToUser, then more tools and silent stop.
   assert.equal(detectSilentToolCallEnding([
     { role: 'user', content: 'Check and apply the fix.' },
     { role: 'assistant', content: [toolCall('BoxRead', 'read-1')] },
@@ -72,7 +75,6 @@ test('detectSilentToolCallEnding catches multi-SendToUser, tool-first, parallel,
     toolResult('BoxShell', 'sh-1'),
   ]), true);
 
-  // Parallel [SendToUser, CallMcpTool] in the same assistant message.
   assert.equal(detectSilentToolCallEnding([
     { role: 'user', content: 'Run it now.' },
     { role: 'assistant', content: [toolCall('SendToUser', 'send-1'), toolCall('CallMcpTool', 'mcp-1')] },
@@ -80,7 +82,6 @@ test('detectSilentToolCallEnding catches multi-SendToUser, tool-first, parallel,
     toolResult('CallMcpTool', 'mcp-1'),
   ]), true);
 
-  // Failed closing SendToUser after work still requires closing delivery.
   assert.equal(detectSilentToolCallEnding([
     { role: 'user', content: 'Do the work.' },
     { role: 'assistant', content: [toolCall('SendToUser', 'send-1')] },
@@ -91,7 +92,6 @@ test('detectSilentToolCallEnding catches multi-SendToUser, tool-first, parallel,
     toolResult('SendToUser', 'send-2', { isError: true }),
   ]), true);
 
-  // Injected reminder messages do not reset the turn boundary.
   assert.equal(detectSilentToolCallEnding([
     ...multiAckToolEnd,
     {
@@ -103,8 +103,53 @@ test('detectSilentToolCallEnding catches multi-SendToUser, tool-first, parallel,
   ]), true);
 });
 
-test('detectSilentToolCallEnding stays false for properly delivered, status-only, or zero-delivery turns', () => {
-  // Normal completed turn: work followed by final SendToUser and wrap-up/blank text.
+test('detectSilentToolCallEnding excludes bookkeeping tools (update_state, TodoWrite, SetStatus) after delivery while keeping earlier silent work flagged', () => {
+  // Sequential: SendToUser followed by update_state (e.g. "remember I like coffee").
+  assert.equal(detectSilentToolCallEnding([
+    { role: 'user', content: 'Remember that I like coffee.' },
+    { role: 'assistant', content: [toolCall('SendToUser', 'send-1')] },
+    toolResult('SendToUser', 'send-1'),
+    { role: 'assistant', content: [toolCall('update_state', 'state-1')] },
+    toolResult('update_state', 'state-1'),
+  ]), false);
+
+  // Parallel: [SendToUser, update_state] in the same assistant step.
+  assert.equal(detectSilentToolCallEnding([
+    { role: 'user', content: 'Remember that I like coffee.' },
+    { role: 'assistant', content: [toolCall('SendToUser', 'send-1'), toolCall('update_state', 'state-1')] },
+    toolResult('SendToUser', 'send-1'),
+    toolResult('update_state', 'state-1'),
+  ]), false);
+
+  // TodoWrite / todo_write / SetStatus after SendToUser also stay false.
+  for (const toolName of ['TodoWrite', 'todo_write', 'SetStatus']) {
+    assert.equal(detectSilentToolCallEnding([
+      { role: 'user', content: 'Finish task.' },
+      { role: 'assistant', content: [toolCall('SendToUser', 'send-1')] },
+      toolResult('SendToUser', 'send-1'),
+      { role: 'assistant', content: [toolCall(toolName, 'bk-1')] },
+      toolResult(toolName, 'bk-1'),
+    ]), false);
+    assert.equal(detectSilentToolCallEnding([
+      { role: 'user', content: 'Finish task.' },
+      { role: 'assistant', content: [toolCall('SendToUser', 'send-1'), toolCall(toolName, 'bk-2')] },
+      toolResult('SendToUser', 'send-1'),
+      toolResult(toolName, 'bk-2'),
+    ]), false);
+  }
+
+  // Substantive work followed by update_state without a closing SendToUser is STILL silent work.
+  assert.equal(detectSilentToolCallEnding([
+    { role: 'user', content: 'Check logs and remember what failed.' },
+    { role: 'assistant', content: [toolCall('SendToUser', 'send-1')] },
+    toolResult('SendToUser', 'send-1'),
+    { role: 'assistant', content: [toolCall('Shell', 'sh-1')] },
+    toolResult('Shell', 'sh-1'),
+    { role: 'assistant', content: [toolCall('update_state', 'state-1')] },
+    toolResult('update_state', 'state-1'),
+  ]), true);
+
+  // Normal completed turn and zero-delivery turns stay false.
   assert.equal(detectSilentToolCallEnding([
     { role: 'user', content: 'Create issue.' },
     { role: 'assistant', content: [toolCall('CallMcpTool', 'mcp-1')] },
@@ -114,39 +159,48 @@ test('detectSilentToolCallEnding stays false for properly delivered, status-only
     { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] },
   ]), false);
 
-  // Only SetStatus after final SendToUser is not unreported work.
-  assert.equal(detectSilentToolCallEnding([
-    { role: 'user', content: 'Update me.' },
-    { role: 'assistant', content: [toolCall('SendToUser', 'send-1')] },
-    toolResult('SendToUser', 'send-1'),
-    { role: 'assistant', content: [toolCall('SetStatus', 'st-1')] },
-    toolResult('SetStatus', 'st-1'),
-  ]), false);
-
-  // Zero deliveries on a normal user turn is handled by REPLY_NUDGE_PROMPT, not closing nudge.
   const zeroDelivery = [
     { role: 'user', content: 'Run check.' },
     { role: 'assistant', content: [toolCall('BoxShell', 'sh-1')] },
     toolResult('BoxShell', 'sh-1'),
   ];
   assert.equal(detectSilentToolCallEnding(zeroDelivery), false);
-  // On a closing-nudge turn (requirePriorDelivery: false), running tools without delivery DOES re-trigger.
   assert.equal(detectSilentToolCallEnding(zeroDelivery, { requirePriorDelivery: false }), true);
-  // A closing nudge that produced neither tools nor delivery stops immediately (no spin).
   assert.equal(detectSilentToolCallEnding([
     { role: 'user', content: CLOSING_SEND_NUDGE_PROMPT },
     { role: 'assistant', content: [{ type: 'text', text: 'Unable to send.' }] },
   ], { requirePriorDelivery: false }), false);
 });
 
-test('hasTrailingNonDeliveryToolResult and hasVisibilityReminderSinceLastWork track latest tool work accurately', () => {
+test('CLOSING_SEND_NUDGE_PROMPT forbids repeating already-delivered replies and matches both original and rewritten prompts', () => {
+  assert.doesNotMatch(CLOSING_SEND_NUDGE_PROMPT, /opening acknowledgement/i);
+  assert.match(CLOSING_SEND_NUDGE_PROMPT, /Do NOT repeat results you already sent earlier/);
+  assert.equal(isClosingSendNudgePrompt(CLOSING_SEND_NUDGE_PROMPT), true);
+  assert.equal(
+    isClosingSendNudgePrompt(
+      'Your previous turn acknowledged the user and then ran tool calls, but ended without a follow-up SendToUser — the last thing the user saw is that opening acknowledgement.',
+    ),
+    true,
+  );
+  assert.equal(isClosingSendNudgePrompt('unrelated prompt'), false);
+});
+
+test('hasTrailingNonDeliveryToolResult and hasVisibilityReminderSinceLastWork track tool results and cap per-turn reminders', () => {
   assert.equal(hasTrailingNonDeliveryToolResult([
     { role: 'user', content: 'Go.' },
     { role: 'assistant', content: [toolCall('CallMcpTool', 'mcp-1')] },
     toolResult('CallMcpTool', 'mcp-1'),
   ]), true);
 
-  // Trailing injected reminder after a work tool result still sees the work tool.
+  // Bookkeeping tools after SendToUser do NOT mask delivery.
+  assert.equal(hasTrailingNonDeliveryToolResult([
+    { role: 'user', content: 'Remember this.' },
+    { role: 'assistant', content: [toolCall('SendToUser', 'send-1')] },
+    toolResult('SendToUser', 'send-1'),
+    { role: 'assistant', content: [toolCall('update_state', 'st-1')] },
+    toolResult('update_state', 'st-1'),
+  ]), false);
+
   assert.equal(hasTrailingNonDeliveryToolResult([
     { role: 'user', content: 'Go.' },
     { role: 'assistant', content: [toolCall('BoxShell', 'sh-1')] },
@@ -157,7 +211,6 @@ test('hasTrailingNonDeliveryToolResult and hasVisibilityReminderSinceLastWork tr
     },
   ]), true);
 
-  // Trailing successful SendToUser returns false so normal completion does not retry.
   assert.equal(hasTrailingNonDeliveryToolResult([
     { role: 'user', content: 'Go.' },
     { role: 'assistant', content: [toolCall('CallMcpTool', 'mcp-1')] },
@@ -166,14 +219,14 @@ test('hasTrailingNonDeliveryToolResult and hasVisibilityReminderSinceLastWork tr
     toolResult('SendToUser', 'send-1'),
   ]), false);
 
-  // Failed SendToUser returns true so the step can recover.
   assert.equal(hasTrailingNonDeliveryToolResult([
     { role: 'user', content: 'Go.' },
     { role: 'assistant', content: [toolCall('SendToUser', 'send-1')] },
     toolResult('SendToUser', 'send-1', { isError: true }),
   ]), true);
 
-  // Visibility reminder suppresses back-to-back retries, but resets after new tool work.
+  // Visibility reminder suppresses back-to-back retries, resets after substantive tool work,
+  // and stops once MAX_VISIBILITY_REMINDERS_PER_TURN (2) have been injected in the turn.
   const reminder = createSendToUserVisibilityReminder(() => ({ providerOptions: { cursor: { projectSendMessageReminder: true } } }));
   assert.match(reminder.content, /SendToUser/);
   assert.equal(hasVisibilityReminderSinceLastWork([
@@ -186,83 +239,196 @@ test('hasTrailingNonDeliveryToolResult and hasVisibilityReminderSinceLastWork tr
     { role: 'assistant', content: [toolCall('CallMcpTool', 'mcp-2')] },
     toolResult('CallMcpTool', 'mcp-2'),
   ]), false);
+  // Bookkeeping tool alone does not reset a pending visibility reminder.
+  assert.equal(hasVisibilityReminderSinceLastWork([
+    { role: 'user', content: 'Go.' },
+    reminder,
+    { role: 'assistant', content: [toolCall('update_state', 'st-2')] },
+    toolResult('update_state', 'st-2'),
+  ]), true);
+  // Once MAX_VISIBILITY_REMINDERS_PER_TURN reminders occurred in this turn, further tool work stays suppressed.
+  assert.equal(hasVisibilityReminderSinceLastWork([
+    { role: 'user', content: 'Go.' },
+    reminder,
+    { role: 'assistant', content: [toolCall('CallMcpTool', 'mcp-2')] },
+    toolResult('CallMcpTool', 'mcp-2'),
+    reminder,
+    { role: 'assistant', content: [toolCall('CallMcpTool', 'mcp-3')] },
+    toolResult('CallMcpTool', 'mcp-3'),
+  ]), true);
+  assert.equal(MAX_VISIBILITY_REMINDERS_PER_TURN, 2);
 });
 
-test('wrapActionHandler masks prior SendToUser during post-tool steps and restores turn cleanly even on throw', async () => {
+test('wrapActionHandler avoids full-history unwrapping, bounds empty/length retries, and preserves truncation message', async () => {
   const observed = [];
+  const unwrapCalls = [];
   class FakeActionHandler {
-    async runStep(_ctx, turn) {
-      observed.push(turn.hasSendMessageCall());
+    async runStep(_ctx, turn, _exec, debug) {
+      observed.push({ hasSend: turn.hasSendMessageCall(), debug });
+      if (turn.throwOutputLimit) {
+        const err = new Error('Model response stopped with max_tokens');
+        err.name = 'OutputTokensLimitExceededError';
+        err.cause = new ModelRequestError('Model response stopped with max_tokens', { code: 'length' });
+        throw err;
+      }
       return { ok: true };
     }
     async runModelOnlyStep(_ctx, turn) {
-      observed.push(turn.hasSendMessageCall());
+      observed.push({ hasSend: turn.hasSendMessageCall() });
       throw new Error('EmptyResponseRetryError');
     }
+    async runWithMaxTokensRetry(parentCtx, _rootPromptExecutor, fn, emptyResponseRetryTurnBudget) {
+      for (let i = 0; i < 5; i++) {
+        try {
+          return await fn(parentCtx, {
+            outputTokenLimitRetryCount: i,
+            emptyResponseRetryTurnBudget,
+          });
+        } catch (error) {
+          if (error?.name === 'OutputTokensLimitExceededError') continue;
+          throw error;
+        }
+      }
+      const exhausted = new Error('Failed to run step, exceeded max retries');
+      exhausted.name = 'StepRetriesExhaustedError';
+      throw exhausted;
+    }
   }
-  wrapActionHandler(FakeActionHandler);
+
+  wrapActionHandler(FakeActionHandler, {
+    fromRedactedCoreMessages: msgs => {
+      unwrapCalls.push(msgs.length);
+      return msgs;
+    },
+    PrivacyCapability: { UNSAFE_ALWAYS_ALLOWED: 'unsafe' },
+  });
   const handler = new FakeActionHandler();
   class Turn {
-    hasSendMessageCall() { return true; }
+    constructor(hasSend, throwOutputLimit = false) {
+      this._hasSend = hasSend;
+      this.throwOutputLimit = throwOutputLimit;
+    }
+    hasSendMessageCall() { return this._hasSend; }
   }
-  const turn = new Turn();
 
-  // After non-delivery tool result: masked to false during step, restored after.
-  await handler.runStep({}, turn, {
+  // When hasSendMessageCall() is false, getMessages()/fromRedactedCoreMessages is skipped completely.
+  let getMessagesCalled = false;
+  await handler.runStep({}, new Turn(false), {
+    getMessages: () => {
+      getMessagesCalled = true;
+      return [{ role: 'user', content: 'Hi' }];
+    },
+  });
+  assert.equal(getMessagesCalled, false);
+  assert.equal(unwrapCalls.length, 0);
+
+  // When hasSendMessageCall() is true, only the trailing non-assistant slice is unwrapped.
+  const sendTurn = new Turn(true);
+  await handler.runStep({}, sendTurn, {
     getMessages: () => [
-      { role: 'user', content: 'Go.' },
+      { role: 'user', content: 'old-1' },
+      { role: 'assistant', content: [toolCall('BoxShell', 'sh-0')] },
+      toolResult('BoxShell', 'sh-0'),
       { role: 'assistant', content: [toolCall('SendToUser', 'send-1')] },
       toolResult('SendToUser', 'send-1'),
       { role: 'assistant', content: [toolCall('CallMcpTool', 'mcp-1')] },
       toolResult('CallMcpTool', 'mcp-1'),
     ],
   });
-  assert.equal(observed.at(-1), false);
-  assert.equal(turn.hasSendMessageCall(), true);
-  assert.equal(Object.hasOwn(turn, 'hasSendMessageCall'), false);
+  assert.equal(observed.at(-1).hasSend, false);
+  assert.deepEqual(unwrapCalls, [1]);
+  assert.equal(sendTurn.hasSendMessageCall(), true);
+  assert.equal(Object.hasOwn(sendTurn, 'hasSendMessageCall'), false);
 
-  // Also restores when step throws (e.g. EmptyResponseRetryError).
-  await assert.rejects(() => handler.runModelOnlyStep({}, turn, {
-    getMessages: () => [
-      { role: 'user', content: 'Go.' },
-      toolResult('BoxShell', 'sh-1'),
-    ],
+  // Restores cleanly on throw from runModelOnlyStep.
+  await assert.rejects(() => handler.runModelOnlyStep({}, sendTurn, {
+    getMessages: () => [{ role: 'user', content: 'Go.' }, toolResult('BoxShell', 'sh-1')],
   }), /EmptyResponseRetryError/);
-  assert.equal(observed.at(-1), false);
-  assert.equal(turn.hasSendMessageCall(), true);
+  assert.equal(observed.at(-1).hasSend, false);
+  assert.equal(sendTurn.hasSendMessageCall(), true);
 
-  // After successful SendToUser tool result: NOT masked.
-  await handler.runStep({}, turn, {
-    getMessages: () => [
-      { role: 'user', content: 'Go.' },
-      toolResult('SendToUser', 'send-1'),
-    ],
-  });
-  assert.equal(observed.at(-1), true);
+  // Empty response budget >= MAX_EMPTY_RESPONSE_RETRIES_PER_TURN (2) sets didRetryAfterEmptyResponse: true.
+  assert.equal(MAX_EMPTY_RESPONSE_RETRIES_PER_TURN, 2);
+  await handler.runWithMaxTokensRetry(
+    {},
+    { getMessages: () => [] },
+    (_ctx, debug) => { observed.push({ debug }); return { ok: true }; },
+    { retriesUsed: MAX_EMPTY_RESPONSE_RETRIES_PER_TURN },
+  );
+  assert.equal(observed.at(-1).debug.didRetryAfterEmptyResponse, true);
+
+  // OutputTokensLimitExceededError retries at most MAX_OUTPUT_TOKEN_RETRIES_PER_STEP (2) times
+  // (3 total calls in the step) and preserves the original truncation message.
+  assert.equal(MAX_OUTPUT_TOKEN_RETRIES_PER_STEP, 2);
+  let truncationCalls = 0;
+  await assert.rejects(
+    () => handler.runWithMaxTokensRetry(
+      {},
+      { getMessages: () => [] },
+      (ctx, debug) => {
+        truncationCalls += 1;
+        return handler.runStep(ctx, new Turn(false, true), { getMessages: () => [] }, debug);
+      },
+      { retriesUsed: 0 },
+    ),
+    error => {
+      assert.match(error.message, /max_tokens/);
+      assert.match(error.message, /2 continuation retries/);
+      assert.notEqual(error.name, 'StepRetriesExhaustedError');
+      return true;
+    },
+  );
+  assert.equal(truncationCalls, MAX_OUTPUT_TOKEN_RETRIES_PER_STEP + 1);
 });
 
-test('wrapAnysphereAgent defaults enableEmptyResponseRetry to true while respecting explicit false', () => {
+test('wrapCreateTurnAgentComposition + wrapAnysphereAgent enable empty-response retry ONLY for normal user turns', () => {
   class FakeAgent {
     constructor(config, extra) {
       this.config = config;
       this.extra = extra;
     }
   }
-  const Wrapped = wrapAnysphereAgent(FakeAgent);
+  const ScopedAgent = wrapAnysphereAgent(FakeAgent);
 
-  const originalConfig = { modelId: 'test', featureFlags: { userMessageTimestamps: true } };
-  const agent = new Wrapped(originalConfig, 'tag');
-  assert.ok(agent instanceof FakeAgent);
-  assert.equal(agent.config.featureFlags.enableEmptyResponseRetry, true);
-  assert.equal(agent.config.featureFlags.userMessageTimestamps, true);
-  assert.equal(originalConfig.featureFlags.enableEmptyResponseRetry, undefined);
-  assert.equal(agent.extra, 'tag');
+  // Direct construction outside buildAgentForRun does not force enableEmptyResponseRetry.
+  const direct = new ScopedAgent({ featureFlags: { userMessageTimestamps: true } }, 'tag');
+  assert.equal(direct.config.featureFlags.enableEmptyResponseRetry, undefined);
 
-  const disabled = new Wrapped({ featureFlags: { enableEmptyResponseRetry: false } });
-  assert.equal(disabled.config.featureFlags.enableEmptyResponseRetry, false);
+  const createComposition = wrapCreateTurnAgentComposition(host => ({
+    buildAgentForRun(_sessions, _box, turnScope) {
+      return new ScopedAgent({
+        featureFlags: {
+          userMessageTimestamps: true,
+          ...(turnScope?.explicit !== undefined ? { enableEmptyResponseRetry: turnScope.explicit } : {}),
+        },
+        hostFlag: host.isSubagentRunner,
+        silenceFlag: turnScope?.isSilenceAllowed,
+        groupFlag: turnScope?.isGroupMemberTurn,
+      });
+    },
+  }));
+
+  // Normal user turn -> enabled.
+  const userComp = createComposition({ isSubagentRunner: false });
+  const normalAgent = userComp.buildAgentForRun({}, {}, { isSilenceAllowed: false, isGroupMemberTurn: false });
+  assert.equal(normalAgent.config.featureFlags.enableEmptyResponseRetry, true);
+  assert.equal(normalAgent.config.featureFlags.userMessageTimestamps, true);
+
+  // Subagent -> disabled.
+  const subagentComp = createComposition({ isSubagentRunner: true });
+  assert.equal(subagentComp.buildAgentForRun({}, {}, { isSilenceAllowed: false, isGroupMemberTurn: false }).config.featureFlags.enableEmptyResponseRetry, false);
+
+  // isSilenceAllowed (cron / background wake / broadcast) -> disabled.
+  assert.equal(userComp.buildAgentForRun({}, {}, { isSilenceAllowed: true, isGroupMemberTurn: false }).config.featureFlags.enableEmptyResponseRetry, false);
+
+  // Group chat member turn -> disabled.
+  assert.equal(userComp.buildAgentForRun({}, {}, { isSilenceAllowed: false, isGroupMemberTurn: true }).config.featureFlags.enableEmptyResponseRetry, false);
+
+  // Explicit caller flag is respected.
+  assert.equal(userComp.buildAgentForRun({}, {}, { explicit: false }).config.featureFlags.enableEmptyResponseRetry, false);
 });
 
-test('wrapCreateTurnSettle and wrapTurnRuntime continue closing nudges up to MAX_CLOSING_SEND_NUDGES and stop cleanly', async () => {
+test('wrapCreateTurnSettle and wrapTurnRuntime bound closing nudges, rewrite prompt, and stamp sand.closing_send_nudge', async () => {
   const createSettle = wrapCreateTurnSettle((host) => {
     let endedOnSilentToolCalls = false;
     return {
@@ -282,7 +448,6 @@ test('wrapCreateTurnSettle and wrapTurnRuntime continue closing nudges up to MAX
     };
   });
 
-  // Hidden closing-send nudge that executed another tool silently sets endedOnSilentToolCalls.
   const nudgeSettle = createSettle({
     isSubagentRunner: false,
     latestPromptMessages: () => [
@@ -294,7 +459,6 @@ test('wrapCreateTurnSettle and wrapTurnRuntime continue closing nudges up to MAX
   await nudgeSettle.settleCompletedTurn({ hidden: true, trimmedPrompt: CLOSING_SEND_NUDGE_PROMPT });
   assert.equal(nudgeSettle.buildResult({ aborted: false }).endedOnSilentToolCalls, true);
 
-  // Unrelated hidden automation turn does NOT set endedOnSilentToolCalls.
   const bgSettle = createSettle({
     isSubagentRunner: false,
     latestPromptMessages: () => [
@@ -308,18 +472,29 @@ test('wrapCreateTurnSettle and wrapTurnRuntime continue closing nudges up to MAX
   await bgSettle.settleCompletedTurn({ hidden: true, trimmedPrompt: 'Run scheduled maintenance.' });
   assert.equal(bgSettle.buildResult({ aborted: false }).endedOnSilentToolCalls, undefined);
 
-  // Bounded closing-send nudge loop in TurnRuntime: recovers on 2nd closing nudge.
+  const ORIGINAL_CLOSING_PROMPT =
+    'Your previous turn acknowledged the user and then ran tool calls, but ended without a follow-up SendToUser — the last thing the user saw is that opening acknowledgement.';
+  const REPLY_NUDGE_PROMPT = 'You never called SendToUser that turn.';
+  const traceCalls = [];
+  const setTurnTraceAttributes = (trace, attrs) => traceCalls.push({ trace, attrs });
+
   class FakeTurnRuntime {
     constructor(tm) { this.tm = tm; }
-    async ensureUserReply(runner, result) {
+    async ensureUserReply(runner, result, _session, _epoch, _ackToken, _traceCtx, turnTrace) {
       let latest = result;
-      if (latest.endedOnSilentToolCalls) {
-        latest = await runner.run(CLOSING_SEND_NUDGE_PROMPT, { hidden: true });
+      let attempts = 0;
+      while (latest.sentMessageCount === 0 && !latest.reacted && attempts < 2) {
+        attempts += 1;
+        latest = await runner.run(REPLY_NUDGE_PROMPT, { hidden: true });
       }
-      return { result: latest, replyNudgeAttempts: 0, deliveryOwed: false, streamOutputProduced: true };
+      if (latest.endedOnSilentToolCalls === true) {
+        setTurnTraceAttributes(turnTrace, { 'sand.closing_send_nudge': true });
+        latest = await runner.run(ORIGINAL_CLOSING_PROMPT, { hidden: true });
+      }
+      return { result: latest, replyNudgeAttempts: attempts, deliveryOwed: false, streamOutputProduced: true };
     }
   }
-  wrapTurnRuntime(FakeTurnRuntime);
+  wrapTurnRuntime(FakeTurnRuntime, { setTurnTraceAttributes });
 
   const telemetryCalls = [];
   const runtime = new FakeTurnRuntime({
@@ -327,26 +502,38 @@ test('wrapCreateTurnSettle and wrapTurnRuntime continue closing nudges up to MAX
     telemetry: { reportClosingSendNudge: evt => telemetryCalls.push(evt) },
   });
 
+  // Recovers on 2nd closing nudge; both closing nudges use rewritten prompt and stamp trace attribute.
+  const seenPrompts = [];
   const runs = [
     { sentMessageCount: 0, reacted: false, aborted: false, endedOnSilentToolCalls: true, streamOutputProduced: true },
     { sentMessageCount: 1, reacted: false, aborted: false, streamOutputProduced: true },
   ];
-  let runCalls = 0;
-  const runner = {
-    run: async () => runs[runCalls++],
-  };
+  const turnTrace = { id: 'trace-1' };
   const settled = await runtime.ensureUserReply(
-    runner,
+    {
+      run: async prompt => {
+        seenPrompts.push(prompt);
+        return runs.shift();
+      },
+    },
     { sentMessageCount: 2, reacted: false, aborted: false, endedOnSilentToolCalls: true, streamOutputProduced: true },
     { id: 'bot-1' },
     7,
+    undefined,
+    undefined,
+    turnTrace,
   );
-  assert.equal(runCalls, 2);
+  assert.deepEqual(seenPrompts, [CLOSING_SEND_NUDGE_PROMPT, CLOSING_SEND_NUDGE_PROMPT]);
   assert.equal(settled.result.sentMessageCount, 1);
   assert.equal(telemetryCalls.length, 1);
-  assert.equal(telemetryCalls[0].delivered, true);
+  assert.equal(traceCalls.length, 2);
+  assert.deepEqual(traceCalls.map(c => c.attrs), [
+    { 'sand.closing_send_nudge': true },
+    { 'sand.closing_send_nudge': true },
+  ]);
 
-  // Never exceeds MAX_CLOSING_SEND_NUDGES even if every nudge ends silently.
+  // Never exceeds MAX_CLOSING_SEND_NUDGES (2) even if every nudge ends silently.
+  assert.equal(MAX_CLOSING_SEND_NUDGES, 2);
   let capCalls = 0;
   const capped = await runtime.ensureUserReply(
     {
@@ -371,12 +558,12 @@ test('RunLifecycle and resolveNamedActivityHold keep thinking activity visible a
     }
     return { transition: { type: 'keep' }, state };
   };
-  const resolve = wrapResolveNamedActivityHold(originalResolve, initialHold);
+  const resolveHold = wrapResolveNamedActivityHold(originalResolve, initialHold);
 
-  const midTurn = resolve({ type: 'send-message' }, { heldActivity: { kind: 'tool', tool: 'CallMcpTool' }, heldSinceMs: 10 }, 20, 2500);
+  const midTurn = resolveHold({ type: 'send-message' }, { heldActivity: { kind: 'tool', tool: 'CallMcpTool' }, heldSinceMs: 10 }, 20, 2500);
   assert.deepEqual(midTurn, { transition: { type: 'set', activity: THINKING_ACTIVITY }, state: initialHold });
 
-  const ended = resolve({ type: 'turn-ended' }, initialHold, 30, 2500);
+  const ended = resolveHold({ type: 'turn-ended' }, initialHold, 30, 2500);
   assert.deepEqual(ended, { transition: { type: 'clear' }, state: initialHold });
 
   const emittedActivities = [];
@@ -396,7 +583,6 @@ test('RunLifecycle and resolveNamedActivityHold keep thinking activity visible a
   lifecycle.beginSessionRun(session);
   assert.deepEqual(emittedActivities, [THINKING_ACTIVITY]);
 
-  // Nested beginSessionRun preserves existing tool activity.
   const toolActivity = { kind: 'tool', tool: 'CallMcpTool', callId: 'c-1' };
   lifecycle.sessionActivities.set('bot-a', toolActivity);
   lifecycle.beginSessionRun(session);
@@ -428,6 +614,31 @@ test('createHarnessModelErrorMapper maps length truncation to OutputTokensLimitE
   assert.ok(fallback(sourceError) instanceof NonRetriableError);
 });
 
+test('recovery constructors and wrappers fail fast when required anchors are missing', async () => {
+  assert.throws(() => wrapActionHandler(class { runStep() {} }), /runModelOnlyStep/);
+  assert.throws(() => wrapActionHandler(class { runStep() {} runModelOnlyStep() {} }), /runWithMaxTokensRetry/);
+  assert.throws(() => wrapCreateTurnAgentComposition(null), /createTurnAgentComposition/);
+  assert.throws(() => wrapResolveNamedActivityHold(null), /resolveNamedActivityHold/);
+
+  assert.throws(
+    () => constructRecoveredEngine({ getEngineRecoveryBindings: () => ({}) }, tmpdir()),
+    /hasProjectSendMessageReminderForCurrentRequest/,
+  );
+  assert.throws(
+    () => constructRecoveredHarness({ getHarnessRecoveryBindings: () => ({}) }, tmpdir()),
+    /AnysphereAgent/,
+  );
+  await assert.rejects(
+    () => installRecoveredHostExecutionAndSession({
+      hostExecutionRecoveryPlan: { modules: [] },
+      hostSessionRecoveryPlan: { modules: [] },
+      getHostExecutionRecoveryBindings: () => ({ SandAgentRunner: class {} }),
+      getHostSessionRecoveryBindings: () => ({}),
+    }, tmpdir()),
+    /resolveNamedActivityHold/,
+  );
+});
+
 test('recovered host-flow, engine, and harness constructors apply turn-continuity overrides end to end', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'prokbot-continuity-'));
   try {
@@ -456,6 +667,8 @@ test('recovered host-flow, engine, and harness constructors apply turn-continuit
               reminderText: createProjectSendMessageVisibilityReminder().content,
             };
           }
+          async runModelOnlyStep() { return {}; }
+          async runWithMaxTokensRetry(_ctx, _exec, fn, budget) { return fn({}, { outputTokenLimitRetryCount: 0, emptyResponseRetryTurnBudget: budget }); }
         }
         return { AbstractUserMessageActionHandler };
       }
@@ -463,7 +676,13 @@ test('recovered host-flow, engine, and harness constructors apply turn-continuit
     await writeFile(join(dir, 'harness.mjs'), `
       export function createRecoveredModule({ AnysphereAgent }) {
         return {
-          buildAgent() { return new AnysphereAgent({ featureFlags: { userMessageTimestamps: true } }); },
+          createTurnAgentComposition(host) {
+            return {
+              buildAgentForRun(_s, _b, turnScope) {
+                return new AnysphereAgent({ featureFlags: { userMessageTimestamps: true } }, { host, turnScope });
+              },
+            };
+          },
         };
       }
     `);
@@ -503,6 +722,8 @@ test('recovered host-flow, engine, and harness constructors apply turn-continuit
         }],
       },
       getEngineRecoveryBindings: () => ({
+        fromRedactedCoreMessages: msgs => msgs,
+        PrivacyCapability: { UNSAFE_ALWAYS_ALLOWED: 'unsafe' },
         hasProjectSendMessageReminderForCurrentRequest: () => true,
         createProjectSendMessageVisibilityReminder: () => ({
           role: 'user',
@@ -525,13 +746,15 @@ test('recovered host-flow, engine, and harness constructors apply turn-continuit
     class BaseAgent { constructor(config) { this.config = config; } }
     const harness = await constructRecoveredHarness({
       harnessRecoveryPlan: {
-        modules: [{ name: 'harness.mjs', dependencies: ['AnysphereAgent'], recoveredDependencies: [], originalDependencies: ['AnysphereAgent'], exports: ['buildAgent'] }],
+        modules: [{ name: 'harness.mjs', dependencies: ['AnysphereAgent'], recoveredDependencies: [], originalDependencies: ['AnysphereAgent'], exports: ['createTurnAgentComposition'] }],
       },
       getHarnessRecoveryBindings: () => ({ AnysphereAgent: BaseAgent }),
     }, dir);
-    const built = harness.bindings.buildAgent();
-    assert.ok(built instanceof BaseAgent);
-    assert.equal(built.config.featureFlags.enableEmptyResponseRetry, true);
+    const userBuilt = harness.bindings.createTurnAgentComposition({ isSubagentRunner: false }).buildAgentForRun({}, {}, {});
+    assert.ok(userBuilt instanceof BaseAgent);
+    assert.equal(userBuilt.config.featureFlags.enableEmptyResponseRetry, true);
+    const quietBuilt = harness.bindings.createTurnAgentComposition({ isSubagentRunner: false }).buildAgentForRun({}, {}, { isSilenceAllowed: true });
+    assert.equal(quietBuilt.config.featureFlags.enableEmptyResponseRetry, false);
 
     await writeFile(join(dir, 'exec.mjs'), `
       export function createRecoveredModule({ resolveNamedActivityHold, INITIAL_NAMED_ACTIVITY_HOLD_STATE }) {
@@ -549,7 +772,7 @@ test('recovered host-flow, engine, and harness constructors apply turn-continuit
         class TurnRuntime {
           constructor(tm) { this.tm = tm; }
           async ensureUserReply(runner, result) {
-            const latest = result.endedOnSilentToolCalls ? await runner.run('first', { hidden: true }) : result;
+            const latest = result.endedOnSilentToolCalls ? await runner.run('first without a follow-up SendToUser', { hidden: true }) : result;
             return { result: latest, replyNudgeAttempts: 0, deliveryOwed: false, streamOutputProduced: true };
           }
         }
@@ -585,6 +808,7 @@ test('recovered host-flow, engine, and harness constructors apply turn-continuit
       getHostExecutionRecoveryBindings: () => ({
         SandAgentRunner: class {},
         INITIAL_NAMED_ACTIVITY_HOLD_STATE: initialHold,
+        setTurnTraceAttributes: () => {},
         resolveNamedActivityHold: (update) => ({ transition: { type: update.type === 'turn-ended' ? 'clear' : 'keep' }, state: initialHold }),
       }),
       getHostSessionRecoveryBindings: () => ({}),
@@ -617,4 +841,79 @@ test('recovered host-flow, engine, and harness constructors apply turn-continuit
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+const hostSeedDir = process.env.PROKBOT_TEST_HOST_SEED ?? '';
+
+test('pinned d0a4baa Host core installs turn-continuity wrappers cleanly and handles update_state / retry caps', { skip: !hostSeedDir && 'set PROKBOT_TEST_HOST_SEED to run the generated Host integration check' }, async () => {
+  const relDir = join(hostSeedDir, 'release-reliability');
+  const require = createRequire(import.meta.url);
+  const library = require(join(relDir, 'host-library-reliable.cjs'));
+  const core = await loadRecoveredHostCore(library, relDir);
+  assert.equal(core.mode, 'recovered');
+
+  // Verify real createTurnSettle ignores update_state after SendToUser.
+  const { createTurnSettle } = library.getHarnessRecoveryBindings();
+  const settle = createTurnSettle({
+    isSubagentRunner: false,
+    isRunSuperseded: () => false,
+    latestPromptMessages: () => [
+      { role: 'user', content: 'Remember that I like coffee.' },
+      { role: 'assistant', content: [toolCall('SendToUser', 's-1'), toolCall('update_state', 'u-1')] },
+      toolResult('SendToUser', 's-1'),
+      toolResult('update_state', 'u-1'),
+    ],
+  }, {});
+  await settle.settleCompletedTurn({
+    finalState: { turnTimings: [] },
+    turnStartedAtMs: Date.now(),
+    hidden: false,
+    trimmedPrompt: 'Remember that I like coffee.',
+    skipLabeling: true,
+  });
+  assert.equal(settle.buildResult({ aborted: false }).endedOnSilentToolCalls, undefined);
+
+  // Verify real TurnRuntime.ensureUserReply caps closing nudges at MAX_CLOSING_SEND_NUDGES (2).
+  const { TurnRuntime } = library.getHostExecutionRecoveryBindings();
+  let nudgeCount = 0;
+  const tr = new TurnRuntime({
+    sendPipeline: { currentTurnEpoch: () => 42 },
+    telemetry: { reportClosingSendNudge: () => {} },
+  });
+  const settled = await tr.ensureUserReply(
+    {
+      run: async prompt => {
+        nudgeCount += 1;
+        assert.equal(prompt, CLOSING_SEND_NUDGE_PROMPT);
+        return { sentMessageCount: 0, reacted: false, aborted: false, endedOnSilentToolCalls: true };
+      },
+    },
+    { sentMessageCount: 1, reacted: false, aborted: false, endedOnSilentToolCalls: true },
+    { id: 'bot-real' },
+    42,
+  );
+  assert.equal(nudgeCount, MAX_CLOSING_SEND_NUDGES);
+  assert.equal(settled.result.endedOnSilentToolCalls, true);
+
+  // Verify real AbstractUserMessageActionHandler.runWithMaxTokensRetry stops at MAX_OUTPUT_TOKEN_RETRIES_PER_STEP (2).
+  const { AbstractUserMessageActionHandler } = library.getEngineRecoveryBindings();
+  const mapError = createHarnessModelErrorMapper(library);
+  const protoHandler = Object.create(AbstractUserMessageActionHandler.prototype);
+  protoHandler.config = {};
+  const appended = [];
+  let tokenLimitAttempts = 0;
+  await assert.rejects(
+    () => protoHandler.runWithMaxTokensRetry(
+      library.createContext(),
+      { appendMessages: msgs => appended.push(...msgs) },
+      async () => {
+        tokenLimitAttempts += 1;
+        throw mapError(new ModelRequestError('Model response stopped with max_tokens', { code: 'length' }));
+      },
+      { retriesUsed: 0 },
+    ),
+    /max_tokens/,
+  );
+  assert.equal(tokenLimitAttempts, MAX_OUTPUT_TOKEN_RETRIES_PER_STEP + 1);
+  assert.equal(appended.length, 1);
 });

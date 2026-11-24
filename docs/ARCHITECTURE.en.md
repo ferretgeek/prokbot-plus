@@ -142,6 +142,15 @@ The official prompt asks Bots to split replies into 2–4 `SendToUser` messages.
 
 When the model asks, under a new call ID, to resend the exact text of a message that was just delivered successfully, the adapter ends the turn with a non-retryable error instead of sending it twice.
 
+### Turn continuity and working indicator
+
+`host/runtime/turn-continuity.mjs` (installed through `recovered-host-flow.mjs`, `recovered-engine.mjs`, `recovered-harness.mjs`, `recovered-host-execution.mjs` and `model-errors.mjs`) handles multi-step turn completion, retries and live activity state:
+
+- **Silent tool-call closing nudges**: `detectSilentToolCallEnding` detects substantive tool work performed after the last successful `SendToUser` / `SendMessage` / `ReactToMessage` (including multiple progress messages, tool-first turns, parallel calls and plain-text/reasoning endings) while excluding bookkeeping tools such as `update_state` and `TodoWrite` / `todo_write`. `TurnRuntime.ensureUserReply` uses non-repeating nudge wording, allows at most 2 closing nudges per turn, and records `sand.closing_send_nudge` on every closing nudge.
+- **Empty and missing-`SendToUser` retries**: `buildAgentForRun` enables `enableEmptyResponseRetry: true` only for normal user turns (keeping it disabled for subagents, `isSilenceAllowed` runs such as scheduled tasks, background wakes and broadcasts, and group-member turns so silence-capable runs are not pushed into speaking). Subsequent substantive tool results reopen in-loop retry eligibility after an earlier progress `SendToUser`, while capping empty/visibility retries at 2 per turn.
+- **Automatic `length` truncation continuation**: `model-errors.mjs` maps `length` truncation to `OutputTokensLimitExceededError` so `AbstractUserMessageActionHandler.runWithMaxTokensRetry` can prompt the model to break up its output and continue up to 2 times per step; if exhausted, the original truncation error is surfaced instead of a generic `step-retries` failure.
+- **Live working indicator**: `RunLifecycle.beginSessionRun` seeds `{ kind: 'thinking' }` at run start and `resolveNamedActivityHold` retains `thinking` across mid-turn `send-message` updates until `turn-ended` / `endSessionRun` clears it, preventing blank indicator gaps during multi-step turns.
+
 ### Execution computer
 
 The official Linux desktop image is used directly; the Host operates it over an authenticated connection, on the same machine or another one. When Agents operate your computer, the client connects out to the Host, so your computer opens no ports.

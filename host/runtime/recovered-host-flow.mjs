@@ -25,6 +25,12 @@ function memoryExecutor(executor) {
 export function constructRecoveredHostFlow(library, directory) {
   const original = library.getHostFlowRecoveryBindings();
   if (typeof original.runTurnMemory !== 'function') throw new TypeError('Missing Host flow dependency: runTurnMemory');
+  const needsSilentToolDetector = library.hostFlowRecoveryPlan?.modules?.some(
+    module => Array.isArray(module.dependencies) && module.dependencies.includes('turnEndedOnSilentToolCalls'),
+  );
+  if (needsSilentToolDetector && typeof original.turnEndedOnSilentToolCalls !== 'function') {
+    throw new TypeError('Missing Host flow dependency: turnEndedOnSilentToolCalls');
+  }
   return constructRecoveredModules(library.hostFlowRecoveryPlan, {
     ...original,
     turnEndedOnSilentToolCalls: detectSilentToolCallEnding,

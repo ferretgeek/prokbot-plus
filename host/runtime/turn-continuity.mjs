@@ -8,20 +8,29 @@ export const DELIVERY_TOOL_NAMES = new Set([
   'ReactToMessage',
 ]);
 
+// Bookkeeping / state-persistence tools whose invocation after a user-visible reply
+// does not leave unreported work waiting for the user.
 export const NON_SUBSTANTIVE_SILENT_TOOL_NAMES = new Set([
+  'update_state',
+  'TodoWrite',
+  'todo_write',
   'SetStatus',
 ]);
 
 export const THINKING_ACTIVITY = Object.freeze({ kind: 'thinking' });
 
-export const MAX_CLOSING_SEND_NUDGES = 3;
+export const MAX_CLOSING_SEND_NUDGES = 2;
+export const MAX_EMPTY_RESPONSE_RETRIES_PER_TURN = 2;
+export const MAX_VISIBILITY_REMINDERS_PER_TURN = 2;
+export const MAX_OUTPUT_TOKEN_RETRIES_PER_STEP = 2;
 
 export const CLOSING_SEND_NUDGE_PROMPT =
-  'Your previous turn acknowledged the user and then ran tool calls, but ended without a follow-up SendToUser — ' +
-  'the last thing the user saw is that opening acknowledgement, so whatever the tool calls produced after it never reached them. ' +
-  'If that work produced the result or answer they are waiting on, deliver it now by actually invoking the SendToUser tool — ' +
-  'make a real tool/function call, not text you write. Plain assistant text is NEVER shown to the user; only a real SendToUser ' +
-  'tool invocation reaches them. If the work is genuinely unfinished, continue it and send the result once you have it.';
+  'After your last SendToUser message, you ran additional tool calls without a follow-up SendToUser, ' +
+  'so the results of that subsequent tool work have not been delivered to the user. ' +
+  'Do NOT repeat results you already sent earlier. If that subsequent work produced new results, answers, or status ' +
+  'the user needs, deliver only that new update now by invoking the SendToUser tool (plain assistant text is NEVER ' +
+  'shown to the user; only a real SendToUser tool call reaches them). If the task is genuinely still unfinished, ' +
+  'continue it and send the result with SendToUser once complete.';
 
 export const SEND_TO_USER_VISIBILITY_REMINDER_TEXT =
   '<system_reminder>Your response was not visible to the user. Plain assistant text is never shown — ' +
@@ -79,7 +88,7 @@ export function isClosingSendNudgePrompt(prompt) {
   const trimmed = prompt.trim();
   return (
     trimmed === CLOSING_SEND_NUDGE_PROMPT ||
-    trimmed.includes('ended without a follow-up SendToUser')
+    trimmed.includes('without a follow-up SendToUser')
   );
 }
 
@@ -122,7 +131,8 @@ function isSubstantiveNonDeliveryTool(name) {
 /**
  * Determine whether the current turn performed substantive tool work after its last
  * successful user-visible delivery (SendToUser / SendMessage / ReactToMessage) without
- * a subsequent delivery.
+ * a subsequent delivery. Bookkeeping tools (e.g. update_state, TodoWrite) do not
+ * constitute unreported work.
  *
  * Unlike the pinned upstream helper, this handles:
  * - turns with multiple progress SendToUser messages before silent tool work,
@@ -166,7 +176,8 @@ export function detectSilentToolCallEnding(rawMessages, { requirePriorDelivery =
 
     if (deliveredHere) {
       hasSuccessfulDelivery = true;
-      // Parallel [SendToUser("working on it..."), CallMcpTool(...)] leaves the tool result unreported.
+      // Parallel [SendToUser("working on it..."), CallMcpTool(...)] leaves the tool result unreported,
+      // whereas parallel [SendToUser("noted"), update_state(...)] does not.
       hasSilentWorkAfterLastDelivery = hasSubstantiveWork;
     } else if (hasSubstantiveWork) {
       hasSilentWorkAfterLastDelivery = true;
@@ -215,30 +226,55 @@ export function hasTrailingNonDeliveryToolResult(rawMessages) {
 }
 
 /**
- * Check whether a project SendMessage/SendToUser visibility reminder was already
- * injected since the latest request boundary OR the latest substantive non-delivery
- * tool result. Resetting across new tool results prevents an earlier reminder from
- * permanently disabling retry protection for later steps in the same turn.
+ * Check whether a project SendMessage/SendToUser visibility reminder should suppress
+ * another missing-SendToUser retry on this step.
+ *
+ * Performs a single backwards scan to the turn boundary: returns true if a reminder was
+ * already injected since the latest substantive non-delivery tool result OR if the turn
+ * has already reached `maxPerTurn` visibility reminders.
  */
-export function hasVisibilityReminderSinceLastWork(messages, originalCheck) {
+export function hasVisibilityReminderSinceLastWork(messages, options = {}) {
   if (!Array.isArray(messages) || messages.length === 0) return false;
-  let index = messages.length - 1;
-  for (; index >= 0; index--) {
+  const maxPerTurn =
+    typeof options === 'object' && options !== null && Number.isInteger(options.maxPerTurn) && options.maxPerTurn > 0
+      ? options.maxPerTurn
+      : MAX_VISIBILITY_REMINDERS_PER_TURN;
+
+  let remindersInTurn = 0;
+  let sawWorkBeforeReminder = false;
+  let remindedSinceLastWork;
+
+  for (let index = messages.length - 1; index >= 0; index--) {
     const message = asCoreMessage(messages[index]);
     if (!message) continue;
     const cursor = message.providerOptions?.cursor;
     if (cursor && typeof cursor === 'object' && !Array.isArray(cursor)) {
-      if (cursor.projectSendMessageReminder === true) return true;
-      if (cursor.projectSendMessageRequestBoundary === true) return false;
+      if (cursor.projectSendMessageReminder === true) {
+        remindersInTurn += 1;
+        if (!sawWorkBeforeReminder && remindedSinceLastWork === undefined) {
+          remindedSinceLastWork = true;
+        }
+        if (remindersInTurn >= maxPerTurn) return true;
+        continue;
+      }
+      if (cursor.projectSendMessageRequestBoundary === true) {
+        break;
+      }
+    }
+    if (!isInjectedReminderMessage(message) && (message.role === 'user' || message.role === 'system')) {
+      break;
     }
     if (message.role === 'tool' && Array.isArray(message.content)) {
       const hasWorkResult = message.content.some(
         part => part?.type === 'tool-result' && isSubstantiveNonDeliveryTool(part.toolName),
       );
-      if (hasWorkResult) return false;
+      if (hasWorkResult) {
+        sawWorkBeforeReminder = true;
+        if (remindedSinceLastWork === undefined) remindedSinceLastWork = false;
+      }
     }
   }
-  return typeof originalCheck === 'function' ? originalCheck(messages) : false;
+  return remindedSinceLastWork === true;
 }
 
 export function createSendToUserVisibilityReminder(originalFactory) {
@@ -259,10 +295,13 @@ export function createSendToUserVisibilityReminder(originalFactory) {
 /**
  * Wrap RunLifecycle.resolveNamedActivityHold so a mid-turn SendToUser keeps the
  * session visibly in the `thinking` state while the turn continues, instead of
- * clearing `currentActivity` back to undefined (which triggers the Desktop 1.2.3
- * 5-second quiet delay). `turn-ended` and `endSessionRun` still clear activity.
+ * clearing `currentActivity` back to undefined until the next streamed chunk.
+ * `turn-ended` and `endSessionRun` still clear activity.
  */
 export function wrapResolveNamedActivityHold(originalResolve, initialHoldState) {
+  if (typeof originalResolve !== 'function') {
+    throw new TypeError('Missing Host execution dependency: resolveNamedActivityHold');
+  }
   return (update, state, nowMs, maxHoldMs) => {
     if (update?.type === 'send-message') {
       return {
@@ -277,6 +316,16 @@ export function wrapResolveNamedActivityHold(originalResolve, initialHoldState) 
 const RUN_LIFECYCLE_WRAPPED = Symbol('prokbot.runLifecycleWrapped');
 const TURN_RUNTIME_WRAPPED = Symbol('prokbot.turnRuntimeWrapped');
 const ACTION_HANDLER_WRAPPED = Symbol('prokbot.actionHandlerWrapped');
+
+const pendingRetryPolicyStack = [];
+
+export function shouldEnableEmptyResponseRetry(host, turnScope) {
+  return (
+    !host?.isSubagentRunner &&
+    turnScope?.isSilenceAllowed !== true &&
+    turnScope?.isGroupMemberTurn !== true
+  );
+}
 
 /**
  * Wrap createTurnSettle so hidden continuation nudges (closing-send nudge and
@@ -320,8 +369,8 @@ export function wrapCreateTurnSettle(originalCreateTurnSettle) {
 }
 
 /**
- * Wrap AnysphereAgent so local Host runs default `enableEmptyResponseRetry` to true
- * unless explicitly disabled by a caller.
+ * Wrap AnysphereAgent so `buildAgentForRun` can scope `enableEmptyResponseRetry`
+ * strictly to normal user turns (never subagents, `isSilenceAllowed`, or group members).
  */
 export function wrapAnysphereAgent(AnysphereAgent) {
   if (typeof AnysphereAgent !== 'function') {
@@ -329,10 +378,14 @@ export function wrapAnysphereAgent(AnysphereAgent) {
   }
   return class LocalContinuousAnysphereAgent extends AnysphereAgent {
     constructor(config, ...rest) {
+      const scopedPolicy = pendingRetryPolicyStack.at(-1);
       const featureFlags = config && typeof config === 'object' ? config.featureFlags : undefined;
       const nextConfig =
-        config && typeof config === 'object' && featureFlags?.enableEmptyResponseRetry === undefined
-          ? { ...config, featureFlags: { ...(featureFlags ?? {}), enableEmptyResponseRetry: true } }
+        scopedPolicy !== undefined &&
+        config &&
+        typeof config === 'object' &&
+        featureFlags?.enableEmptyResponseRetry === undefined
+          ? { ...config, featureFlags: { ...(featureFlags ?? {}), enableEmptyResponseRetry: scopedPolicy } }
           : config;
       super(nextConfig, ...rest);
     }
@@ -340,44 +393,129 @@ export function wrapAnysphereAgent(AnysphereAgent) {
 }
 
 /**
- * Wrap AbstractUserMessageActionHandler so an earlier progress SendToUser does not
- * suppress in-loop empty/thinking-only or missing-SendToUser retries when the step
- * immediately follows substantive non-delivery tool results.
+ * Wrap createTurnAgentComposition so `enableEmptyResponseRetry` is enabled only for
+ * normal user turns and kept disabled for subagents, `isSilenceAllowed` runs (automations,
+ * background wakes, broadcasts), and group-member turns.
  */
-export function wrapActionHandler(ActionHandler, { fromRedactedCoreMessages, PrivacyCapability } = {}) {
+export function wrapCreateTurnAgentComposition(originalCreateTurnAgentComposition) {
+  if (typeof originalCreateTurnAgentComposition !== 'function') {
+    throw new TypeError('Missing Harness dependency: createTurnAgentComposition');
+  }
+  return function createTurnAgentCompositionWithRetryPolicy(host, ...rest) {
+    const composition = originalCreateTurnAgentComposition(host, ...rest);
+    if (!composition || typeof composition.buildAgentForRun !== 'function') {
+      throw new TypeError('Missing Harness composition helper: buildAgentForRun');
+    }
+    return {
+      ...composition,
+      buildAgentForRun(sessions, boxConnection, turnScope, ...extra) {
+        const enableEmptyResponseRetry = shouldEnableEmptyResponseRetry(host, turnScope);
+        pendingRetryPolicyStack.push(enableEmptyResponseRetry);
+        let agent;
+        try {
+          agent = composition.buildAgentForRun(sessions, boxConnection, turnScope, ...extra);
+        } finally {
+          pendingRetryPolicyStack.pop();
+        }
+        if (agent?.config && typeof agent.config === 'object') {
+          const featureFlags = agent.config.featureFlags;
+          if (featureFlags?.enableEmptyResponseRetry === undefined) {
+            agent.config.featureFlags = {
+              ...(featureFlags ?? {}),
+              enableEmptyResponseRetry,
+            };
+          }
+        }
+        return agent;
+      },
+    };
+  };
+}
+
+function isOutputTokensLimitExceededError(error) {
+  return Boolean(error && error.name === 'OutputTokensLimitExceededError');
+}
+
+function createExhaustedOutputTokensError(sourceError, maxRetries) {
+  const detail =
+    typeof sourceError?.message === 'string' && sourceError.message.trim().length > 0
+      ? sourceError.message.trim()
+      : 'Model output exceeded the output token limit';
+  const cause = sourceError?.cause ?? sourceError;
+  return new Error(
+    `Output exceeded max output tokens after ${maxRetries} continuation ${maxRetries === 1 ? 'retry' : 'retries'}: ${detail}`,
+    cause ? { cause } : undefined,
+  );
+}
+
+/**
+ * Wrap AbstractUserMessageActionHandler so:
+ * - an earlier progress SendToUser does not suppress in-loop retries after subsequent
+ *   substantive tool results (only inspecting trailing messages when hasSendMessageCall is true),
+ * - empty-response / missing-SendToUser retries stay bounded per turn (`maxEmptyResponseRetriesPerTurn`),
+ * - `OutputTokensLimitExceededError` (`length`) retries are bounded per step (`maxOutputTokenRetriesPerStep`)
+ *   and surface the original truncation error rather than a generic `step-retries` failure.
+ */
+export function wrapActionHandler(
+  ActionHandler,
+  {
+    fromRedactedCoreMessages,
+    PrivacyCapability,
+    maxEmptyResponseRetriesPerTurn = MAX_EMPTY_RESPONSE_RETRIES_PER_TURN,
+    maxOutputTokenRetriesPerStep = MAX_OUTPUT_TOKEN_RETRIES_PER_STEP,
+  } = {},
+) {
   if (typeof ActionHandler !== 'function' || typeof ActionHandler.prototype?.runStep !== 'function') {
     throw new TypeError('Missing Engine dependency: AbstractUserMessageActionHandler.runStep');
   }
+  if (typeof ActionHandler.prototype?.runModelOnlyStep !== 'function') {
+    throw new TypeError('Missing Engine dependency: AbstractUserMessageActionHandler.runModelOnlyStep');
+  }
+  if (typeof ActionHandler.prototype?.runWithMaxTokensRetry !== 'function') {
+    throw new TypeError('Missing Engine dependency: AbstractUserMessageActionHandler.runWithMaxTokensRetry');
+  }
   if (ActionHandler[ACTION_HANDLER_WRAPPED]) return ActionHandler;
 
-  const unwrapMessages = raw => {
-    if (!Array.isArray(raw)) return [];
+  const readTrailingExecutorMessages = rootPromptExecutor => {
+    if (typeof rootPromptExecutor?.innerToolExecutor?.getMessages === 'function') {
+      const plain = rootPromptExecutor.innerToolExecutor.getMessages();
+      return Array.isArray(plain) ? plain : [];
+    }
+    const raw = typeof rootPromptExecutor?.getMessages === 'function' ? rootPromptExecutor.getMessages() : undefined;
+    if (!Array.isArray(raw) || raw.length === 0) return [];
+
+    // Find only the trailing tool/reminder slice so we avoid unwrapping the full history on every step.
+    let tailStart = raw.length;
+    for (let index = raw.length - 1; index >= 0; index--) {
+      const role = raw[index]?.role;
+      if (role === 'assistant' || role === 'system') break;
+      tailStart = index;
+    }
+    const tail = raw.slice(tailStart);
+    if (tail.length === 0) return [];
     if (typeof fromRedactedCoreMessages === 'function' && PrivacyCapability?.UNSAFE_ALWAYS_ALLOWED !== undefined) {
       try {
-        return fromRedactedCoreMessages(raw, PrivacyCapability.UNSAFE_ALWAYS_ALLOWED);
+        return fromRedactedCoreMessages(tail, PrivacyCapability.UNSAFE_ALWAYS_ALLOWED);
       } catch {
-        return raw;
+        return tail;
       }
     }
-    return raw;
+    return tail;
   };
 
   const wrapStepMethod = methodName => {
     const originalMethod = ActionHandler.prototype[methodName];
-    if (typeof originalMethod !== 'function') return;
     ActionHandler.prototype[methodName] = async function wrappedStepMethod(
       parentCtx,
       turn,
       rootPromptExecutor,
       ...rest
     ) {
-      const executorMessages = typeof rootPromptExecutor?.getMessages === 'function'
-        ? unwrapMessages(rootPromptExecutor.getMessages())
-        : [];
       const maskDeliveryForStep =
         turn != null &&
         typeof turn.hasSendMessageCall === 'function' &&
-        hasTrailingNonDeliveryToolResult(executorMessages);
+        turn.hasSendMessageCall() === true &&
+        hasTrailingNonDeliveryToolResult(readTrailingExecutorMessages(rootPromptExecutor));
       if (!maskDeliveryForStep) {
         return originalMethod.call(this, parentCtx, turn, rootPromptExecutor, ...rest);
       }
@@ -399,6 +537,51 @@ export function wrapActionHandler(ActionHandler, { fromRedactedCoreMessages, Pri
         }
       }
     };
+  };
+
+  const originalRunWithMaxTokensRetry = ActionHandler.prototype.runWithMaxTokensRetry;
+  ActionHandler.prototype.runWithMaxTokensRetry = async function wrappedRunWithMaxTokensRetry(
+    parentCtx,
+    rootPromptExecutor,
+    fn,
+    emptyResponseRetryTurnBudget,
+  ) {
+    let lastOutputTokenError;
+    try {
+      return await originalRunWithMaxTokensRetry.call(
+        this,
+        parentCtx,
+        rootPromptExecutor,
+        async (retryCtx, debug) => {
+          const budgetUsed =
+            debug?.emptyResponseRetryTurnBudget?.retriesUsed ??
+            emptyResponseRetryTurnBudget?.retriesUsed ??
+            0;
+          const effectiveDebug =
+            debug && typeof debug === 'object' && budgetUsed >= maxEmptyResponseRetriesPerTurn
+              ? { ...debug, didRetryAfterEmptyResponse: true }
+              : debug;
+          try {
+            return await fn(retryCtx, effectiveDebug);
+          } catch (error) {
+            if (isOutputTokensLimitExceededError(error)) {
+              lastOutputTokenError = error;
+              const usedRetries = debug?.outputTokenLimitRetryCount ?? 0;
+              if (usedRetries >= maxOutputTokenRetriesPerStep) {
+                throw createExhaustedOutputTokensError(error, maxOutputTokenRetriesPerStep);
+              }
+            }
+            throw error;
+          }
+        },
+        emptyResponseRetryTurnBudget,
+      );
+    } catch (error) {
+      if (lastOutputTokenError && error?.name === 'StepRetriesExhaustedError') {
+        throw createExhaustedOutputTokensError(lastOutputTokenError, maxOutputTokenRetriesPerStep);
+      }
+      throw error;
+    }
   };
 
   wrapStepMethod('runStep');
@@ -431,10 +614,17 @@ export function wrapRunLifecycle(RunLifecycle) {
 
 /**
  * Wrap TurnRuntime so closing-send nudges can continue across multiple tool-heavy
- * recovery steps (bounded by MAX_CLOSING_SEND_NUDGES) instead of stopping after a
- * single hidden nudge that ran further tools without calling SendToUser.
+ * recovery steps (bounded by MAX_CLOSING_SEND_NUDGES) with non-repeating nudge wording
+ * and `sand.closing_send_nudge` trace attribution on every closing nudge.
  */
-export function wrapTurnRuntime(TurnRuntime, { maxClosingSendNudges = MAX_CLOSING_SEND_NUDGES, closingPrompt = CLOSING_SEND_NUDGE_PROMPT } = {}) {
+export function wrapTurnRuntime(
+  TurnRuntime,
+  {
+    maxClosingSendNudges = MAX_CLOSING_SEND_NUDGES,
+    closingPrompt = CLOSING_SEND_NUDGE_PROMPT,
+    setTurnTraceAttributes,
+  } = {},
+) {
   if (typeof TurnRuntime !== 'function' || typeof TurnRuntime.prototype?.ensureUserReply !== 'function') {
     throw new TypeError('Missing Host execution dependency: TurnRuntime.ensureUserReply');
   }
@@ -451,9 +641,25 @@ export function wrapTurnRuntime(TurnRuntime, { maxClosingSendNudges = MAX_CLOSIN
     turn,
     onPersistableRunStarted,
   ) {
+    const nudgeRunner =
+      closingPrompt && runner && typeof runner.run === 'function'
+        ? new Proxy(runner, {
+            get(target, prop) {
+              if (prop === 'run') {
+                return (prompt, runOptions) => {
+                  const effectivePrompt = isClosingSendNudgePrompt(prompt) ? closingPrompt : prompt;
+                  return target.run(effectivePrompt, runOptions);
+                };
+              }
+              const value = Reflect.get(target, prop, target);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          })
+        : runner;
+
     const settled = await originalEnsureUserReply.call(
       this,
-      runner,
+      nudgeRunner,
       result,
       session,
       epoch,
@@ -480,6 +686,7 @@ export function wrapTurnRuntime(TurnRuntime, { maxClosingSendNudges = MAX_CLOSIN
       epoch === this.tm.sendPipeline.currentTurnEpoch(session)
     ) {
       closingNudges += 1;
+      setTurnTraceAttributes?.(turnTrace, { 'sand.closing_send_nudge': true });
       let nudged;
       try {
         nudged = await runner.run(closingPrompt, {

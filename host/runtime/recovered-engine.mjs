@@ -7,20 +7,23 @@ import {
 
 export function constructRecoveredEngine(library, directory) {
   const original = library.getEngineRecoveryBindings();
+  if (typeof original.hasProjectSendMessageReminderForCurrentRequest !== 'function') {
+    throw new TypeError('Missing Engine dependency: hasProjectSendMessageReminderForCurrentRequest');
+  }
+  if (typeof original.createProjectSendMessageVisibilityReminder !== 'function') {
+    throw new TypeError('Missing Engine dependency: createProjectSendMessageVisibilityReminder');
+  }
+  if (typeof original.fromRedactedCoreMessages !== 'function') {
+    throw new TypeError('Missing Engine dependency: fromRedactedCoreMessages');
+  }
+  if (original.PrivacyCapability?.UNSAFE_ALWAYS_ALLOWED === undefined) {
+    throw new TypeError('Missing Engine dependency: PrivacyCapability.UNSAFE_ALWAYS_ALLOWED');
+  }
   const bindings = {
     ...original,
-    ...(typeof original.hasProjectSendMessageReminderForCurrentRequest === 'function'
-      ? {
-        hasProjectSendMessageReminderForCurrentRequest: messages =>
-          hasVisibilityReminderSinceLastWork(messages, original.hasProjectSendMessageReminderForCurrentRequest),
-      }
-      : {}),
-    ...(typeof original.createProjectSendMessageVisibilityReminder === 'function'
-      ? {
-        createProjectSendMessageVisibilityReminder: () =>
-          createSendToUserVisibilityReminder(original.createProjectSendMessageVisibilityReminder),
-      }
-      : {}),
+    hasProjectSendMessageReminderForCurrentRequest: messages => hasVisibilityReminderSinceLastWork(messages),
+    createProjectSendMessageVisibilityReminder: () =>
+      createSendToUserVisibilityReminder(original.createProjectSendMessageVisibilityReminder),
   };
   return constructRecoveredModules(library.engineRecoveryPlan, bindings, directory, 'Engine', {
     overrides: {
