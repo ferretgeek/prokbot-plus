@@ -38,6 +38,7 @@ import { loadModelConfig } from '../runtime/config.mjs';
 import {
   clearObservedCache,
   contextCacheFilePath,
+  contextEntryKey,
   invalidateContextCache,
   observedCacheFilePath,
   persistObservedCeiling,
@@ -1880,4 +1881,129 @@ test('Legacy env (0 context) stays manual at runtime, manual-only Hosts skip bac
   assert.equal(isInputTokenLimitError(primaryRateErr), false);
   const status429Err = new ModelRequestError('maximum context length is 128000 tokens', { status: 429 });
   assert.equal(isInputTokenLimitError(status429Err), false);
+});
+
+test('Clear markers survive >256 models during sync without evicting earlier per-model clears, and save re-syncs after an in-flight sync', async t => {
+  const dir = await mkdtemp(join(os.tmpdir(), 'grokbot-round3-fixes-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const cachePath = contextCacheFilePath(dir);
+
+  // 1a. Clearing a single model x must survive a subsequent sync of >256 models on another provider
+  const modelX = { apiFormat: 'openai', baseUrl: 'https://other.example/v1', model: 'model-x' };
+  const obsBeforeSync = Date.now() - 10_000;
+  await persistObservedCeiling(cachePath, modelX, { contextWindowTokens: 16_384, observedAt: obsBeforeSync });
+  await clearObservedCache(cachePath, { keys: [contextEntryKey(modelX)], now: obsBeforeSync + 1_000 });
+
+  const manyModels = Array.from({ length: 300 }, (_, i) => ({
+    id: `openrouter/model-${i}`,
+    contextWindowTokens: 128_000,
+    contextSource: 'provider',
+    efforts: [],
+    source: 'manual',
+  }));
+  // Persist observed ceilings for models across the full 300-model range (indices 0, 150, 299)
+  for (const idx of [0, 150, 299]) {
+    await persistObservedCeiling(
+      cachePath,
+      { apiFormat: 'openai', baseUrl: 'https://large.example/v1', model: `openrouter/model-${idx}` },
+      { contextWindowTokens: 32_768, observedAt: obsBeforeSync },
+    );
+  }
+  await recordCatalogSync(
+    cachePath,
+    { id: 'p-large', apiFormat: 'openai', baseUrl: 'https://large.example/v1' },
+    manyModels,
+    { clearObserved: true, now: obsBeforeSync + 2_000 },
+  );
+
+  const cacheAfterLargeSync = await readContextCache(cachePath);
+  assert.ok(Object.keys(cacheAfterLargeSync.clearedObserved.keys).length >= 301, 'must retain >256 clear markers within 30-day TTL');
+  for (const idx of [0, 150, 299]) {
+    const resolved = resolveEffectiveContext(
+      { apiFormat: 'openai', baseUrl: 'https://large.example/v1', model: `openrouter/model-${idx}`, contextMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0 },
+      { cache: cacheAfterLargeSync },
+    );
+    assert.equal(resolved.contextWindowTokens, 128_000, `model-${idx} observed ceiling must remain cleared after 300-model sync`);
+    assert.equal(resolved.contextSource, 'provider');
+  }
+  const resolvedX = resolveEffectiveContext(
+    { ...modelX, contextMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0 },
+    { cache: cacheAfterLargeSync },
+  );
+  assert.equal(resolvedX.observed, undefined, 'individually cleared model-x must not resurrect after 300-model sync');
+
+  // 2. Saving a newly-auto provider while a background sync is already in flight runs a follow-up sync
+  const syncDir = join(dir, 'in-flight-resync');
+  let releaseFirstSync;
+  const firstSyncGate = new Promise(resolve => { releaseFirstSync = resolve; });
+  let firstSyncStarted;
+  const firstSyncStartedPromise = new Promise(resolve => { firstSyncStarted = resolve; });
+  const requestedHosts = [];
+  let secondSyncDone;
+  const secondSyncDonePromise = new Promise(resolve => { secondSyncDone = resolve; });
+
+  const syncModels = new Models(syncDir, {
+    autoSync: true,
+    fetchImpl: async (url) => {
+      const host = new URL(String(url)).host;
+      requestedHosts.push(host);
+      if (host === 'p1.example') {
+        firstSyncStarted();
+        await firstSyncGate;
+        return new Response(JSON.stringify({ data: [{ id: 'm1', context_window: 131_072 }] }), { status: 200 });
+      }
+      if (host === 'p2.example') {
+        secondSyncDone();
+        return new Response(JSON.stringify({ data: [{ id: 'm2', context_window: 262_144 }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ data: [] }), { status: 200 });
+    },
+  });
+  t.after(() => syncModels.close());
+
+  // Seed p1 (auto) and p2 (manual) without triggering save's autoSync first
+  syncModels.autoSync = false;
+  await syncModels.save({
+    version: 1,
+    migrateLegacyRouting: true,
+    providers: [
+      { id: 'p1', name: 'P1', apiFormat: 'openai', baseUrl: 'https://p1.example/v1', apiKey: 'sk-1' },
+      { id: 'p2', name: 'P2', apiFormat: 'openai', baseUrl: 'https://p2.example/v1', apiKey: 'sk-2' },
+    ],
+    profiles: [
+      { id: 'prof-1', name: 'Prof1', providerId: 'p1', model: 'm1', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+      { id: 'prof-2', name: 'Prof2', providerId: 'p2', model: 'm2', efforts: [], effortsMode: 'manual', contextWindowTokens: 64_000, summaryThresholdTokens: 48_000, contextMode: 'manual' },
+    ],
+    defaultRoute: { profileId: 'prof-1', effort: 'default', fallbacks: [] },
+    botRoutes: {},
+  });
+  syncModels.autoSync = true;
+
+  // Start background sync (reads old config where only p1 is auto) and pause while in flight
+  const firstSyncPromise = syncModels.syncAllProviders({ onlyAuto: true });
+  await firstSyncStartedPromise;
+
+  // Save config flipping prof-2 to auto while first sync is still in flight
+  await syncModels.save({
+    version: 1,
+    providers: [
+      { id: 'p1', name: 'P1', apiFormat: 'openai', baseUrl: 'https://p1.example/v1' },
+      { id: 'p2', name: 'P2', apiFormat: 'openai', baseUrl: 'https://p2.example/v1' },
+    ],
+    profiles: [
+      { id: 'prof-1', name: 'Prof1', providerId: 'p1', model: 'm1', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+      { id: 'prof-2', name: 'Prof2', providerId: 'p2', model: 'm2', efforts: [], effortsMode: 'auto', contextWindowTokens: 0, summaryThresholdTokens: 0, contextMode: 'auto' },
+    ],
+    defaultRoute: { profileId: 'prof-1', effort: 'default', fallbacks: [] },
+    botRoutes: {},
+  });
+
+  releaseFirstSync();
+  await firstSyncPromise;
+  await secondSyncDonePromise;
+  await syncModels.syncInFlight;
+
+  assert.equal(requestedHosts.includes('p2.example'), true, 'save during in-flight sync must trigger follow-up sync for newly auto provider');
+  const pubAfterFollowUp = await syncModels.publicConfig();
+  assert.equal(pubAfterFollowUp.profiles.find(p => p.id === 'prof-2').effectiveContext.contextWindowTokens, 262_144);
 });

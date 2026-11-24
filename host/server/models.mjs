@@ -118,6 +118,7 @@ export class Models {
     this.autoSync = Boolean(autoSync);
     this.contextCachePath = contextCacheFilePath(dataDir);
     this.syncInFlight = null;
+    this.configRevision = 0;
     this.syncAbort = new AbortController();
     this.closed = false;
     this.tail = Promise.resolve();
@@ -318,6 +319,7 @@ export class Models {
         }
       }
       await this.write(config);
+      this.configRevision++;
       const prevProvidersById = new Map((previous.routing?.providers ?? []).map(item => [item.id, item]));
       const prevProfilesById = new Map((previous.routing?.profiles ?? []).map(item => [item.id, item]));
       const providersById = new Map((config.routing?.providers ?? []).map(item => [item.id, item]));
@@ -351,7 +353,7 @@ export class Models {
       await writePrivate(join(this.dataDir, 'model-reload-request.json'), `${JSON.stringify(request)}\n`);
       if (this.autoSync) {
         const syncSettings = await this.getSyncSettings();
-        if (syncSettings.autoSync) void this.syncAllProviders({ onlyAuto: true }).catch(() => {});
+        if (syncSettings.autoSync) void this.syncAllProviders({ onlyAuto: true, resyncIfStale: true }).catch(() => {});
       }
       return this.publicConfig();
     });
@@ -509,9 +511,22 @@ export class Models {
     }
     return { models };
   }
-  async syncAllProviders({ force = false, clearObserved = false, onlyAuto = !force } = {}) {
+  async syncAllProviders({ force = false, clearObserved = false, onlyAuto = !force, resyncIfStale = false } = {}) {
     if (this.closed) return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, effortsDetected: 0, providerEfforts: 0, providers: {} };
-    if (this.syncInFlight && !force) return this.syncInFlight;
+    if (this.syncInFlight && !force) {
+      if (!resyncIfStale) return this.syncInFlight;
+      const targetRevision = this.configRevision;
+      return this.syncInFlight.catch(() => {}).then(() => {
+        if (this.closed) {
+          return { synced: 0, ok: 0, failed: 0, modelsDetected: 0, providerReported: 0, effortsDetected: 0, providerEfforts: 0, providers: {} };
+        }
+        if (this.syncInFlight && this.syncInFlight.configRevision >= targetRevision) {
+          return this.syncInFlight;
+        }
+        return this.syncAllProviders({ force, clearObserved, onlyAuto, resyncIfStale: true });
+      });
+    }
+    const startedRevision = this.configRevision;
     const run = (async () => {
       const current = await this.current();
       const autoProviderIds = onlyAuto
@@ -565,6 +580,7 @@ export class Models {
     const tracked = run.finally(() => {
       if (this.syncInFlight === tracked) this.syncInFlight = null;
     });
+    tracked.configRevision = startedRevision;
     this.syncInFlight = tracked;
     return tracked;
   }

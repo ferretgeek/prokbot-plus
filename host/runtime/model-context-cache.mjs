@@ -240,10 +240,9 @@ export function updateContextCache(filePath, mutator) {
       current.updatedAt = new Date(now).toISOString();
       current.settings = normalizeSettings(current.settings);
       current.clearedObserved = normalizeClearedObserved(current.clearedObserved);
+      const allAt = current.clearedObserved.allAt;
       const validClearedKeys = Object.entries(current.clearedObserved.keys)
-        .filter(([, ts]) => Number.isFinite(ts) && ts > 0 && now - ts < OBSERVED_PERSIST_TTL_MS)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, MAX_OBSERVED_ENTRIES);
+        .filter(([, ts]) => Number.isFinite(ts) && ts > 0 && ts > allAt && now - ts < OBSERVED_PERSIST_TTL_MS);
       current.clearedObserved.keys = Object.fromEntries(validClearedKeys);
       current.catalog = pruneMapByTimestamp(current.catalog, MAX_CATALOG_ENTRIES, 'syncedAt', 0, now, { allowEffortsOnly: true });
       return current;
