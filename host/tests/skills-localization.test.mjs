@@ -1,11 +1,11 @@
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { Skills, materializeSkills } from '../server/skills.mjs';
 import { validatePlugin, bundledSkills } from '../server/plugin-package.mjs';
-import { Connectors } from '../server/connectors.mjs';
 import { Plugins } from '../server/plugins.mjs';
 import { Sharing, localExportSkill } from '../server/sharing.mjs';
 import { provisionTeachSkill } from '../runtime/host-teach.mjs';
@@ -57,7 +57,10 @@ test('bundledSkills preserves localized skill copy alongside canonical English f
   });
 });
 
-test('Plugins sync propagates and backfills localized bundled skills without altering revisions or cache.json', async t => {
+// Connectors loads the MCP SDK from host/server/node_modules, which release packages do not include.
+const dependencies = existsSync(new URL('../server/node_modules/@modelcontextprotocol/sdk/package.json', import.meta.url));
+test('Plugins sync propagates and backfills localized bundled skills without altering revisions or cache.json', { skip: !dependencies && 'run npm ci --prefix host/server' }, async t => {
+  const { Connectors } = await import('../server/connectors.mjs');
   const dataDir = await tempDir(t);
   const hostDataDir = join(dataDir, 'host-data');
   const skills = await new Skills(dataDir, { hostDataDir }).load();
