@@ -148,7 +148,7 @@ Bot 做有风险的操作前，原版会问官方分类服务。这里改用你�
 
 - **静默工具收尾提醒**：`detectSilentToolCallEnding` 识别在最后一次成功 `SendToUser` / `SendMessage` / `ReactToMessage` 之后又执行了实质性工具调用（支持多条进度 `SendToUser`、先调工具再发进度、并行调用以及纯文本/仅思考收尾），而 `update_state`、`TodoWrite` / `todo_write` 等记账工具不计入未送达工作；`TurnRuntime.ensureUserReply` 配合不重发旧内容的收尾提示，每轮最多触发 2 次收尾提醒（含原版首轮与追加循环），并在每次收尾提醒上写入 `sand.closing_send_nudge` 追踪属性。
 - **空响应与漏发 `SendToUser` 重试**：`buildAgentForRun` 仅对普通用户回合开启 `enableEmptyResponseRetry: true`（子代理、`isSilenceAllowed` 的定时任务/后台唤醒/广播，以及群聊成员回合保持关闭，避免在允许保持静默的回合强推模型发消息）。引擎步内重试在后续实质性工具结果后不再被早前的进度 `SendToUser` 屏蔽，同时将每轮空响应/漏发 `SendToUser` 的可见性重试共同限制在最多 2 次。
-- **`length` 输出截断自动续写**：`model-errors.mjs` 将模型 `length` 截断映射为 `OutputTokensLimitExceededError`，由 `AbstractUserMessageActionHandler.runWithMaxTokensRetry` 注入提示词拆小并续写，每步最多续写 2 次；若仍截断则中止并保留原始截断错误信息，而不是覆写成笼统的 `step-retries`。
+- **`length` 输出截断自动续写**：`model-errors.mjs` 将模型 `length` 截断映射为 `OutputTokensLimitExceededError`，由 `AbstractUserMessageActionHandler.runWithMaxTokensRetry` 注入提示词拆小并续写，每步只续写一次；再次截断则以不可重试的错误中止，保留原始截断错误信息，而不是覆写成笼统的 `step-retries`，Runner 也不会重试整轮。只续写一次，是因为每次截断的部分回复都会留在历史里，第二次续写的请求会以这段 assistant 回复结尾，新版 Claude 会以「不支持 prefill」拒绝。
 - **工作中状态提示**：`RunLifecycle.beginSessionRun` 在进入运行态时立即写入 `{ kind: 'thinking' }`，且 `resolveNamedActivityHold` 在中段 `send-message` 更新时保持 `thinking`（直到 `turn-ended` 与 `endSessionRun` 清空），避免回合启动或中段进度消息后状态短暂空白。
 
 ### 执行电脑

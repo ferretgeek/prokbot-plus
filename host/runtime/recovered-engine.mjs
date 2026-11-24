@@ -19,6 +19,9 @@ export function constructRecoveredEngine(library, directory) {
   if (original.PrivacyCapability?.UNSAFE_ALWAYS_ALLOWED === undefined) {
     throw new TypeError('Missing Engine dependency: PrivacyCapability.UNSAFE_ALWAYS_ALLOWED');
   }
+  if (typeof library.NonRetriableError !== 'function') {
+    throw new TypeError('Missing Engine dependency: NonRetriableError');
+  }
   const bindings = {
     ...original,
     hasProjectSendMessageReminderForCurrentRequest: messages => hasVisibilityReminderSinceLastWork(messages),
@@ -30,6 +33,7 @@ export function constructRecoveredEngine(library, directory) {
       AbstractUserMessageActionHandler: recovered => wrapActionHandler(recovered, {
         fromRedactedCoreMessages: original.fromRedactedCoreMessages,
         PrivacyCapability: original.PrivacyCapability,
+        NonRetriableError: library.NonRetriableError,
       }),
     },
   });

@@ -22,7 +22,9 @@ export const THINKING_ACTIVITY = Object.freeze({ kind: 'thinking' });
 export const MAX_CLOSING_SEND_NUDGES = 2;
 export const MAX_EMPTY_RESPONSE_RETRIES_PER_TURN = 2;
 export const MAX_VISIBILITY_REMINDERS_PER_TURN = 2;
-export const MAX_OUTPUT_TOKEN_RETRIES_PER_STEP = 2;
+// One continuation per step: each truncated attempt stays in the history, so a second retry
+// would end with the partial assistant reply, which current Claude models reject as prefill.
+export const MAX_OUTPUT_TOKEN_RETRIES_PER_STEP = 1;
 
 export const CLOSING_SEND_NUDGE_PROMPT =
   'After your last SendToUser message, you ran additional tool calls without a follow-up SendToUser, ' +
@@ -436,16 +438,20 @@ function isOutputTokensLimitExceededError(error) {
   return Boolean(error && error.name === 'OutputTokensLimitExceededError');
 }
 
-function createExhaustedOutputTokensError(sourceError, maxRetries) {
+function createExhaustedOutputTokensError(sourceError, maxRetries, NonRetriableError) {
   const detail =
     typeof sourceError?.message === 'string' && sourceError.message.trim().length > 0
       ? sourceError.message.trim()
       : 'Model output exceeded the output token limit';
   const cause = sourceError?.cause ?? sourceError;
-  return new Error(
-    `Output exceeded max output tokens after ${maxRetries} continuation ${maxRetries === 1 ? 'retry' : 'retries'}: ${detail}`,
-    cause ? { cause } : undefined,
-  );
+  const message =
+    `Output exceeded max output tokens after ${maxRetries} continuation ${maxRetries === 1 ? 'retry' : 'retries'}: ${detail}`;
+  // The Runner retries a whole turn on any error it does not classify as terminal, and the
+  // retried turn would end with the partial reply that the provider rejects.
+  if (typeof NonRetriableError === 'function') {
+    return new NonRetriableError(message, { cause, displayInfo: { detail: message, isRetryable: false } });
+  }
+  return new Error(message, cause ? { cause } : undefined);
 }
 
 /**
@@ -461,6 +467,7 @@ export function wrapActionHandler(
   {
     fromRedactedCoreMessages,
     PrivacyCapability,
+    NonRetriableError,
     maxEmptyResponseRetriesPerTurn = MAX_EMPTY_RESPONSE_RETRIES_PER_TURN,
     maxOutputTokenRetriesPerStep = MAX_OUTPUT_TOKEN_RETRIES_PER_STEP,
   } = {},
@@ -568,7 +575,7 @@ export function wrapActionHandler(
               lastOutputTokenError = error;
               const usedRetries = debug?.outputTokenLimitRetryCount ?? 0;
               if (usedRetries >= maxOutputTokenRetriesPerStep) {
-                throw createExhaustedOutputTokensError(error, maxOutputTokenRetriesPerStep);
+                throw createExhaustedOutputTokensError(error, maxOutputTokenRetriesPerStep, NonRetriableError);
               }
             }
             throw error;
@@ -578,7 +585,7 @@ export function wrapActionHandler(
       );
     } catch (error) {
       if (lastOutputTokenError && error?.name === 'StepRetriesExhaustedError') {
-        throw createExhaustedOutputTokensError(lastOutputTokenError, maxOutputTokenRetriesPerStep);
+        throw createExhaustedOutputTokensError(lastOutputTokenError, maxOutputTokenRetriesPerStep, NonRetriableError);
       }
       throw error;
     }

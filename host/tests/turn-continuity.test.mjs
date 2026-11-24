@@ -295,12 +295,16 @@ test('wrapActionHandler avoids full-history unwrapping, bounds empty/length retr
     }
   }
 
+  class FakeNonRetriableError extends Error {
+    constructor(message, options) { super(message, { cause: options?.cause }); this.displayInfo = options?.displayInfo; }
+  }
   wrapActionHandler(FakeActionHandler, {
     fromRedactedCoreMessages: msgs => {
       unwrapCalls.push(msgs.length);
       return msgs;
     },
     PrivacyCapability: { UNSAFE_ALWAYS_ALLOWED: 'unsafe' },
+    NonRetriableError: FakeNonRetriableError,
   });
   const handler = new FakeActionHandler();
   class Turn {
@@ -357,9 +361,9 @@ test('wrapActionHandler avoids full-history unwrapping, bounds empty/length retr
   );
   assert.equal(observed.at(-1).debug.didRetryAfterEmptyResponse, true);
 
-  // OutputTokensLimitExceededError retries at most MAX_OUTPUT_TOKEN_RETRIES_PER_STEP (2) times
-  // (3 total calls in the step) and preserves the original truncation message.
-  assert.equal(MAX_OUTPUT_TOKEN_RETRIES_PER_STEP, 2);
+  // OutputTokensLimitExceededError is retried once (2 calls in the step); the next truncation
+  // stops before a request would end with the partial reply, keeping the truncation message.
+  assert.equal(MAX_OUTPUT_TOKEN_RETRIES_PER_STEP, 1);
   let truncationCalls = 0;
   await assert.rejects(
     () => handler.runWithMaxTokensRetry(
@@ -373,8 +377,12 @@ test('wrapActionHandler avoids full-history unwrapping, bounds empty/length retr
     ),
     error => {
       assert.match(error.message, /max_tokens/);
-      assert.match(error.message, /2 continuation retries/);
+      assert.match(error.message, /1 continuation retry:/);
       assert.notEqual(error.name, 'StepRetriesExhaustedError');
+      // Terminal, so the Runner does not retry the turn with the partial reply last in the history.
+      assert.ok(error instanceof FakeNonRetriableError);
+      assert.equal(error.displayInfo.isRetryable, false);
+      assert.equal(error.cause?.code, 'length');
       return true;
     },
   );
@@ -625,6 +633,17 @@ test('recovery constructors and wrappers fail fast when required anchors are mis
     /hasProjectSendMessageReminderForCurrentRequest/,
   );
   assert.throws(
+    () => constructRecoveredEngine({
+      getEngineRecoveryBindings: () => ({
+        hasProjectSendMessageReminderForCurrentRequest: () => false,
+        createProjectSendMessageVisibilityReminder: () => ({}),
+        fromRedactedCoreMessages: msgs => msgs,
+        PrivacyCapability: { UNSAFE_ALWAYS_ALLOWED: 'unsafe' },
+      }),
+    }, tmpdir()),
+    /NonRetriableError/,
+  );
+  assert.throws(
     () => constructRecoveredHarness({ getHarnessRecoveryBindings: () => ({}) }, tmpdir()),
     /AnysphereAgent/,
   );
@@ -712,6 +731,7 @@ test('recovered host-flow, engine, and harness constructors apply turn-continuit
     assert.equal(settle.buildResult().endedOnSilentToolCalls, true);
 
     const engine = await constructRecoveredEngine({
+      NonRetriableError: class extends Error {},
       engineRecoveryPlan: {
         modules: [{
           name: 'engine.mjs',
@@ -895,7 +915,8 @@ test('pinned d0a4baa Host core installs turn-continuity wrappers cleanly and han
   assert.equal(nudgeCount, MAX_CLOSING_SEND_NUDGES);
   assert.equal(settled.result.endedOnSilentToolCalls, true);
 
-  // Verify real AbstractUserMessageActionHandler.runWithMaxTokensRetry stops at MAX_OUTPUT_TOKEN_RETRIES_PER_STEP (2).
+  // Verify real AbstractUserMessageActionHandler.runWithMaxTokensRetry stops after MAX_OUTPUT_TOKEN_RETRIES_PER_STEP
+  // with an error the Runner treats as terminal.
   const { AbstractUserMessageActionHandler } = library.getEngineRecoveryBindings();
   const mapError = createHarnessModelErrorMapper(library);
   const protoHandler = Object.create(AbstractUserMessageActionHandler.prototype);
@@ -912,7 +933,7 @@ test('pinned d0a4baa Host core installs turn-continuity wrappers cleanly and han
       },
       { retriesUsed: 0 },
     ),
-    /max_tokens/,
+    error => error instanceof library.NonRetriableError && /max_tokens/.test(error.message),
   );
   assert.equal(tokenLimitAttempts, MAX_OUTPUT_TOKEN_RETRIES_PER_STEP + 1);
   assert.equal(appended.length, 1);
