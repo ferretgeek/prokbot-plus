@@ -6,10 +6,10 @@
 
 <p>
 <!-- client-badges:start -->
-  <a href="#client-versions"><img alt="Windows official 1.2.3 x64" src="https://img.shields.io/badge/Windows%20official-1.2.3%20x64-0078D4?logo=windows&logoColor=white"></a>
+  <a href="#client-versions"><img alt="Windows official 1.3.0 x64 (not supported by this patch)" src="https://img.shields.io/badge/Windows%20official-1.3.0%20x64%20(not%20supported%20by%20this%20patch)-0078D4?logo=windows&logoColor=white"></a>
   <a href="#client-versions"><img alt="Windows patch accepts 1.2.3 x64 (recommended), 1.1.0, 0.71.2" src="https://img.shields.io/badge/Windows%20patch%20accepts-1.2.3%20x64%20(recommended)%2C%201.1.0%2C%200.71.2-237E55?logo=windows&logoColor=white"></a>
-  <a href="#client-versions"><img alt="Linux official 1.2.3 x64 / ARM64" src="https://img.shields.io/badge/Linux%20official-1.2.3%20x64%20%2F%20ARM64-237E55?logo=linux&logoColor=white"></a>
-  <a href="#client-versions"><img alt="macOS official 1.2.3 ARM64 / Intel" src="https://img.shields.io/badge/macOS%20official-1.2.3%20ARM64%20%2F%20Intel-111111?logo=apple&logoColor=white"></a>
+  <a href="#client-versions"><img alt="Linux official 1.3.0 x64 / ARM64 (not supported by this patch)" src="https://img.shields.io/badge/Linux%20official-1.3.0%20x64%20%2F%20ARM64%20(not%20supported%20by%20this%20patch)-237E55?logo=linux&logoColor=white"></a>
+  <a href="#client-versions"><img alt="macOS official 1.3.0 ARM64 / Intel" src="https://img.shields.io/badge/macOS%20official-1.3.0%20ARM64%20%2F%20Intel-111111?logo=apple&logoColor=white"></a>
   <a href="#client-versions"><img alt="iOS official 1.28.0" src="https://img.shields.io/badge/iOS%20official-1.28.0-111111?logo=apple&logoColor=white"></a>
   <a href="#client-versions"><img alt="Android shell 1.1.0" src="https://img.shields.io/badge/Unofficial%20Android-1.1.0-237E55?logo=android&logoColor=white"></a>
   <a href="#client-versions"><img alt="Web client 1.1.0" src="https://img.shields.io/badge/Web%20client-1.1.0-237E55?logo=googlechrome&logoColor=white"></a>
@@ -82,10 +82,10 @@ You also need a model API with tool calling (and image input, if the Bot should 
 
 | Platform | Latest official | Version this project needs |
 | --- | --- | --- |
-| Windows x64 | [1.2.3](https://api2.cursor.sh/updates/api/download/stable/win32-x64-user/sand) | **1.2.3** (recommended); 1.1.0, 0.71.2 if it does not work |
-| Linux x64 / ARM64 | [1.2.3](https://api2.cursor.sh/updates/api/download/stable/linux-x64/sand) | 1.2.3 (.deb archive; tested on Ubuntu 22.04 x64 under WSL2; native desktops and ARM64 untested) |
-| macOS ARM64 | [1.2.3](https://api2.cursor.sh/updates/api/download/stable/darwin-arm64/sand) | 1.2.3 (not tested on a Mac) |
-| macOS Intel (x64) | [1.2.3](https://api2.cursor.sh/updates/api/download/stable/darwin-x64/sand) | 1.2.3 (tested working on an Intel Mac with 1.2.3) |
+| Windows x64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/win32-x64-user/sand) (not supported by this patch) | **1.2.3** (recommended); 1.1.0, 0.71.2 if it does not work |
+| Linux x64 / ARM64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/linux-x64/sand) (not supported by this patch) | 1.2.3 (not yet adapted to 1.3.0; .deb archive; tested on Ubuntu 22.04 x64 under WSL2; native desktops and ARM64 untested) |
+| macOS ARM64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/darwin-arm64/sand) | 1.2.3 (not yet adapted to 1.3.0; not tested on a Mac) |
+| macOS Intel (x64) | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/darwin-x64/sand) | 1.2.3 (not yet adapted to 1.3.0; tested working on an Intel Mac with 1.2.3) |
 | iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026) (not supported by this patch) | 1.27.0 (build 29519; pairing, messaging and App Intents verified on an iPad) |
 | Android 9+ (unofficial) | Does not use the official Android app | App **1.1.0** (build 10100), interface taken from the Windows **1.1.0** installer (recommended; 0.71.2 if it does not work) |
 | Web client (browser, unofficial) | Nothing to install | Interface taken from the Windows **1.1.0** installer (recommended; 0.71.2 if it does not work), built once and uploaded to your Host |

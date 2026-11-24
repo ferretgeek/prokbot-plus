@@ -6,7 +6,7 @@ Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at th
 
 ## 未发布 / Unreleased
 
-- **官方版本记录 / Official release record**：官方 iOS 已到 1.28.0（2026-11-24 上架，更新说明只写了「Bug fixes and improvements」）。首页版本表和徽章已更新。本项目仍支持 1.27.0，已经装好的客户端不受影响；Windows、Mac 和 Linux 仍是 1.2.3（2026-11-25 核对）。Official iOS is now 1.28.0 (released 2026-11-24; the release notes only say "Bug fixes and improvements"). The homepage version table and badge are updated. This project still supports 1.27.0, and installed clients are unaffected. Windows, Mac and Linux remain at 1.2.3 (checked 2026-11-25).
+- **官方版本记录 / Official release record**：官方 Windows、Mac 和 Linux 客户端已更新到 1.3.0，iOS 到 1.28.0（2026-11-25 核对；1.3.0 的官方更新说明还没发布）。首页版本表和徽章已更新。本项目仍只支持桌面 1.2.3 和 iOS 1.27.0：这两个版本的原包仍能从官方固定地址下载，生成工具照常可用，已经装好的客户端不受影响；适配 1.3.0 需要重新制作补丁。Official Windows, Mac and Linux clients are now at 1.3.0 and iOS at 1.28.0 (checked 2026-11-25; official notes for 1.3.0 are not out yet). The homepage version table and badges are updated. This project still supports desktop 1.2.3 and iOS 1.27.0: their originals still download from the official pinned addresses, the patch tools keep working, and installed clients are unaffected. Supporting 1.3.0 needs new patches.
 
 ## ProkBot Plus 1.12.0 (2026-11-24)
 

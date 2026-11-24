@@ -6,10 +6,10 @@
 
 <p>
 <!-- client-badges:start -->
-  <a href="#client-versions"><img alt="Windows 官方 1.2.3 x64" src="https://img.shields.io/badge/Windows%20%E5%AE%98%E6%96%B9-1.2.3%20x64-0078D4?logo=windows&logoColor=white"></a>
+  <a href="#client-versions"><img alt="Windows 官方 1.3.0 x64 (此补丁不支持)" src="https://img.shields.io/badge/Windows%20%E5%AE%98%E6%96%B9-1.3.0%20x64%20(%E6%AD%A4%E8%A1%A5%E4%B8%81%E4%B8%8D%E6%94%AF%E6%8C%81)-0078D4?logo=windows&logoColor=white"></a>
   <a href="#client-versions"><img alt="Windows 补丁接受 1.2.3 x64（推荐）、1.1.0、0.71.2" src="https://img.shields.io/badge/Windows%20%E8%A1%A5%E4%B8%81%E6%8E%A5%E5%8F%97-1.2.3%20x64%EF%BC%88%E6%8E%A8%E8%8D%90%EF%BC%89%E3%80%811.1.0%E3%80%810.71.2-237E55?logo=windows&logoColor=white"></a>
-  <a href="#client-versions"><img alt="Linux 官方 1.2.3 x64 / ARM64" src="https://img.shields.io/badge/Linux%20%E5%AE%98%E6%96%B9-1.2.3%20x64%20%2F%20ARM64-237E55?logo=linux&logoColor=white"></a>
-  <a href="#client-versions"><img alt="macOS 官方 1.2.3 ARM64 / Intel" src="https://img.shields.io/badge/macOS%20%E5%AE%98%E6%96%B9-1.2.3%20ARM64%20%2F%20Intel-111111?logo=apple&logoColor=white"></a>
+  <a href="#client-versions"><img alt="Linux 官方 1.3.0 x64 / ARM64 (此补丁不支持)" src="https://img.shields.io/badge/Linux%20%E5%AE%98%E6%96%B9-1.3.0%20x64%20%2F%20ARM64%20(%E6%AD%A4%E8%A1%A5%E4%B8%81%E4%B8%8D%E6%94%AF%E6%8C%81)-237E55?logo=linux&logoColor=white"></a>
+  <a href="#client-versions"><img alt="macOS 官方 1.3.0 ARM64 / Intel" src="https://img.shields.io/badge/macOS%20%E5%AE%98%E6%96%B9-1.3.0%20ARM64%20%2F%20Intel-111111?logo=apple&logoColor=white"></a>
   <a href="#client-versions"><img alt="iOS 官方 1.28.0" src="https://img.shields.io/badge/iOS%20%E5%AE%98%E6%96%B9-1.28.0-111111?logo=apple&logoColor=white"></a>
   <a href="#client-versions"><img alt="Android shell 1.1.0" src="https://img.shields.io/badge/%E8%87%AA%E5%BC%80%E5%8F%91%20Android-1.1.0-237E55?logo=android&logoColor=white"></a>
   <a href="#client-versions"><img alt="网页版 1.1.0" src="https://img.shields.io/badge/%E7%BD%91%E9%A1%B5%E7%89%88-1.1.0-237E55?logo=googlechrome&logoColor=white"></a>
@@ -82,10 +82,10 @@ Grok Bot 是 xAI 的 AI 助手应用。它的 Bot 除了聊天，还有自己的
 
 | 平台 | 官方最新版 | 本项目需要的版本 |
 | --- | --- | --- |
-| Windows x64 | [1.2.3](https://api2.cursor.sh/updates/api/download/stable/win32-x64-user/sand) | **1.2.3**（推荐）；用不了再用 1.1.0、0.71.2 |
-| Linux x64 / ARM64 | [1.2.3](https://api2.cursor.sh/updates/api/download/stable/linux-x64/sand) | 1.2.3（.deb 原包；已在 WSL2 的 Ubuntu 22.04 x64 上实测，原生桌面和 ARM64 未实测） |
-| macOS ARM64 | [1.2.3](https://api2.cursor.sh/updates/api/download/stable/darwin-arm64/sand) | 1.2.3（未在 Mac 真机上测试） |
-| macOS Intel (x64) | [1.2.3](https://api2.cursor.sh/updates/api/download/stable/darwin-x64/sand) | 1.2.3（已在 Intel Mac 上实测 1.2.3 可用） |
+| Windows x64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/win32-x64-user/sand)（此补丁不支持） | **1.2.3**（推荐）；用不了再用 1.1.0、0.71.2 |
+| Linux x64 / ARM64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/linux-x64/sand)（此补丁不支持） | 1.2.3（尚未适配 1.3.0；.deb 原包；已在 WSL2 的 Ubuntu 22.04 x64 上实测，原生桌面和 ARM64 未实测） |
+| macOS ARM64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/darwin-arm64/sand) | 1.2.3（尚未适配 1.3.0；未在 Mac 真机上测试） |
+| macOS Intel (x64) | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/darwin-x64/sand) | 1.2.3（尚未适配 1.3.0；已在 Intel Mac 上实测 1.2.3 可用） |
 | iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026)（此补丁不支持） | 1.27.0（构建 29519；已在 iPad 上验证连接、发消息和 App Intent） |
 | Android 9+（自开发，非官方） | 不用官方 Android 版 | App **1.1.0**（构建 10100），界面取自 Windows **1.1.0** 安装包（推荐；用不了再用 0.71.2） |
 | 网页版（浏览器，非官方） | 不用安装 | 界面取自 Windows **1.1.0** 安装包（推荐；用不了再用 0.71.2），生成后上传到你的 Host |
