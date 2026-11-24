@@ -19,6 +19,7 @@ static Class GBInstalledDelegate;
 static NSDictionary *GBDevicePushState;
 static NSString *GBDevicePushStateIdentity;
 static char GBOriginalSwitchTargets;
+static char GBHiddenPushEntryKey;
 static NSString *GBPushStateKey(void) {
   return [@"GrokBotLocal.pushState." stringByAppendingString:
     [NSUserDefaults.standardUserDefaults stringForKey:@"GrokBotLocal.deviceId"] ?: @"unpaired"];
@@ -365,9 +366,21 @@ static UISwitch *GBNotificationSwitch(UIView *view) {
       if ([child isKindOfClass:UISwitch.class]) { control = (UISwitch *)child; break; }
   return control;
 }
+static void GBAssociateHiddenPushEntry(UISwitch *control, GBPushEntry *entry) {
+  if (!control) return;
+  if (!entry) {
+    objc_setAssociatedObject(control, &GBHiddenPushEntryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    return;
+  }
+  NSHashTable<GBPushEntry *> *box = objc_getAssociatedObject(control, &GBHiddenPushEntryKey);
+  if (box && box.anyObject == entry) return;
+  box = [NSHashTable weakObjectsHashTable];
+  [box addObject:entry];
+  objc_setAssociatedObject(control, &GBHiddenPushEntryKey, box, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
 void GBResetPushView(UIView *view) {
   UISwitch *control = GBNotificationSwitch(view);
-  NSMapTable *targets = objc_getAssociatedObject(control, &GBOriginalSwitchTargets);
+  NSMapTable *targets = control ? objc_getAssociatedObject(control, &GBOriginalSwitchTargets) : nil;
   if (targets) {
     [control removeTarget:GBPushEntry.class action:@selector(changed:) forControlEvents:UIControlEventValueChanged];
     for (id target in targets)
@@ -375,9 +388,24 @@ void GBResetPushView(UIView *view) {
         [control addTarget:target action:NSSelectorFromString(action) forControlEvents:UIControlEventValueChanged];
     objc_setAssociatedObject(control, &GBOriginalSwitchTargets, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
   }
+  NSHashTable<GBPushEntry *> *hiddenBox = control ? objc_getAssociatedObject(control, &GBHiddenPushEntryKey) : nil;
+  if (hiddenBox) {
+    GBPushEntry *linked = hiddenBox.anyObject;
+    objc_setAssociatedObject(control, &GBHiddenPushEntryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (control.hidden) control.hidden = NO;
+    if ([linked isKindOfClass:GBPushEntry.class] && linked.originalSwitch == control) {
+      linked.originalSwitch = nil;
+      [linked removeFromSuperview];
+    }
+  }
   GBPushEntry *entry = (GBPushEntry *)[view viewWithTag:731990];
   if ([entry isKindOfClass:GBPushEntry.class]) {
-    entry.originalSwitch.hidden = NO;
+    UISwitch *orig = entry.originalSwitch;
+    if (orig) {
+      objc_setAssociatedObject(orig, &GBHiddenPushEntryKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+      if (orig.hidden) orig.hidden = NO;
+      entry.originalSwitch = nil;
+    }
     [entry removeFromSuperview];
   }
 }
@@ -395,7 +423,8 @@ BOOL GBReplacePushView(UIView *view) {
   // Scope global push replacement to the App Settings screen so per-Bot
   // "Notifications" toggles inside Bot Settings keep their native behavior.
   if (!GBIsGlobalSettingsContext(view)) {
-    if (objc_getAssociatedObject(control, &GBOriginalSwitchTargets) != nil)
+    if (objc_getAssociatedObject(control, &GBOriginalSwitchTargets) != nil ||
+        objc_getAssociatedObject(control, &GBHiddenPushEntryKey) != nil)
       GBResetPushView(view);
     return NO;
   }
@@ -445,13 +474,21 @@ BOOL GBReplacePushView(UIView *view) {
     [entry addTarget:entry action:@selector(open) forControlEvents:UIControlEventTouchUpInside];
     if (!row.userInteractionEnabled) row.userInteractionEnabled = YES;
     [row addSubview:entry];
-    GBTrackModifiedView(row);
-    GBTrackModifiedView(view);
   } else {
-    GBTrackModifiedView(row);
-    if (entry.originalSwitch != control) entry.originalSwitch = control;
+    if (entry.originalSwitch != control) {
+      UISwitch *previous = entry.originalSwitch;
+      if (previous) {
+        GBAssociateHiddenPushEntry(previous, nil);
+        if (previous.hidden) previous.hidden = NO;
+      }
+      entry.originalSwitch = control;
+    }
     if (!CGRectEqualToRect(entry.frame, rowFrame)) entry.frame = rowFrame;
   }
+  GBAssociateHiddenPushEntry(control, entry);
+  GBTrackModifiedView(row);
+  GBTrackModifiedView(view);
+  GBTrackModifiedView(control);
   if (!control.hidden) control.hidden = YES;
   if (entry.layer.zPosition != 1000) entry.layer.zPosition = 1000;
   if (row.subviews.lastObject != entry) [row bringSubviewToFront:entry];

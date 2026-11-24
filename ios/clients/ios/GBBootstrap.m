@@ -151,6 +151,12 @@ static Class GBScrollViewClass(void) {
   dispatch_once(&once, ^{ cls = NSClassFromString(@"RCTScrollViewComponentView"); });
   return cls;
 }
+static Class GBImageViewClass(void) {
+  static Class cls;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{ cls = NSClassFromString(@"RCTImageComponentView"); });
+  return cls;
+}
 static NSHashTable<UIView *> *GBModifiedViews(void) {
   static NSHashTable<UIView *> *table;
   static dispatch_once_t once;
@@ -216,27 +222,33 @@ static BOOL GBCaptureEnabled(void) {
 static BOOL GBIsPluginTag(NSInteger tag) {
   return tag >= 731988 && tag <= 731999;
 }
-static NSString *GBStripPluginLabelSuffix(NSString *label, UIView *view) {
-  if (!label.length) return label;
+static NSString *GBStripPluginLabelSuffixAtDepth(NSString *label, UIView *view, NSUInteger depth) {
+  if (!label.length || !view || depth > 8) return label;
   NSString *result = label;
   for (UIView *child in view.subviews.reverseObjectEnumerator) {
-    if (!GBIsPluginTag(child.tag)) continue;
-    NSString *candidates[2] = {
-      child.accessibilityLabel,
-      [child isKindOfClass:UIButton.class] ? [((UIButton *)child) titleForState:UIControlStateNormal] : nil
-    };
-    for (int i = 0; i < 2; i++) {
-      NSString *childLabel = [candidates[i] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-      if (!childLabel.length) continue;
-      NSString *suffix = [@", " stringByAppendingString:childLabel];
-      if (result.length > suffix.length && [result hasSuffix:suffix]) {
-        result = [[result substringToIndex:result.length - suffix.length]
-            stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-        break;
+    if (GBIsPluginTag(child.tag)) {
+      NSString *candidates[2] = {
+        child.accessibilityLabel,
+        [child isKindOfClass:UIButton.class] ? [((UIButton *)child) titleForState:UIControlStateNormal] : nil
+      };
+      for (int i = 0; i < 2; i++) {
+        NSString *childLabel = GBTrimWhitespaceIfNeeded(candidates[i]);
+        if (!childLabel.length) continue;
+        NSString *suffix = [@", " stringByAppendingString:childLabel];
+        if (result.length > suffix.length && [result hasSuffix:suffix]) {
+          result = GBTrimWhitespaceIfNeeded([result substringToIndex:result.length - suffix.length]);
+          break;
+        }
       }
+      continue;
     }
+    if (depth < 8 && child.subviews.count > 0)
+      result = GBStripPluginLabelSuffixAtDepth(result, child, depth + 1);
   }
   return result;
+}
+static NSString *GBStripPluginLabelSuffix(NSString *label, UIView *view) {
+  return GBStripPluginLabelSuffixAtDepth(label, view, 0);
 }
 static void GBClearHostSettingsIdentifier(UIView *view) {
   if ([view.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"])
@@ -266,6 +278,18 @@ static void GBRemoveDescendantPluginTagAtDepth(UIView *view, NSInteger tag, NSUI
       else if (tag == 731993) GBResetProfileView(child);
       [sub removeFromSuperview];
     }
+    if (stale.count) {
+      BOOL stillModified = [child.accessibilityIdentifier isEqualToString:@"grokbot.host.settings"];
+      if (!stillModified) {
+        for (UIView *rem in child.subviews) {
+          if (GBIsPluginTag(rem.tag)) {
+            stillModified = YES;
+            break;
+          }
+        }
+      }
+      if (!stillModified) GBUntrackModifiedView(child);
+    }
     GBRemoveDescendantPluginTagAtDepth(child, tag, depth + 1);
   }
 }
@@ -288,7 +312,7 @@ static NSSet<NSString *> *GBSettingsContextLabels(void) {
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     set = [NSSet setWithArray:@[
-      @"dev-gateway@localhost", @"dev-gateway@localhost avatar",
+      @"dev-gateway@localhost",
       @"Auto-review", @"自动审查", @"自動審查",
       @"Appearance", @"外观", @"外觀",
       @"Language", @"语言", @"語言",
@@ -300,7 +324,9 @@ static NSSet<NSString *> *GBSettingsContextLabels(void) {
 }
 static BOOL GBSubtreeContainsSettingsMarker(UIView *root, NSSet<NSString *> *markers, NSUInteger depth) {
   if (!root || root.hidden || root.alpha < 0.01 || depth > 24) return NO;
-  if (root.tag == 731993 || root.tag == 731989 || root.tag == 731999) return YES;
+  if ((root.tag == 731993 && [root isKindOfClass:UIButton.class]) ||
+      root.tag == 731989 || root.tag == 731999)
+    return YES;
   NSString *raw = nil;
   if ([root isKindOfClass:UILabel.class]) {
     raw = ((UILabel *)root).text;
@@ -327,7 +353,6 @@ BOOL GBIsGlobalSettingsContext(UIView *view) {
       break;
     }
   }
-  if (!scope) scope = view.window;
   if (!scope) return NO;
   return GBSubtreeContainsSettingsMarker(scope, GBSettingsContextLabels(), 0);
 }
@@ -435,6 +460,7 @@ static BOOL GBIsSettingsSignOutContext(UIView *view) {
   if (bounds.size.width < 8.0 || bounds.size.height < 8.0 ||
       bounds.size.height > 240.0 || childCount > 12) {
     if (tracked && (bounds.size.height > 240.0 || childCount > 12)) {
+      if (view.accessibilityIdentifier != nil) GBClearHostSettingsIdentifier(view);
       NSMutableArray<UIView *> *stale = nil;
       for (UIView *child in subviews) {
         NSInteger tag = child.tag;
@@ -468,14 +494,30 @@ static BOOL GBIsSettingsSignOutContext(UIView *view) {
   else
     rawLabel = view.accessibilityLabel;
   if (!hasPluginChild) {
-    if (rawLabel.length == 0 || rawLabel.length > 40) {
+    if (rawLabel.length == 0 || rawLabel.length > 80) {
       if (tracked && view.accessibilityIdentifier != nil) GBClearHostSettingsIdentifier(view);
       return;
     }
     NSString *fastLabel = GBTrimWhitespaceIfNeeded(rawLabel);
-    if (!fastLabel.length || ![GBAllInterestingLabels() containsObject:fastLabel]) {
-      if (tracked && view.accessibilityIdentifier != nil) GBClearHostSettingsIdentifier(view);
-      return;
+    NSSet<NSString *> *interesting = GBAllInterestingLabels();
+    if (!fastLabel.length || ![interesting containsObject:fastLabel]) {
+      NSString *recovered = nil;
+      if (fastLabel.length > 0 && GBModifiedViews().count > 0) {
+        NSRange sep = [fastLabel rangeOfString:@", "];
+        if (sep.location != NSNotFound && sep.location > 0 && sep.location <= 40) {
+          NSString *prefix = GBTrimWhitespaceIfNeeded([fastLabel substringToIndex:sep.location]);
+          if ([interesting containsObject:prefix]) {
+            NSString *stripped = GBStripPluginLabelSuffix(fastLabel, view);
+            if (![stripped isEqualToString:fastLabel] && [interesting containsObject:stripped])
+              recovered = stripped;
+          }
+        }
+      }
+      if (!recovered) {
+        if (tracked && view.accessibilityIdentifier != nil) GBClearHostSettingsIdentifier(view);
+        return;
+      }
+      fastLabel = recovered;
     }
     rawLabel = fastLabel;
   }
@@ -679,7 +721,7 @@ static BOOL GBIsSettingsSignOutContext(UIView *view) {
     }
     return;
   }
-  if ([usageLabels containsObject:label])
+  if (isFabricView && [usageLabels containsObject:label])
     GBReplaceUsageView(view);
 }
 + (void)replaceLogin:(UIView *)view {
@@ -720,12 +762,18 @@ static void GBStopForegroundTimers(void) {
   GBNetworkHealthTimer = nil;
 }
 static void GBStartForegroundTimers(void) {
-  if (!GBPresenceTimer) {
-    GBPresenceTimer = [NSTimer scheduledTimerWithTimeInterval:25 repeats:YES block:^(NSTimer *timer) {
-      if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive)
-        GBPushSetForeground(YES);
-    }];
-    GBPresenceTimer.tolerance = 5.0;
+  if (GBConnection.shared.isPaired) {
+    if (!GBPresenceTimer) {
+      GBPresenceTimer = [NSTimer scheduledTimerWithTimeInterval:25 repeats:YES block:^(NSTimer *timer) {
+        if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive &&
+            GBConnection.shared.isPaired)
+          GBPushSetForeground(YES);
+      }];
+      GBPresenceTimer.tolerance = 5.0;
+    }
+  } else if (GBPresenceTimer) {
+    [GBPresenceTimer invalidate];
+    GBPresenceTimer = nil;
   }
   if (GBNetworkEnabled()) {
     if (!GBNetworkHealthTimer) {
@@ -744,15 +792,17 @@ static void GBStartForegroundTimers(void) {
 }
 static void GBLayout(id self, SEL selector) {
   ((void (*)(id, SEL))GBOriginalLayout)(self, selector);
-  // Only inspect exact RCTViewComponentView and RCTSwitchComponentView instances.
-  // Skipping subclasses (RCTScrollViewComponentView at 120Hz during scrolling,
-  // RNSVG* avatar nodes, RCTParagraphComponentView, RCTImageComponentView, etc.)
-  // prevents O(N_bots) recursive accessibilityLabel walks on every scroll frame.
+  // Only inspect exact RCTViewComponentView, RCTSwitchComponentView, and paired
+  // RCTImageComponentView instances. Skipping RCTScrollViewComponentView at 120Hz
+  // during scrolling, RNSVG* avatar nodes, and RCTParagraphComponentView prevents
+  // O(N_bots) recursive accessibilityLabel walks on every scroll frame.
   Class cls = [self class];
   if (cls == GBFabricViewClass()) {
     [GBInterface replaceEntry:self];
   } else if (cls == GBSwitchViewClass()) {
     GBReplacePushView(self);
+  } else if (cls == GBImageViewClass() && GBConnection.shared.isPaired) {
+    GBReplaceProfileView(self);
   }
 }
 static void GBRecycle(id self, SEL selector) {
@@ -907,10 +957,7 @@ __attribute__((constructor)) static void GBInitialize(void) {
       };
       GBConnection.shared.didDisconnect = ^{
         [[GBNotifications shared] stop];
-        if (GBNetworkHealthTimer) {
-          [GBNetworkHealthTimer invalidate];
-          GBNetworkHealthTimer = nil;
-        }
+        GBStopForegroundTimers();
       };
       NSNotificationCenter *center = NSNotificationCenter.defaultCenter;
       [center addObserverForName:UIApplicationDidBecomeActiveNotification
@@ -936,15 +983,15 @@ __attribute__((constructor)) static void GBInitialize(void) {
                         [[GBNotifications shared] stop];
                         GBPushSetForeground(NO);
                       }];
-      for (NSString *name in @[@"GrokBotProfileChanged", @"GrokBotPushStateChanged"])
+      for (NSString *name in @[@"GrokBotProfileChanged", @"GrokBotPushStateChanged", @"RCTContentDidAppearNotification"])
         [center addObserverForName:name object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) { [GBInterface refresh]; }];
       if (UIApplication.sharedApplication.applicationState == UIApplicationStateActive)
         GBStartForegroundTimers();
       dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         if (restored && GBHost && !GBLoadedPairedBundle) GBReloadReactHost();
+        [GBInterface refresh];
         if (!GBStartupRefreshed) {
           GBStartupRefreshed = YES;
-          [GBInterface refresh];
           if (restored) {
             [[GBNotifications shared] start];
             GBRefreshProfile();

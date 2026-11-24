@@ -128,9 +128,17 @@ static void GBSetSocketState(id socket, NSInteger state) {
   [task receiveMessageWithCompletionHandler:^(NSURLSessionWebSocketMessage *message, NSError *error) {
     if (self.terminal) return;
     if (error) {
-      if (self.clientClosed) {
+      BOOL clientClosed = NO;
+      NSInteger closeCode = 0;
+      NSString *closeReason = nil;
+      @synchronized (self) {
+        clientClosed = self.clientClosed;
+        closeCode = self.closeCode;
+        closeReason = self.closeReason;
+      }
+      if (clientClosed) {
         BOOL clean = [error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled;
-        [self completeCloseWithCode:self.closeCode reason:self.closeReason wasClean:clean];
+        [self completeCloseWithCode:closeCode reason:closeReason wasClean:clean];
       } else {
         [self fail:error];
       }
@@ -159,18 +167,24 @@ static void GBSetSocketState(id socket, NSInteger state) {
     [[NSURLSessionWebSocketMessage alloc] initWithString:value] :
     [[NSURLSessionWebSocketMessage alloc] initWithData:value];
   [task sendMessage:message completionHandler:^(NSError *failure) {
-    if (failure && !self.clientClosed) [self fail:failure];
+    if (!failure) return;
+    BOOL clientClosed = NO;
+    @synchronized (self) { clientClosed = self.clientClosed; }
+    if (!clientClosed) [self fail:failure];
   }];
   return YES;
 }
 - (void)close:(NSInteger)code reason:(NSString *)reason {
-  if (self.terminal) return;
-  self.clientClosed = YES;
-  self.closeCode = code;
-  self.closeReason = reason;
+  NSURLSessionWebSocketTask *task = nil;
+  @synchronized (self) {
+    if (self.terminal) return;
+    self.closeCode = code;
+    self.closeReason = [reason copy];
+    self.clientClosed = YES;
+    task = self.task;
+  }
   id socket = self.socket;
   if (socket) GBSetSocketState(socket, 2);
-  NSURLSessionWebSocketTask *task = self.task;
   if (task) {
     [task cancelWithCloseCode:code reason:[reason dataUsingEncoding:NSUTF8StringEncoding]];
   } else {
@@ -183,9 +197,17 @@ static void GBSetSocketState(id socket, NSInteger state) {
   [self completeCloseWithCode:code reason:text wasClean:YES];
 }
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
-  if (self.clientClosed) {
+  BOOL clientClosed = NO;
+  NSInteger closeCode = 0;
+  NSString *closeReason = nil;
+  @synchronized (self) {
+    clientClosed = self.clientClosed;
+    closeCode = self.closeCode;
+    closeReason = self.closeReason;
+  }
+  if (clientClosed) {
     BOOL clean = !error || ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled);
-    [self completeCloseWithCode:self.closeCode reason:self.closeReason wasClean:clean];
+    [self completeCloseWithCode:closeCode reason:closeReason wasClean:clean];
     return;
   }
   if (error) [self fail:error];

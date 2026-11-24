@@ -94,7 +94,10 @@ static UIViewController *GBTop(void) {
   @synchronized (self) { return _serverURL; }
 }
 - (void)setServerURL:(NSString *)serverURL {
-  @synchronized (self) { _serverURL = [serverURL copy]; }
+  @synchronized (self) {
+    _serverURL = [serverURL copy];
+    atomic_store_explicit(&_paired, _serverURL.length > 0 && _deviceToken.length > 0, memory_order_release);
+  }
 }
 - (NSString *)deviceToken {
   @synchronized (self) { return _deviceToken; }
@@ -105,7 +108,7 @@ static UIViewController *GBTop(void) {
 - (void)setDeviceToken:(NSString *)deviceToken {
   @synchronized (self) {
     _deviceToken = [deviceToken copy];
-    atomic_store_explicit(&_paired, _deviceToken.length > 0, memory_order_release);
+    atomic_store_explicit(&_paired, _serverURL.length > 0 && _deviceToken.length > 0, memory_order_release);
   }
 }
 - (NSURL *)gatewayBundleURL {
