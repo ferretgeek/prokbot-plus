@@ -7,7 +7,7 @@
 
 static NSString *GBCurrentAgent;
 void GBObserveRequest(NSURLRequest *request) {
-  if (![request.URL.path isEqualToString:@"/api/openAgentWindowed"] || !request.HTTPBody.length)
+  if (![request.URL.path hasSuffix:@"/api/openAgentWindowed"] || !request.HTTPBody.length)
     return;
   NSDictionary *body = [NSJSONSerialization JSONObjectWithData:request.HTTPBody
                                                        options:0

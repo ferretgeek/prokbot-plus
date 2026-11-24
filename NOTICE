@@ -251,7 +251,7 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-24)
       restored hidden sibling paragraph views on recycle, limited
       GBObserveRequest JSON parsing to openAgentWindowed, verified App Intent
       keychain presence on foreground, cached GBDiagnosticsEnabled() and
-      privacy domain lists, added capped exponential backoff (3–48s) and
+      privacy domain lists, added capped exponential backoff (3–60s) and
       buffer-safe O(N) SSE parsing in GBNotifications, made direct-mode
       GBNetwork checks lock-free and off the main thread, synchronized
       cross-thread credential/protocol/voice-socket close state, and fixed

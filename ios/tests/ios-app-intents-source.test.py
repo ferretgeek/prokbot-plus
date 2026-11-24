@@ -12,6 +12,8 @@ class AppIntentsCompatibility(unittest.TestCase):
         self.assertIn('@"refreshToken": marker', source)
         self.assertIn('@"exp": @4070908800LL', source)
         self.assertIn('@"type": @"sand_mobile"', source)
+        self.assertIn('tokenStoreStatus == errSecSuccess && appIntentStatus == errSecSuccess', source)
+        self.assertIn('void GBVerifyAppIntentCredentials(void)', source)
 
     def test_embedded_bundle_validation_is_opt_in(self):
         source = (ROOT / 'clients' / 'ios' / 'GBBootstrap.m').read_text(encoding='utf-8')

@@ -311,6 +311,7 @@ static void GBShowBark(void) {
     NSString *input = weakAlert.textFields.firstObject.text;
     GBDeviceRequest(@"PUT", @{ @"push": @{ @"provider": @"bark", @"barkUrl": input ?: @"" } }, ^(NSDictionary *value, NSError *error) {
       if (!error) { [NSUserDefaults.standardUserDefaults setBool:YES forKey:GBPromptKey()]; return; }
+      if ([error.domain isEqualToString:@"GrokBotDevice"] && error.code == NSURLErrorCancelled) return;
       UIAlertController *failed = [UIAlertController alertControllerWithTitle:GBL(@"未能保存", @"Could not save")
         message:GBL(@"请检查 Bark 链接和服务端连接。", @"Check the Bark URL and Host connection.") preferredStyle:UIAlertControllerStyleAlert];
       [failed addAction:[UIAlertAction actionWithTitle:GBL(@"重试", @"Retry") style:UIAlertActionStyleDefault handler:^(UIAlertAction *a) { GBShowBark(); }]];

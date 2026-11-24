@@ -78,7 +78,7 @@ static NSDictionary *GBNetworkResult(char *raw) {
   if (!raw) return nil;
   id result = nil;
   if (raw[0] != '\0') {
-    NSData *data = [NSData dataWithBytesNoCopy:raw length:strlen(raw) freeWhenDone:NO];
+    NSData *data = [NSData dataWithBytes:raw length:strlen(raw)];
     result = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
   }
   GBTailcatFree(raw);

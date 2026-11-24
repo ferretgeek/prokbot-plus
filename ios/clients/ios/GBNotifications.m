@@ -104,13 +104,16 @@
     didReceiveData:(NSData *)data {
   if (task != self.task)
     return;
-  [self.buffer appendData:data];
-  if (self.buffer.length > 1024 * 1024) {
+  NSMutableData *buffer = self.buffer;
+  if (!buffer)
+    return;
+  [buffer appendData:data];
+  if (buffer.length > 1024 * 1024) {
     [self stop];
     return;
   }
-  const uint8_t *bytes = self.buffer.bytes;
-  NSUInteger total = self.buffer.length;
+  const uint8_t *bytes = buffer.bytes;
+  NSUInteger total = buffer.length;
   NSUInteger offset = 0;
   while (offset < total) {
     const uint8_t *nl = memchr(bytes + offset, '\n', total - offset);
@@ -127,6 +130,8 @@
       continue;
     if (!line.length) {
       [self event];
+      if (self.buffer != buffer)
+        return;
       self.eventType = nil;
       self.eventId = nil;
       [self.eventLines removeAllObjects];
@@ -141,8 +146,8 @@
       self.eventId = [[line substringFromIndex:3]
           stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
   }
-  if (offset > 0 && self.buffer)
-    [self.buffer replaceBytesInRange:NSMakeRange(0, offset) withBytes:NULL length:0];
+  if (offset > 0 && self.buffer == buffer)
+    [buffer replaceBytesInRange:NSMakeRange(0, offset) withBytes:NULL length:0];
 }
 - (void)event {
   if (![self.eventType isEqual:@"notification"] || !self.eventLines.count)
@@ -177,7 +182,7 @@
   self.session = nil;
   self.buffer = nil;
   NSUInteger generation = self.generation;
-  double delay = MIN(60.0, 3.0 * (1u << MIN(self.retryCount, 4u)));
+  double delay = MIN(60.0, 3.0 * (1u << MIN(self.retryCount, 5u)));
   if (self.retryCount < 8)
     self.retryCount++;
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),

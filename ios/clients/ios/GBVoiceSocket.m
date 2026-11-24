@@ -113,7 +113,7 @@ static void GBSetSocketState(id socket, NSInteger state) {
     didOpenWithProtocol:(NSString *)protocol {
   if (self.terminal) return;
   id socket = self.socket;
-  if (!socket) { [self finish]; return; }
+  if (!socket) { [self finish]; [task cancel]; return; }
   GBSetSocketState(socket, 1);
   GBDispatchSocket(socket, ^(id delegate) {
     SEL selector = @selector(webSocketDidOpen:);
@@ -145,8 +145,9 @@ static void GBSetSocketState(id socket, NSInteger state) {
       return;
     }
     id socket = self.socket;
+    if (!socket) { [self finish]; [task cancel]; return; }
     id value = message.type == NSURLSessionWebSocketMessageTypeString ? message.string : message.data;
-    if (socket) GBDispatchSocket(socket, ^(id delegate) {
+    GBDispatchSocket(socket, ^(id delegate) {
       SEL typed = message.type == NSURLSessionWebSocketMessageTypeString ?
         @selector(webSocket:didReceiveMessageWithString:) : @selector(webSocket:didReceiveMessageWithData:);
       SEL selector = [delegate respondsToSelector:typed] ? typed : @selector(webSocket:didReceiveMessage:);

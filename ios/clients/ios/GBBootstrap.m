@@ -342,19 +342,36 @@ static BOOL GBSubtreeContainsSettingsMarker(UIView *root, NSSet<NSString *> *mar
   }
   return NO;
 }
+static char GBSettingsContextCacheKey;
+static uint64_t GBSettingsContextEpoch = 1;
+static void GBInvalidateNegativeSettingsContextCache(void) {
+  GBSettingsContextEpoch++;
+}
 BOOL GBIsGlobalSettingsContext(UIView *view) {
   // Scope global Settings interceptions (Sign out, global Push switch) to the
   // enclosing App Settings screen so similarly labeled controls in Bot Settings
-  // or Connected Apps sub-screens cannot be hijacked.
-  UIView *scope = nil;
+  // or Connected Apps sub-screens cannot be hijacked. Cache per view controller
+  // so repeated switch/button layouts do not re-walk the VC subtree.
+  UIViewController *controller = nil;
   for (UIResponder *responder = view.nextResponder; responder; responder = responder.nextResponder) {
     if ([responder isKindOfClass:UIViewController.class]) {
-      scope = ((UIViewController *)responder).view;
+      controller = (UIViewController *)responder;
       break;
     }
   }
-  if (!scope) return NO;
-  return GBSubtreeContainsSettingsMarker(scope, GBSettingsContextLabels(), 0);
+  if (!controller || !controller.isViewLoaded || !view.window) return NO;
+  NSNumber *cached = objc_getAssociatedObject(controller, &GBSettingsContextCacheKey);
+  if (cached) {
+    uint64_t packed = cached.unsignedLongLongValue;
+    BOOL matched = (packed & 1ULL) != 0;
+    uint64_t epoch = packed >> 1;
+    if (matched || epoch == GBSettingsContextEpoch)
+      return matched;
+  }
+  BOOL matched = GBSubtreeContainsSettingsMarker(controller.view, GBSettingsContextLabels(), 0);
+  uint64_t packed = (GBSettingsContextEpoch << 1) | (matched ? 1ULL : 0ULL);
+  objc_setAssociatedObject(controller, &GBSettingsContextCacheKey, @(packed), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  return matched;
 }
 static BOOL GBIsSettingsSignOutContext(UIView *view) {
   return GBIsGlobalSettingsContext(view);
@@ -733,6 +750,7 @@ static BOOL GBIsSettingsSignOutContext(UIView *view) {
   UIWindow *window = GBWindow();
   if (!window)
     return;
+  GBInvalidateNegativeSettingsContextCache();
   [self replaceLogin:window];
 }
 
@@ -790,19 +808,62 @@ static void GBStartForegroundTimers(void) {
     GBNetworkHealthTimer = nil;
   }
 }
+typedef NS_ENUM(NSInteger, GBLayoutKind) {
+  GBLayoutKindSkip = 0,
+  GBLayoutKindEntry = 1,
+  GBLayoutKindSwitch = 2,
+  GBLayoutKindImage = 3,
+};
+static GBLayoutKind GBLayoutKindForClass(Class cls) {
+  static CFMutableDictionaryRef cache;
+  static Class scrollClass, paragraphClass, textInputClass, switchClass, imageClass;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    cache = CFDictionaryCreateMutable(NULL, 32, NULL, NULL);
+    scrollClass = GBScrollViewClass();
+    paragraphClass = NSClassFromString(@"RCTParagraphComponentView");
+    textInputClass = NSClassFromString(@"RCTTextInputComponentView");
+    switchClass = GBSwitchViewClass();
+    imageClass = GBImageViewClass();
+  });
+  const void *key = (__bridge const void *)cls;
+  const void *cached = NULL;
+  if (CFDictionaryGetValueIfPresent(cache, key, &cached))
+    return (GBLayoutKind)(intptr_t)cached;
+  GBLayoutKind kind = GBLayoutKindEntry;
+  if ((scrollClass && [cls isSubclassOfClass:scrollClass]) ||
+      (paragraphClass && [cls isSubclassOfClass:paragraphClass]) ||
+      (textInputClass && [cls isSubclassOfClass:textInputClass]) ||
+      [cls isSubclassOfClass:UIScrollView.class]) {
+    kind = GBLayoutKindSkip;
+  } else if (switchClass && [cls isSubclassOfClass:switchClass]) {
+    kind = GBLayoutKindSwitch;
+  } else if (imageClass && [cls isSubclassOfClass:imageClass]) {
+    kind = GBLayoutKindImage;
+  } else if ([NSStringFromClass(cls) hasPrefix:@"RNSVG"]) {
+    kind = GBLayoutKindSkip;
+  }
+  CFDictionarySetValue(cache, key, (const void *)(intptr_t)kind);
+  return kind;
+}
 static void GBLayout(id self, SEL selector) {
   ((void (*)(id, SEL))GBOriginalLayout)(self, selector);
-  // Only inspect exact RCTViewComponentView, RCTSwitchComponentView, and paired
-  // RCTImageComponentView instances. Skipping RCTScrollViewComponentView at 120Hz
-  // during scrolling, RNSVG* avatar nodes, and RCTParagraphComponentView prevents
-  // O(N_bots) recursive accessibilityLabel walks on every scroll frame.
-  Class cls = [self class];
-  if (cls == GBFabricViewClass()) {
-    [GBInterface replaceEntry:self];
-  } else if (cls == GBSwitchViewClass()) {
-    GBReplacePushView(self);
-  } else if (cls == GBImageViewClass() && GBConnection.shared.isPaired) {
-    GBReplaceProfileView(self);
+  // Skip known expensive non-target Fabric subclasses (scroll views at 120Hz,
+  // text paragraphs, text inputs, RNSVG* avatar nodes) while still handling
+  // RCTViewComponentView and custom button/row subclasses on cold screen entry.
+  switch (GBLayoutKindForClass([self class])) {
+    case GBLayoutKindSkip:
+      break;
+    case GBLayoutKindEntry:
+      [GBInterface replaceEntry:self];
+      break;
+    case GBLayoutKindSwitch:
+      GBReplacePushView(self);
+      break;
+    case GBLayoutKindImage:
+      if (GBConnection.shared.isPaired)
+        GBReplaceProfileView(self);
+      break;
   }
 }
 static void GBRecycle(id self, SEL selector) {
@@ -967,7 +1028,7 @@ __attribute__((constructor)) static void GBInitialize(void) {
                         GBStartupRefreshed = YES;
                         GBInstall();
                         GBEnsureNetworkReadyAsync();
-                        GBSyncAppIntentCredentials();
+                        GBVerifyAppIntentCredentials();
                         [GBInterface refresh];
                         [[GBNotifications shared] start];
                         GBPushSetForeground(YES);
