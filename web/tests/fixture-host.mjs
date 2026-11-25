@@ -3,7 +3,8 @@
 //
 //   node web/tests/fixture-host.mjs <GrokBotLocal-web-*.zip>
 //
-// Prints one JSON line {origin, control, password} and runs until stdin closes. The control
+// Prints one JSON line {origin, web, control, password} and runs until stdin closes: `origin` is the
+// main listener (admin page and apps), `web` the web client's own listener and origin. The control
 // address creates pairing codes, publishes notifications, reports what the core received and
 // replaces the demo Bots and conversation (/scene) for documentation screenshots.
 import { randomBytes } from 'node:crypto';
@@ -117,7 +118,8 @@ host = await createSelfHostServer({
 await host.auth.setup(host.auth.setupKey, PASSWORD);
 await host.webClient.install(await readFile(bundle));
 const address = await host.start(0, '127.0.0.1');
-process.stdout.write(`${JSON.stringify({ origin: `http://127.0.0.1:${address.port}`, control: `${coreUrl}/__control`, password: PASSWORD })}\n`);
+process.stdout.write(`${JSON.stringify({ origin: `http://127.0.0.1:${address.port}`,
+  web: `http://127.0.0.1:${host.webServer.address().port}`, control: `${coreUrl}/__control`, password: PASSWORD })}\n`);
 
 async function stop() {
   for (const stream of streams) stream.destroy();

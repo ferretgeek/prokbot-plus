@@ -3,10 +3,13 @@
 //
 // - The bundle contains the official interface, so every one of its files goes only to a browser
 //   that signed in with a pairing code. Nothing of it is public; the sign-in page is Host code.
-// - A signed-in browser holds an HttpOnly, SameSite=Strict cookie with its device token. The
-//   device API accepts that cookie only together with the `x-grokbot-web: 1` header, which
-//   another site cannot send without a CORS preflight the Host never grants, and only from the
-//   Host's own origin. Bundle files are plain GETs and carry Cross-Origin-Resource-Policy.
+// - The web client has a listener and origin of its own (web-routes.mjs), never the admin page's,
+//   so code from the bundle cannot use the administrator's session.
+// - A signed-in browser holds an HttpOnly, SameSite=Strict cookie with its device token. The web
+//   listener's device API accepts that cookie only together with the `x-grokbot-web: 1` header,
+//   which another site cannot send without a CORS preflight the Host never grants, and only from
+//   the web client's origin. Bundle files are plain GETs and carry Cross-Origin-Resource-Policy.
+// - The admin page signs its own browser in with a one-time ticket instead of a pairing code.
 // - Upload replaces the whole bundle at once: it is checked against its own manifest, unpacked
 //   beside the current one and swapped in by renaming.
 import { createHash, randomBytes } from 'node:crypto';
@@ -16,14 +19,15 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { gzip as gzipCallback, inflateRawSync } from 'node:zlib';
 import { JsonStore } from './storage.mjs';
-import { check, cookie } from './security.mjs';
+import { validDeviceName } from './auth.mjs';
+import { check, cookie, hash, secret } from './security.mjs';
 
 const gzip = promisify(gzipCallback);
 export const WEB_COOKIE = 'grokbot_web';
 export const BUNDLE_SCHEMA = 'grokbot-web-bundle/v1';
 export const MAX_BUNDLE_BYTES = 256 * 1024 * 1024;
 const MAX_FILES = 5000, MAX_FILE_BYTES = 64 * 1024 * 1024, MAX_TOTAL_BYTES = 512 * 1024 * 1024;
-const COOKIE_SECONDS = 400 * 24 * 60 * 60;
+const COOKIE_SECONDS = 400 * 24 * 60 * 60, TICKET_MS = 2 * 60_000, MAX_TICKETS = 32;
 // The files the web client cannot start without; the rest is whatever the interface contains.
 const REQUIRED = ['renderer/index.html', 'client/boot-data.js', 'client/compat.js', 'client/bridge.js', 'client/native.js',
   'client/web-shell.js', 'client/official-preload.js', 'client/vnc-bridge.js', 'client/vnc-preload.js', 'client/icon.png'];
@@ -121,6 +125,7 @@ export class WebClient {
     this.index = null;
     this.manifest = null;
     this.installing = Promise.resolve();
+    this.tickets = new Map();
   }
   async load() {
     await this.store.load();
@@ -222,17 +227,34 @@ export class WebClient {
     return device?.platform === 'web' ? { device, token } : null;
   }
   /**
-   * The device token for a device API request from the web client, or null when the request
-   * does not use the browser cookie. A cookie without the header or from another origin is refused.
+   * The device token for a device API request to the web listener, or null without the browser
+   * cookie. A cookie without the header or from another origin is refused.
    */
   deviceToken(request, origin) {
-    if (request.headers.authorization !== undefined) return null;
     const token = cookie(request, WEB_COOKIE);
     if (!token) return null;
     check(this.available, 403, '网页版未启用');
     check(request.headers['x-grokbot-web'] === '1', 403, '请从网页版发起请求');
     check(!request.headers.origin || request.headers.origin === origin, 403, '请求来源不匹配');
     return token;
+  }
+  /** A ticket the admin page passes to the web client's sign-in page; it works once, for two minutes. */
+  issueTicket(deviceName) {
+    validDeviceName(deviceName);
+    const now = Date.now();
+    for (const [key, item] of this.tickets) if (item.expiresAt <= now) this.tickets.delete(key);
+    check(this.tickets.size < MAX_TICKETS, 429, '请求过多，请稍后重试');
+    const ticket = secret();
+    this.tickets.set(hash(ticket), { deviceName, expiresAt: now + TICKET_MS });
+    return ticket;
+  }
+  /** Consumes a ticket and returns the device name it was issued for. */
+  redeemTicket(ticket) {
+    const key = typeof ticket === 'string' && /^[A-Za-z0-9_-]{43}$/.test(ticket) ? hash(ticket) : null;
+    const item = key && this.tickets.get(key);
+    if (item) this.tickets.delete(key);
+    check(item && item.expiresAt > Date.now(), 401, '登录链接已失效，请在管理页重新打开网页版');
+    return item.deviceName;
   }
 
   // ---- files ---------------------------------------------------------------------------------
@@ -248,6 +270,12 @@ export class WebClient {
     response.setHeader('etag', etag);
     response.setHeader('cross-origin-resource-policy', 'same-origin');
     response.setHeader('vary', 'Accept-Encoding, Cookie');
+    if (extension(name) === 'html') {
+      // The interface may frame its own pages; nothing frames the interface itself.
+      const ancestors = name === 'renderer/index.html' ? "'none'" : "'self'";
+      response.setHeader('content-security-policy', `frame-ancestors ${ancestors}; object-src 'none'; base-uri 'self'`);
+      response.setHeader('x-frame-options', name === 'renderer/index.html' ? 'DENY' : 'SAMEORIGIN');
+    }
     if (request.headers['if-none-match'] === etag) { response.writeHead(304); return response.end(); }
     const packed = item.gzip && /\bgzip\b/.test(String(request.headers['accept-encoding'] ?? ''));
     const file = join(this.root, 'current', ...name.split('/')) + (packed ? '.gz' : '');

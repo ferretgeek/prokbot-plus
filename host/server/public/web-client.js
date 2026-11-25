@@ -36,15 +36,15 @@ export function createWebClientPage({ api, toast, busy, refresh, copy }) {
     <section class="section"><div class="section-head"><h2 class="section-title">访问</h2></div><div class="card">
       <label class="row"><span class="row-copy"><span class="row-title">启用网页版</span><span class="row-hint">在任何设备的浏览器里使用 Bot，不用安装客户端；只能使用 Host 上的 Bot 电脑</span></span><input id="web-client-enabled" type="checkbox" role="switch" aria-label="启用网页版" disabled /></label>
       <div class="row"><span class="row-copy"><span class="row-title">界面包</span></span><span id="web-client-bundle" class="row-value">未上传</span></div>
-      <div class="row"><span class="row-copy"><span class="row-title">网页地址</span><span class="row-hint">在其他设备打开，输入「设备与通知」里创建的配对码登录</span></span>
+      <div class="row"><span class="row-copy"><span class="row-title">网页地址</span><span class="row-hint">在其他设备打开，输入「设备与通知」里创建的配对码登录。网页版使用单独的端口，经反向代理访问时需要为它单独配置入口</span></span>
         <span class="row-control auto"><code id="web-client-url" class="row-value" data-private></code><button id="web-client-copy" class="icon-btn" type="button" aria-label="复制网页地址">${icon('copy')}</button></span></div>
     </div><p id="web-client-insecure" class="row-hint web-client-warning" hidden>当前 Host 地址是 http。网页版可以使用，但语音输入、麦克风和浏览器通知需要 https；在公网使用时请配置 https。</p></section>
     <section class="section"><div class="section-head"><h2 class="section-title">界面包</h2></div><div class="card">
-      <div class="row"><span class="row-copy"><span class="row-title">上传界面包</span><span class="row-hint">在电脑上运行 node web/patchers/patch.mjs，生成 web/output/GrokBotLocal-web-1.1.0.zip 后上传。界面取自你自己下载的官方 Windows 安装包，只保存在这台 Host 上，未登录的访问者拿不到。</span></span>
+      <div class="row"><span class="row-copy"><span class="row-title">上传界面包</span><span class="row-hint">在电脑上运行 node web/patchers/patch.mjs，把 web/output/ 里生成的界面包上传。界面取自你自己下载的官方 Windows 安装包，只保存在这台 Host 上，未登录的访问者拿不到。</span></span>
         <span class="row-control auto"><input id="web-client-file" type="file" accept=".zip,application/zip" hidden /><button id="web-client-upload" class="btn" type="button">选择文件并上传</button></span></div>
       <div class="row"><span class="row-copy"><span class="row-title">删除界面包</span><span class="row-hint">网页版随之停用；已登录的浏览器仍列在「设备与通知」里，可在那里撤销</span></span><button id="web-client-remove" class="btn btn-danger" type="button" disabled>删除</button></div>
     </div></section>`);
-  let origin = location.origin;
+  let url = '';
 
   function render(value) {
     const toggle = $('#web-client-enabled');
@@ -54,12 +54,13 @@ export function createWebClientPage({ api, toast, busy, refresh, copy }) {
       : t('未上传');
     $('#web-client-open').disabled = !value.available;
     $('#web-client-remove').disabled = !value.installed;
-    $('#web-client-url').textContent = `${origin}/web/`;
-    const host = new URL(origin);
-    $('#web-client-insecure').hidden = host.protocol !== 'http:' || ['localhost', '127.0.0.1', '[::1]'].includes(host.hostname);
+    url = value.url;
+    $('#web-client-url').textContent = url;
+    const address = new URL(url);
+    $('#web-client-insecure').hidden = address.protocol !== 'http:' || ['localhost', '127.0.0.1', '[::1]'].includes(address.hostname);
   }
 
-  $('#web-client-copy').onclick = () => copy(`${origin}/web/`);
+  $('#web-client-copy').onclick = () => copy(url);
   $('#web-client-upload').onclick = () => $('#web-client-file').click();
   $('#web-client-file').onchange = () => {
     const file = $('#web-client-file').files[0];
@@ -88,11 +89,13 @@ export function createWebClientPage({ api, toast, busy, refresh, copy }) {
   });
   $('#web-client-open').onclick = () => {
     // Opened before the request finishes, or the browser treats the new tab as an unrequested popup.
+    // The web client runs on another origin and gets no handle back to this page.
     const opened = window.open('', '_blank');
+    if (opened) opened.opener = null;
     busy($('#web-client-open'), async () => {
       try {
-        const { url } = await api('/admin/api/web-client/open', { method: 'POST', body: { deviceName: deviceName() } });
-        if (opened) opened.location.href = url; else location.assign(url);
+        const { url: signIn } = await api('/admin/api/web-client/open', { method: 'POST', body: { deviceName: deviceName() } });
+        if (opened) opened.location.href = signIn; else location.assign(signIn);
         await refresh();
       } catch (error) { opened?.close(); toast(error.message, true); }
     });
@@ -101,7 +104,6 @@ export function createWebClientPage({ api, toast, busy, refresh, copy }) {
   return {
     async load() { render(await api('/admin/api/web-client')); },
     status(state) {
-      if (state.publicUrl) origin = state.publicUrl;
       if (state.webClient) render(state.webClient);
     },
   };

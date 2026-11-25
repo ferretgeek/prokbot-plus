@@ -3,8 +3,9 @@
 Runs the real Host service (host/server, needs `npm ci --prefix host/server`) on loopback with a
 temporary data directory and a fixture Host core (fixture-host.mjs), installs the supplied bundle and
 signs in from fresh browser contexts: Windows-sized Chromium and Firefox, Mac-sized WebKit, Android
-phone and tablet (Chromium), iPhone and iPad (WebKit). Other origins are blocked. Needs the Playwright
-Chromium, Firefox and WebKit browsers; a missing engine is reported and skipped.
+phone and tablet (Chromium), iPhone and iPad (WebKit). The web client has its own origin; only the
+admin-page check may reach the Host's main origin, and every other origin is blocked. Needs the
+Playwright Chromium, Firefox and WebKit browsers; a missing engine is reported and skipped.
 """
 import argparse
 import json
@@ -37,7 +38,10 @@ class Fixture:
         self.process = subprocess.Popen(['node', str(ROOT / 'web/tests/fixture-host.mjs'), str(bundle)], cwd=ROOT,
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         info = json.loads(self.process.stdout.readline())
-        self.origin, self.control, self.password = info['origin'], info['control'], info['password']
+        # origin: the web client's own listener; admin: the main listener with the admin page.
+        self.origin, self.admin = info['web'], info['origin']
+        self.control, self.password = info['control'], info['password']
+        assert self.origin != self.admin
         with zipfile.ZipFile(bundle) as archive:
             self.version = json.loads(archive.read('web-bundle.json'))['rendererVersion']
 
@@ -71,6 +75,7 @@ class Run:
         self.fixture, self.name, self.evidence = fixture, name, evidence
         self.context = browser.new_context(**options, locale='en-US', timezone_id='UTC', service_workers='block')
         self.errors, self.external, self.refused, self.signed_out = [], [], [], False
+        self.admin_allowed = False  # Only admin_open visits the main origin; the web client never calls it.
         self.context.add_init_script(NOTIFICATIONS)
         self.context.route('**/*', self.route)
         self.page = self.context.new_page()
@@ -83,7 +88,8 @@ class Run:
 
     def route(self, route):
         url = urlsplit(route.request.url)
-        if f'{url.scheme}://{url.netloc}' != self.fixture.origin:
+        origin = f'{url.scheme}://{url.netloc}'
+        if origin != self.fixture.origin and not (self.admin_allowed and origin == self.fixture.admin):
             self.external.append(url.netloc)
             return route.abort()
         route.continue_()
@@ -205,7 +211,8 @@ def sign_out(run):
 
 def admin_open(run):
     page, fixture = run.page, run.fixture
-    page.goto(fixture.origin + '/admin?view=web-client')
+    run.admin_allowed = True
+    page.goto(fixture.admin + '/admin?view=web-client')
     page.locator('#auth-password').fill(fixture.password)
     page.locator('#auth-password').press('Enter')
     expect(page.locator('#web-client-bundle')).to_contain_text(f'Interface {fixture.version} ')
@@ -214,13 +221,29 @@ def admin_open(run):
     with page.context.expect_page() as opened:
         page.locator('#web-client-open').click()
     tab = opened.value
-    expect(tab).to_have_url(re.compile(r'/web/renderer/index\.html$'))
+    # The one-time ticket signs this browser in on the web client's origin, not the admin page's.
+    expect(tab).to_have_url(fixture.origin + '/web/renderer/index.html')
     expect(tab.get_by_role('button', name='Demo Bot', exact=True)).to_be_visible()
+    # Code running in the interface cannot use the administrator's session: the web origin has no
+    # admin API, and the browser withholds the admin origin's responses (and refuses its preflight).
+    probe = '''async admin => {
+      const own = await fetch('/admin/api/status').then(r => r.status);
+      const read = await fetch(admin + '/admin/api/status', { credentials: 'include' }).then(r => r.status, () => 'blocked');
+      const write = await fetch(admin + '/admin/api/model', { method: 'PUT', credentials: 'include',
+        headers: { 'x-grokbot-csrf': '1', 'content-type': 'application/json' }, body: '{}' }).then(r => r.status, () => 'blocked');
+      return [own, read, write];
+    }'''
+    assert tab.evaluate(probe, fixture.admin) == [404, 'blocked', 'blocked'], run.name
     tab.close()
+    # Old links to /web/ on the main address lead to the web client's own address.
+    page.goto(fixture.admin + '/web/')
+    expect(page).to_have_url(fixture.origin + '/web/renderer/index.html')
+    page.goto(fixture.admin + '/admin?view=web-client')
     page.locator('#web-client-enabled').click()
     expect(page.locator('#web-client-open')).to_be_disabled()
     page.goto(fixture.origin + '/web/')
     expect(page.locator('#web-status')).to_contain_text('not enabled')
+    run.admin_allowed = False
     fixture.call('/web-client', {'enabled': True})
 
 

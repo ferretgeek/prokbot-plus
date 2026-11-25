@@ -69,6 +69,70 @@ class DeploymentTests(unittest.TestCase):
         self.assertIn('mybot', run.call_args.args[0]); self.assertIn(str(deploy.RELEASE / 'compose.host.yaml'), run.call_args.args[0])
         with self.assertRaisesRegex(ValueError, 'Project name conflicts'): self.invoke('--project', 'other', 'status')
 
+    def env(self):
+        return dict(line.split('=', 1) for line in (self.home / '.env').read_text().splitlines())
+
+    def test_init_gives_the_web_client_its_own_port_and_address(self):
+        created = json.loads(self.invoke('init'))
+        self.assertEqual(self.env()['GROKBOT_WEB_PUBLIC_PORT'], '18081')
+        self.assertNotIn('GROKBOT_WEB_PUBLIC_URL', self.env())
+        self.assertEqual(created['webClientUrl'], 'http://127.0.0.1:18081/web/')
+        (self.home / '.env').unlink()
+        # A second instance on another port gets the next port for its web client.
+        self.invoke('init', '--port', '18082')
+        self.assertEqual(self.env()['GROKBOT_WEB_PUBLIC_PORT'], '18083')
+        (self.home / '.env').unlink()
+        created = json.loads(self.invoke('init', '--listen', '0.0.0.0', '--public-url', 'https://bot.example.org',
+                                         '--web-public-url', 'https://web.bot.example.org/'))
+        self.assertEqual(self.env()['GROKBOT_WEB_PUBLIC_URL'], 'https://web.bot.example.org')
+        self.assertEqual(created['webClientUrl'], 'https://web.bot.example.org/web/')
+
+    def test_init_refuses_a_web_client_on_the_admin_origin(self):
+        for flags in (['--web-port', '18080'], ['--web-port', '0'], ['--port', '65535'],
+                      ['--public-url', 'https://bot.example.org', '--web-public-url', 'https://BOT.example.org:443'],
+                      ['--public-url', 'https://bot.example.org', '--web-port', '443'],
+                      ['--web-public-url', 'https://web.example.org/web']):
+            with self.subTest(flags=flags), self.assertRaises(ValueError):
+                self.invoke('init', *flags)
+        self.assertFalse((self.home / '.env').exists())
+
+    def test_web_client_address_of_an_instance_from_an_earlier_release(self):
+        # .env files written before 1.15.0 have neither web setting: the main host name with 18081.
+        (self.home / '.env').write_text('GROKBOT_LISTEN_ADDRESS=192.0.2.10\nGROKBOT_PUBLIC_PORT=18080\n'
+                                        'GROKBOT_PUBLIC_URL=http://192.0.2.10:18080\nPROKBOT_MODE=local\n')
+        with patch.dict('os.environ', {}):
+            for key in deploy.WEB_SETTINGS:
+                deploy.os.environ.pop(key, None)
+            self.assertEqual(deploy.web_client_url(deploy.instance_env(self.home)), 'http://192.0.2.10:18081/web/')
+            with contextlib.redirect_stderr(io.StringIO()) as notice:
+                deploy.web_notice(self.home)
+            self.assertIn('http://192.0.2.10:18081/web/', notice.getvalue())
+            self.assertNotIn('reverse proxy', notice.getvalue())
+            deploy.os.environ['GROKBOT_WEB_PUBLIC_URL'] = 'https://web.example.org'
+            self.assertEqual(deploy.web_client_url(deploy.instance_env(self.home)), 'https://web.example.org/web/')
+            del deploy.os.environ['GROKBOT_WEB_PUBLIC_URL']
+            (self.home / '.env').write_text('GROKBOT_PUBLIC_URL="https://bot.example.org"\n')
+            with contextlib.redirect_stderr(io.StringIO()) as notice:
+                deploy.web_notice(self.home)
+            self.assertIn('https://bot.example.org:18081/web/', notice.getvalue())
+            self.assertIn('GROKBOT_WEB_PUBLIC_URL', notice.getvalue())
+
+    def test_ports_published_by_another_instance_are_refused_before_anything_changes(self):
+        config = {'services': {'host': {'ports': [{'published': '18080', 'target': 8000},
+                                                  {'published': '18081', 'target': 8001}]}, 'box': {}}}
+        def docker(cmd, **kwargs):
+            if cmd[-3:] == ['config', '--format', 'json']:
+                return SimpleNamespace(stdout=json.dumps(config))
+            if cmd[:2] == ['docker', 'ps']:
+                return SimpleNamespace(stdout='other\n' if cmd[-1] == 'publish=18081' else 'own\n')
+            raise AssertionError(cmd)
+        with patch.object(deploy, 'run', side_effect=docker), \
+             patch.object(deploy.volume_backup, 'project_ids', return_value=['own']):
+            with self.assertRaisesRegex(ValueError, 'Port 18081 of host is already published'):
+                deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+            config['services']['host']['ports'].pop()
+            deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+
     def test_invalid_url_writes_nothing(self):
         for url in ['http://bot/path', 'http://user@bot', 'https://bot:65536', 'http://bot?key=x', 'https://bot:0']:
             with self.assertRaises(ValueError): self.invoke('init', '--public-url', url)

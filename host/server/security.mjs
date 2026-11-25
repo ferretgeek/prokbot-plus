@@ -102,6 +102,9 @@ export function sendJson(response, status, value) {
   });
   response.end(JSON.stringify(value));
 }
+/** Content Security Policy of the Host's own pages: the admin page and the web client's sign-in page. */
+export const PAGE_POLICY =
+  "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
 export function securityHeaders(response) {
   response.setHeader("x-content-type-options", "nosniff");
   response.setHeader("referrer-policy", "no-referrer");

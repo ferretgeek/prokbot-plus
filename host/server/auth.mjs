@@ -21,7 +21,7 @@ const publicDevice = ({
 }) => ({ id, name, platform, createdAt, revokedAt, lastSeenAt });
 const normalizeKey = (value) =>
   typeof value === "string" ? value.replace(/[\s-]/g, "").toUpperCase() : "";
-const validDeviceName = (value) =>
+export const validDeviceName = (value) =>
   check(
     typeof value === "string" && value.trim().length > 0 && value.length <= 80,
     400,
