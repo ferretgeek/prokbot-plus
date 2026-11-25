@@ -87,6 +87,20 @@ test('Android names its interface release and fallback; Mac and Linux note a new
   assert.ok(render(fixture,'en',data).includes('| 0.71.2 (not tested on a Mac) |'));
 });
 
+test('a Linux or Intel Mac pin newer than the last real-machine test says it is untested', async () => {
+  const data = await fixtureData();
+  data.linux = { ...data.linux, version: '1.3.0' }; data.linuxArm64 = { ...data.linuxArm64, version: '1.3.0' };
+  data.macIntel = { ...data.macIntel, version: '1.3.0' };
+  data.snap.linux = { ...data.snap.linux, version: '1.3.0' }; data.snap.mac = { ...data.snap.mac, version: '1.3.0' };
+  const zh = render(fixture,'zh',data), en = render(fixture,'en',data);
+  assert.ok(zh.includes(' | 1.3.0（.deb 原包；1.3.0 尚未实测；1.2.3 曾在 WSL2 的 Ubuntu 22.04 x64 上实测，原生桌面和 ARM64 未实测） |'));
+  assert.ok(en.includes(' | 1.3.0 (.deb archive; 1.3.0 not yet tested; 1.2.3 was tested on Ubuntu 22.04 x64 under WSL2; native desktops and ARM64 untested) |'));
+  assert.ok(zh.includes(' | 1.3.0（1.3.0 未在 Mac 真机上测试；1.2.3 曾在 Intel Mac 上实测可用） |'));
+  assert.ok(en.includes(' | 1.3.0 (1.3.0 not tested on a Mac; 1.2.3 was tested working on an Intel Mac) |'));
+  data.macIntel.version = '1.2.3';
+  assert.ok(en.includes('Intel') && render(fixture,'en',data).includes(' | 1.2.3 (tested working on an Intel Mac with 1.2.3) |'));
+});
+
 test('iOS marks a newer observed App Store release unsupported but keeps the pinned build', async () => {
   const data = await fixtureData();
   data.ios = { ...data.ios, version: '1.26.0', build: '29388' };

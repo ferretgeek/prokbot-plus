@@ -16,6 +16,8 @@ const official = {
   linuxArm64: 'https://api2.cursor.sh/updates/api/download/stable/linux-arm64/sand',
   ios: 'https://apps.apple.com/us/app/grok-bot/id6794501026',
 };
+// Releases last confirmed on real machines; a newer pin says it is untested until then.
+const tested = { linux: '1.2.3', macIntel: '1.2.3' };
 
 export async function readVersions() {
   const [snap, mac, macIntel, linux, linuxArm64, ios, android, host] = await Promise.all(['ci/official-snapshot.json',
@@ -79,6 +81,14 @@ export function render(text, lang, data) {
     ` (recommended; ${list(androidFallback)} if it does not work)`) : '';
   const macNote = snap.mac.version === mac.version ? '' : zh ? `尚未适配 ${snap.mac.version}；` : `not yet adapted to ${snap.mac.version}; `;
   const linuxVersionNote = snap.linux.version === linux.version ? '' : zh ? `尚未适配 ${snap.linux.version}；` : `not yet adapted to ${snap.linux.version}; `;
+  const linuxTested = linux.version === tested.linux
+    ? (zh ? '已在 WSL2 的 Ubuntu 22.04 x64 上实测，原生桌面和 ARM64 未实测' : 'tested on Ubuntu 22.04 x64 under WSL2; native desktops and ARM64 untested')
+    : (zh ? `${linux.version} 尚未实测；${tested.linux} 曾在 WSL2 的 Ubuntu 22.04 x64 上实测，原生桌面和 ARM64 未实测`
+      : `${linux.version} not yet tested; ${tested.linux} was tested on Ubuntu 22.04 x64 under WSL2; native desktops and ARM64 untested`);
+  const macIntelTested = macIntel.version === tested.macIntel
+    ? (zh ? `已在 Intel Mac 上实测 ${tested.macIntel} 可用` : `tested working on an Intel Mac with ${tested.macIntel}`)
+    : (zh ? `${macIntel.version} 未在 Mac 真机上测试；${tested.macIntel} 曾在 Intel Mac 上实测可用`
+      : `${macIntel.version} not tested on a Mac; ${tested.macIntel} was tested working on an Intel Mac`);
   const badges = [windowsBadge(`Windows ${label}`,`${snap.windows.version} x64${note ? ` (${note})` : ''}`,'0078D4'),
     windowsBadge(zh ? 'Windows 补丁接受' : 'Windows patch accepts',accepted,'237E55'),
     badge(`Linux ${label}`,`${snap.linux.version} x64 / ARM64${linuxNote ? ` (${linuxNote})` : ''}`,`Linux ${label} ${snap.linux.version} x64 / ARM64${linuxNote ? ` (${linuxNote})` : ''}`,'linux','237E55'),
@@ -92,9 +102,9 @@ export function render(text, lang, data) {
     zh ? '| 平台 | 官方最新版 | 本项目需要的版本 |' : '| Platform | Latest official | Version this project needs |',
     '| --- | --- | --- |',
     `| Windows x64 | [${snap.windows.version}](${official.win})${note ? (zh ? `（${note}）` : ` (${note})`) : ''} | ${windowsNeeds} |`,
-    `| Linux x64 / ARM64 | [${snap.linux.version}](${official.linux})${linuxNote ? (zh ? `（${linuxNote}）` : ` (${linuxNote})`) : ''} | ${linux.version}${linuxArm64.version === linux.version ? '' : ` / ${linuxArm64.version}`}${zh ? `（${linuxVersionNote}.deb 原包；已在 WSL2 的 Ubuntu 22.04 x64 上实测，原生桌面和 ARM64 未实测）` : ` (${linuxVersionNote}.deb archive; tested on Ubuntu 22.04 x64 under WSL2; native desktops and ARM64 untested)`} |`,
+    `| Linux x64 / ARM64 | [${snap.linux.version}](${official.linux})${linuxNote ? (zh ? `（${linuxNote}）` : ` (${linuxNote})`) : ''} | ${linux.version}${linuxArm64.version === linux.version ? '' : ` / ${linuxArm64.version}`}${zh ? `（${linuxVersionNote}.deb 原包；${linuxTested}）` : ` (${linuxVersionNote}.deb archive; ${linuxTested})`} |`,
     `| macOS ARM64 | [${snap.mac.version}](${official.mac}) | ${mac.version}${zh ? `（${macNote}未在 Mac 真机上测试）` : ` (${macNote}not tested on a Mac)`} |`,
-    `| macOS Intel (x64) | [${snap.mac.version}](${official.macIntel}) | ${macIntel.version}${zh ? `（${macNote}已在 Intel Mac 上实测 1.2.3 可用）` : ` (${macNote}tested working on an Intel Mac with 1.2.3)`} |`,
+    `| macOS Intel (x64) | [${snap.mac.version}](${official.macIntel}) | ${macIntel.version}${zh ? `（${macNote}${macIntelTested}）` : ` (${macNote}${macIntelTested})`} |`,
     `| iOS | [${snap.ios.version}](${official.ios})${iosUnsupported ? (zh ? `（${iosUnsupported}）` : ` (${iosUnsupported})`) : ''} | ${ios.version}${zh ? `（构建 ${ios.build}；已在 iPad 上验证连接、发消息和 App Intent）` : ` (build ${ios.build}; pairing, messaging and App Intents verified on an iPad)`} |`,
     zh ? `| Android 9+（自开发，非官方） | 不用官方 Android 版 | App **${android.shell.versionName}**（构建 ${android.shell.versionCode}），界面取自 Windows **${android.desktopVersion}** 安装包${androidNeeds} |` :
       `| Android 9+ (unofficial) | Does not use the official Android app | App **${android.shell.versionName}** (build ${android.shell.versionCode}), interface taken from the Windows **${android.desktopVersion}** installer${androidNeeds} |`,

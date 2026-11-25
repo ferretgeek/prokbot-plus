@@ -2,7 +2,7 @@
 
 [简体中文](README.md)
 
-Patches the official Grok Bot 1.2.3 Linux desktop client (`x64` and `arm64`) to connect to your own Host, producing a portable folder, a `.tar.gz` archive and a per-user install script (no root required, works across distributions). Requires Node.js 22.12+ and `tar` with xz support (`xz-utils`).
+Patches the official Grok Bot 1.3.0 Linux desktop client (`x64` and `arm64`) to connect to your own Host, producing a portable folder, a `.tar.gz` archive and a per-user install script (no root required, works across distributions). Requires Node.js 22.12+ and `tar` with xz support (`xz-utils`).
 
 See the [deployment guide](../docs/AI-INSTALL.en.md#client-packages) for setup and the [technical documentation](../docs/ARCHITECTURE.en.md#linux-client) for internals.
 
@@ -14,12 +14,12 @@ From the repository root (or the extracted Linux release package):
 node linux/patchers/desktop/patch.mjs
 ```
 
-- Without `--source`, the tool downloads and verifies the pinned official 1.2.3 `.deb` archive; without `--arch`, it picks `x64` or `arm64` from the `.deb` size or the host CPU (`--arch x64` / `--arch arm64` overrides).
-- If you already have the official `.deb` or an extracted app directory, pass `--source /path/to/grok-bot_1.2.3_amd64.deb`.
+- Without `--source`, the tool downloads and verifies the pinned official 1.3.0 `.deb` archive; without `--arch`, it picks `x64` or `arm64` from the `.deb` size or the host CPU (`--arch x64` / `--arch arm64` overrides).
+- If you already have the official `.deb` or an extracted app directory, pass `--source /path/to/grok-bot_1.3.0_amd64.deb`.
 - Default output in `linux/output/`:
   - `grokbot-local/`: portable directory (run `./grokbot-local` directly);
-  - `GrokBotLocal-1.2.3-<arch>-linux.tar.gz`: portable archive for copying to a Linux desktop (skip with `--no-archive`);
-  - `GrokBotLocal-1.2.3-<arch>.patch.json`: build verification manifest.
+  - `GrokBotLocal-1.3.0-<arch>-linux.tar.gz`: portable archive for copying to a Linux desktop (skip with `--no-archive`);
+  - `GrokBotLocal-1.3.0-<arch>.patch.json`: build verification manifest.
 - `--verify-only` verifies the pinned original and replays the recipes in a temporary directory without writing output; it also runs on Windows. See the [version table](../README.en.md#client-versions) for accepted inputs and the latest official releases.
 
 ## Install and run
@@ -44,7 +44,7 @@ On first launch, enter your Host address and a 6-character pairing code. Turn on
   As a temporary fallback without sandboxing, launch with `GROKBOT_NO_SANDBOX=1 grokbot-local`.
 - **Credential storage**: uses the desktop keyring (GNOME Keyring / KWallet) when running; on minimal window managers without a Secret Service daemon, matches the official Linux client by opting into Electron's `basic_text` backend (still stored `0600` inside a `0700` directory).
 - **Capabilities and limits**: supports built-in Tailcat networking, local command and file execution (with approvals), local Codex CLI delegation and desktop notifications; like Windows, local mouse/keyboard GUI control is unavailable. Uses its own profile directory and `grokbot-local://` scheme so it can coexist with the official client. Local commands and Codex need a 1.10.0 or later Host.
-- **Tested so far**: on Ubuntu 22.04 x64 under WSL2 (WSLg): building, launch, pairing, chat, local commands with approval, restoring after a restart, and the install and uninstall scripts. Native GNOME / KDE desktops, Wayland, Tailcat, the tray, ARM64 and the AppArmor script on Ubuntu 24.04 are untested; please open an issue if something breaks.
+- **Tested so far**: the previous 1.2.3 was tested on Ubuntu 22.04 x64 under WSL2 (WSLg): building, launch, pairing, chat, local commands with approval, restoring after a restart, and the install and uninstall scripts. 1.3.0 has only passed the offline recipe replay and is not tested yet. Native GNOME / KDE desktops, Wayland, Tailcat, the tray, ARM64 and the AppArmor script on Ubuntu 24.04 are untested too; please open an issue if something breaks. If you still need 1.2.3, build it with the **v1.14.0** Linux release package.
 
 ## Maintenance and tests
 

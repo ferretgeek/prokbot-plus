@@ -4,6 +4,15 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## 未发布 / Unreleased
+
+桌面客户端适配官方 1.3.0（Windows x64、macOS Apple 芯片与 Intel、Linux x64 与 ARM64）。要用 1.3.0，用新的 Windows、Mac 或 Linux 包重新生成客户端；Host、iOS、Android 和网页版不变。1.3.0 目前只通过了离线的补丁回放和生成校验，还没有在真机上运行过。Desktop clients now support the official 1.3.0 (Windows x64, macOS Apple Silicon and Intel, Linux x64 and ARM64). To use 1.3.0, rebuild the client with the new Windows, Mac or Linux package; the Host, iOS, Android and the web client are unchanged. So far 1.3.0 has passed only the offline recipe replay and build checks and has not been run on a real machine.
+
+- **固定版本 / Pinned versions**：Windows 默认用 1.3.0，可用 `--version 1.2.3`、`1.1.0` 或 `0.71.2` 回退（1.2.3 的输入和 recipe 移到 `windows/patchers/desktop/1.2.3/`）。Mac 和 Linux 每种架构只固定一个版本，仍需 1.2.3 时用 v1.14.0 的 Mac 或 Linux 发布包。Windows builds 1.3.0 by default, with `--version 1.2.3`, `1.1.0` or `0.71.2` as fallbacks (the 1.2.3 inputs and recipes moved to `windows/patchers/desktop/1.2.3/`). Mac and Linux pin one version per architecture; for 1.2.3, use the v1.14.0 Mac or Linux release package.
+- **recipe / Recipes**：五个平台的修改都重新锚定到 1.3.0 的模块上，行为与 1.2.3 相同（资料库上传、分享链接、设置页的账户与连接区块、经 Host 的语音等）；1.3.0 的设置页去掉了单独的安全密钥代理区块，通知策略与 1.2.3 一致。Every edit for the five targets is re-anchored on the 1.3.0 modules with the same behavior as in 1.2.3 (library uploads, share links, the account and connection sections in settings, voice through the Host and so on); the 1.3.0 settings page drops the separate security-key proxy section, and the notification policy matches 1.2.3.
+- **新增接口 / New interfaces**：一条消息里的多个附件可以一次下载到选定的文件夹，不覆盖已有文件，重名时存为「名称 (2).扩展名」。1.3.0 新增的 Bot 页面、Bot 技能、团队预览和插件连接等读取返回官方在云端没有数据时的空值；需要云端账户的新操作（加到 X、上传插件包、自动化购买等）仍不可用。Several attachments of a message can be downloaded at once into a chosen folder without replacing files; duplicates are saved as "name (2).ext". The Bot page, Bot skills, team preview and plugin connection reads that 1.3.0 adds return the official empty answers; new actions that need a cloud account (adding to X, uploading plugin archives, automation purchases and similar) remain unavailable.
+- **首页版本表 / Homepage version table**：版本表和徽章改为 1.3.0；比最后一次真机实测更新的 Linux 和 Intel Mac 固定版本标为未实测。The version table and badges show 1.3.0; Linux and Intel Mac pins newer than the last real-machine test are marked untested.
+
 ## ProkBot Plus 1.14.0 (2026-11-25)
 
 iOS 注入库的发热、列表滑动掉帧、覆盖层和线程安全修复，由 @jun9100 贡献（[#15](https://github.com/ferretgeek/prokbot-plus/pull/15)），作者已在 iPhone 15 Pro Max 上实测。只有 iOS 客户端有变化，用新的 iOS 包重新生成 IPA 即可；Host 和其他客户端不变。Fixes for iOS injection library heat, scroll jank, overlays and thread safety, contributed by @jun9100 (#15) and tested by the author on an iPhone 15 Pro Max. Only the iOS client changes: rebuild the IPA with the new iOS package; the Host and other clients are unchanged.
