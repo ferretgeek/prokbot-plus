@@ -52,6 +52,21 @@ test('an exhausted primary does not retry a fallback sharing its API key', async
   assert.equal(JSON.stringify(fallbacks).includes('primary-key'), false);
 });
 
+test('an exhausted fallback still leaves a later fallback with its own key', async () => {
+  const requests = [];
+  const model = session(async (url, options) => {
+    requests.push(JSON.parse(options.body).model);
+    return requests.length === 1 ? failure(503) : requests.length === 2 ? failure(402, 'Insufficient balance') : done('recovered');
+  }, () => ({ model: 'primary', fallbacks: [
+    { baseUrl: 'https://primary.example/v1', apiKey: 'primary-key', apiFormat: 'openai', model: 'same-key' },
+    { baseUrl: 'https://other.example/v1', apiKey: 'other-key', apiFormat: 'openai', model: 'other-key-model' },
+  ] }));
+  const result = model.getExecutor([{ role: 'user', content: 'hello' }]).stream({}, 'test', []);
+  const parts = await Array.fromAsync(result.fullStream);
+  assert.deepEqual(parts.filter(part => part.type === 'text-delta').map(part => part.textDelta), ['recovered']);
+  assert.deepEqual(requests, ['primary', 'same-key', 'other-key-model']);
+});
+
 test('a transient primary failure retries a fallback sharing its API key', async () => {
   const requests = [];
   const model = session(async (url, options) => {

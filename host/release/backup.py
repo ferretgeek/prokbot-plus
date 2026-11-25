@@ -237,7 +237,7 @@ def _data_source_tree(source, tree):
     return path.is_absolute() and path.parts[-len(expected.parts):] == expected.parts
 
 
-def _validate_box_data_mounts(c, project, *, host_data):
+def _validate_box_data_mounts(c, project, *, host_data, legacy_writable=False):
     subpaths = {}
     for item in c['SubpathMounts']:
         target, source, subpath = item.get('Target'), item.get('Source'), item.get('Subpath')
@@ -271,8 +271,11 @@ def _validate_box_data_mounts(c, project, *, host_data):
     identities = {}
     for target, tree in BOX_DATA_TARGETS.items():
         mount = by_target[target]
-        if mount.get('RW') is not True:
-            raise ValueError(f'Box Host-data mount at {target} is not writable.')
+        # The Bot only reads these trees; a writable mount would let it forge Host records.
+        # ProkBot Plus 1.7.0-1.14.0 mounted them writable. Such a container may still be inspected,
+        # stopped and backed up (legacy_writable), so that an update can replace it read-only.
+        if mount.get('RW') is not False and not (legacy_writable and mount.get('RW') is True):
+            raise ValueError(f'Box Host-data mount at {target} is writable; it must be read-only.')
         if mount.get('Type') == 'volume':
             source = project+'_host-data'
             expected = str(DATA_SOURCE_ROOT / tree)
@@ -295,7 +298,13 @@ def _validate_box_data_mounts(c, project, *, host_data):
                     raise ValueError(f'Box exposes different sources for Host-data tree {tree}.')
 
 
-def project_services(project, services, *, host_data=None):
+def writable_box_data(containers):
+    """True when a box container still has the writable Host-data mounts of Plus 1.7.0-1.14.0."""
+    box = containers.get('box')
+    return bool(box) and any(m.get('Destination') in BOX_DATA_TARGETS and m.get('RW') is True for m in box['Mounts'])
+
+
+def project_services(project, services, *, host_data=None, legacy_writable=False):
     result = {}
     if host_data is None:
         host_data = project+'_host-data' in project_volumes(project)
@@ -309,7 +318,7 @@ def project_services(project, services, *, host_data=None):
         if any(str(PurePosixPath(item.get('Target', ''))) in MOUNTS[service].values() for item in c['SubpathMounts']):
             raise ValueError(f'{service} uses a subdirectory instead of the managed volume root; refusing this operation.')
         if service == 'box':
-            _validate_box_data_mounts(c, project, host_data=host_data)
+            _validate_box_data_mounts(c, project, host_data=host_data, legacy_writable=legacy_writable)
         elif c['SubpathMounts']:
             raise ValueError(f'{service} has an unmanaged subdirectory mount; refusing this operation.')
         box_data = set(BOX_DATA_TARGETS) if service == 'box' else set()
@@ -358,7 +367,8 @@ def backup(project, destination, image, *, stopped=False):
     services = topology(project, volumes)
     verify_volumes(project, volumes)
     root = local_lineage(project) if 'host' in services else None
-    containers = project_services(project, services, host_data=project+'_host-data' in volumes)
+    # Backups read data only; an instance from before the read-only mounts must remain backed up.
+    containers = project_services(project, services, host_data=project+'_host-data' in volumes, legacy_writable=True)
     verify_users(volumes, containers)
     if stopped and any(c['State']['Status'] not in ('created', 'exited') for c in containers.values()):
         raise ValueError('Upgrade backup requires all project containers to remain stopped.')
@@ -379,7 +389,7 @@ def backup(project, destination, image, *, stopped=False):
                 os.fsync(target.fileno())
             path.chmod(0o600)
             records.append({'name': volume, 'suffix': volume[len(project)+1:], 'file': path.name, 'sha256': sha(path), 'bytes': path.stat().st_size})
-        current = project_services(project, services, host_data=project+'_host-data' in volumes)
+        current = project_services(project, services, host_data=project+'_host-data' in volumes, legacy_writable=True)
         expected = {c['Id']: 'paused' if c['Id'] in paused else c['State']['Status'] for c in containers.values()}
         if project_volumes(project) != volumes or {c['Id']: c['State']['Status'] for c in current.values()} != expected:
             raise ValueError('Instance changed during backup; no manifest was published.')

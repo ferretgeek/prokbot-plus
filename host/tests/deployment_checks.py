@@ -3,6 +3,8 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import re
+import socket
 import sys
 import tempfile
 import unittest
@@ -58,17 +60,118 @@ class DeploymentTests(unittest.TestCase):
             box.assert_not_called(); probe.assert_not_called()
 
     def test_init_once_and_mode(self):
-        with patch.object(deploy, 'check_runtime_versions', return_value={}):
-            self.invoke('--host-only', '--project', 'mybot', 'init', '--listen', '::1', '--public-url', 'http://[::1]:18080')
+        self.invoke('--host-only', '--project', 'mybot', 'init', '--listen', '::1', '--public-url', 'http://[::1]:18080')
         env = (self.home / '.env').read_text()
         self.assertIn('GROKBOT_LISTEN_ADDRESS=[::1]', env)
-        with patch.object(deploy, 'check_runtime_versions', return_value={}), \
-             self.assertRaisesRegex(ValueError, 'never overwrites'):
+        with self.assertRaisesRegex(ValueError, 'never overwrites'):
             self.invoke('init')
         self.assertEqual(env, (self.home / '.env').read_text())
         with patch.object(deploy, 'run') as run: self.invoke('status')
         self.assertIn('mybot', run.call_args.args[0]); self.assertIn(str(deploy.RELEASE / 'compose.host.yaml'), run.call_args.args[0])
         with self.assertRaisesRegex(ValueError, 'Project name conflicts'): self.invoke('--project', 'other', 'status')
+
+    def env(self):
+        return dict(line.split('=', 1) for line in (self.home / '.env').read_text().splitlines())
+
+    def test_init_gives_the_web_client_its_own_port_and_address(self):
+        created = json.loads(self.invoke('init'))
+        self.assertEqual(self.env()['GROKBOT_WEB_PUBLIC_PORT'], '18081')
+        self.assertNotIn('GROKBOT_WEB_PUBLIC_URL', self.env())
+        self.assertEqual(created['webClientUrl'], 'http://127.0.0.1:18081/web/')
+        (self.home / '.env').unlink()
+        # A second instance on another port gets the next port for its web client.
+        self.invoke('init', '--port', '18082')
+        self.assertEqual(self.env()['GROKBOT_WEB_PUBLIC_PORT'], '18083')
+        (self.home / '.env').unlink()
+        created = json.loads(self.invoke('init', '--listen', '0.0.0.0', '--public-url', 'https://bot.example.org',
+                                         '--web-public-url', 'https://web.bot.example.org/'))
+        self.assertEqual(self.env()['GROKBOT_WEB_PUBLIC_URL'], 'https://web.bot.example.org')
+        self.assertEqual(created['webClientUrl'], 'https://web.bot.example.org/web/')
+
+    def test_init_refuses_a_web_client_on_the_admin_origin(self):
+        for flags in (['--web-port', '18080'], ['--web-port', '0'], ['--port', '65535'],
+                      ['--public-url', 'https://bot.example.org', '--web-public-url', 'https://BOT.example.org:443'],
+                      ['--public-url', 'https://bot.example.org', '--web-port', '443'],
+                      ['--web-public-url', 'https://web.example.org/web']):
+            with self.subTest(flags=flags), self.assertRaises(ValueError):
+                self.invoke('init', *flags)
+        self.assertFalse((self.home / '.env').exists())
+
+    def test_web_client_address_of_an_instance_from_an_earlier_release(self):
+        # .env files written before 1.15.0 have neither web setting: the main host name with 18081.
+        (self.home / '.env').write_text('GROKBOT_LISTEN_ADDRESS=192.0.2.10\nGROKBOT_PUBLIC_PORT=18080\n'
+                                        'GROKBOT_PUBLIC_URL=http://192.0.2.10:18080\nPROKBOT_MODE=local\n')
+        with patch.dict('os.environ', {}):
+            for key in deploy.WEB_SETTINGS:
+                deploy.os.environ.pop(key, None)
+            self.assertEqual(deploy.web_client_url(deploy.instance_env(self.home)), 'http://192.0.2.10:18081/web/')
+            with contextlib.redirect_stderr(io.StringIO()) as notice:
+                deploy.web_notice(self.home)
+            self.assertIn('http://192.0.2.10:18081/web/', notice.getvalue())
+            self.assertNotIn('reverse proxy', notice.getvalue())
+            deploy.os.environ['GROKBOT_WEB_PUBLIC_URL'] = 'https://web.example.org'
+            self.assertEqual(deploy.web_client_url(deploy.instance_env(self.home)), 'https://web.example.org/web/')
+            del deploy.os.environ['GROKBOT_WEB_PUBLIC_URL']
+            (self.home / '.env').write_text('GROKBOT_PUBLIC_URL="https://bot.example.org"\n')
+            with contextlib.redirect_stderr(io.StringIO()) as notice:
+                deploy.web_notice(self.home)
+            self.assertIn('https://bot.example.org:18081/web/', notice.getvalue())
+            self.assertIn('GROKBOT_WEB_PUBLIC_URL', notice.getvalue())
+            deploy.check_web_address(self.home)
+            # A hand-edited web client URL equal to the admin URL is refused before an update stops anything.
+            (self.home / '.env').write_text('GROKBOT_PUBLIC_URL=https://bot.example.org\n'
+                                            "GROKBOT_WEB_PUBLIC_URL='https://BOT.example.org:443/'\n")
+            with self.assertRaisesRegex(ValueError, 'must differ from GROKBOT_PUBLIC_URL'):
+                deploy.check_web_address(self.home)
+            (self.home / '.env').write_text('GROKBOT_PUBLIC_URL=https://bot.example.org\n'
+                                            'GROKBOT_WEB_PUBLIC_URL=https://web.bot.example.org\n')
+            deploy.check_web_address(self.home)
+
+    def test_ports_published_by_another_instance_are_refused_before_anything_changes(self):
+        config = {'services': {'host': {'ports': [{'published': '18080', 'target': 8000},
+                                                  {'published': '18081', 'target': 8001}]}, 'box': {}}}
+        def docker(cmd, **kwargs):
+            if cmd[-3:] == ['config', '--format', 'json']:
+                return SimpleNamespace(stdout=json.dumps(config))
+            if cmd[:2] == ['docker', 'ps']:
+                return SimpleNamespace(stdout='other\n' if cmd[-1] == 'publish=18081' else 'own\n')
+            raise AssertionError(cmd)
+        with patch.object(deploy, 'run', side_effect=docker), \
+             patch.object(deploy.volume_backup, 'project_ids', return_value=['own']):
+            with self.assertRaisesRegex(ValueError, 'Port 18081 of host is already published'):
+                deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+            config['services']['host']['ports'].pop()
+            deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+            # An earlier instance on --port 18081 collides with the default web client port of its own.
+            config['services']['host']['ports'] = [{'published': '18081', 'target': 8000},
+                                                   {'published': '18081', 'target': 8001}]
+            with self.assertRaisesRegex(ValueError, 'Port 18081 is published twice'):
+                deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+
+    def test_a_port_held_by_a_program_outside_docker_is_refused(self):
+        # An update from before 1.15.0 adds the web client port; Compose would fail only after the old services stopped.
+        with socket.socket() as holder:
+            holder.bind(('127.0.0.1', 0))
+            holder.listen()
+            port = str(holder.getsockname()[1])
+            config = {'services': {'host': {'ports': [{'published': port, 'target': 8001, 'host_ip': '127.0.0.1'}]}}}
+            published = ''
+            def docker(cmd, **kwargs):
+                if cmd[-3:] == ['config', '--format', 'json']:
+                    return SimpleNamespace(stdout=json.dumps(config))
+                if cmd[:2] == ['docker', 'ps']:
+                    return SimpleNamespace(stdout=published)
+                raise AssertionError(cmd)
+            with patch.object(deploy, 'run', side_effect=docker), \
+                 patch.object(deploy.volume_backup, 'project_ids', return_value=['own']):
+                with self.assertRaisesRegex(ValueError, f'Port {port} of host is already in use by another program'):
+                    deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+                # The instance's own running container is what holds a port it already publishes.
+                published = 'own\n'
+                deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+                published = ''
+                holder.close()
+                deploy.check_free_ports(['docker', 'compose'], 'demo', True)
 
     def test_invalid_url_writes_nothing(self):
         for url in ['http://bot/path', 'http://user@bot', 'https://bot:65536', 'http://bot?key=x', 'https://bot:0']:
@@ -113,18 +216,27 @@ class DeploymentTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, message):
                     deploy.check_runtime_versions()
 
-    def test_init_and_update_reject_old_runtime_before_writing_or_building(self):
-        with patch.object(deploy, 'check_runtime_versions', side_effect=ValueError('runtime too old')):
-            with self.assertRaisesRegex(ValueError, 'runtime too old'):
-                self.invoke('init')
-        self.assertFalse((self.home / '.env').exists())
-
-        (self.home / '.env').write_text('PROKBOT_MODE=local\nPROKBOT_PROJECT=demo\n', encoding='utf-8')
-        with patch.object(deploy, 'check_runtime_versions', side_effect=ValueError('runtime too old')), \
-             patch.object(deploy, 'build') as build:
-            with self.assertRaisesRegex(ValueError, 'runtime too old'):
-                self.invoke('update')
-            build.assert_not_called()
+    def test_memory_overlay_is_added_only_when_docker_supports_subpath(self):
+        with patch.object(deploy, 'check_runtime_versions', side_effect=AssertionError('init needs no Docker')):
+            self.invoke('init')
+        for supported in (False, True):
+            gate = ({'return_value': {}} if supported else
+                    {'side_effect': ValueError('Docker Engine 24.0.2 is too old')})
+            for action in (['up'], ['update'], ['recover', '--directory', str(self.home)]):
+                with self.subTest(supported=supported, action=action[0]), \
+                     patch.object(deploy, 'check_runtime_versions', **gate), \
+                     patch.object(deploy, 'operate') as operate, \
+                     patch.object(deploy.volume_backup, 'project_lock', return_value=contextlib.nullcontext()), \
+                     contextlib.redirect_stderr(io.StringIO()) as notice:
+                    self.invoke(*action)
+                    dc = operate.call_args.args[2]
+                    self.assertIn(str(deploy.RELEASE / 'compose.yaml'), dc)
+                    self.assertEqual(deploy.memory_overlay(dc), supported)
+                    self.assertEqual('stays off' in notice.getvalue(), not supported)
+        with patch.object(deploy, 'check_runtime_versions') as gate, patch.object(deploy, 'run') as run:
+            self.invoke('status')
+        gate.assert_not_called()
+        self.assertFalse(deploy.memory_overlay(run.call_args.args[0]))
 
     def test_host_only_skips_subpath_runtime_gate(self):
         with patch.object(deploy, 'check_runtime_versions', side_effect=ValueError('runtime too old')) as gate:
@@ -133,16 +245,58 @@ class DeploymentTests(unittest.TestCase):
                  patch.object(deploy.volume_backup, 'project_lock', return_value=contextlib.nullcontext()):
                 self.invoke('--host-only', 'update')
             operate.assert_called_once()
+            self.assertFalse(deploy.memory_overlay(operate.call_args.args[2]))
             gate.assert_not_called()
         self.assertIn('PROKBOT_MODE=remote', (self.home / '.env').read_text())
 
 
+class ComposeFileTests(unittest.TestCase):
+    release = HOST / 'release'
+
+    def overlay_mounts(self):
+        # A reader for the block-style mount list this overlay uses; PyYAML is not a test dependency.
+        lines = deploy.MEMORY_COMPOSE.read_text(encoding='utf-8').splitlines()
+        start = lines.index('    volumes:', lines.index('  box:'))
+        mounts = []
+        for line in lines[start + 1:]:
+            if not line.strip() or line.strip().startswith('#'):
+                continue
+            if not line.startswith('      '):
+                break
+            dash, key, value = re.fullmatch(r'\s+(- )?(\w+): (.+)', line).groups()
+            if dash:
+                mounts.append({})
+            flow = re.fullmatch(r'\{ (\w+): (\S+) \}', value)
+            mounts[-1][key] = {flow[1]: flow[2]} if flow else value
+        return mounts
+
+    def test_default_compose_files_never_mount_host_data_into_the_desktop(self):
+        for name in ('compose.yaml', 'compose.host.yaml', 'compose.execution.yaml'):
+            with self.subTest(name=name):
+                text = (self.release / name).read_text(encoding='utf-8')
+                self.assertNotIn('subpath', text)
+                self.assertNotIn('/data/runtime', text)
+                self.assertNotIn('GROKBOT_HOST_MEMORY_MOUNTS', text)
+        box = (self.release / 'compose.yaml').read_text(encoding='utf-8').split('\n  box:\n', 1)[1].split('\nvolumes:', 1)[0]
+        self.assertNotIn('host-data', box)
+
+    def test_overlay_mounts_exactly_the_five_trees_read_only(self):
+        mounts = self.overlay_mounts()
+        self.assertEqual([m['target'] for m in mounts], list(backup.BOX_DATA_TARGETS))
+        for mount in mounts:
+            tree = backup.BOX_DATA_TARGETS[mount['target']]
+            self.assertEqual(mount, {'type': 'volume', 'source': 'host-data', 'target': mount['target'], 'read_only': 'true',
+                                     'volume': {'subpath': str(backup.DATA_SOURCE_ROOT / tree)}})
+        self.assertIn('      GROKBOT_HOST_MEMORY_MOUNTS: "1"', deploy.MEMORY_COMPOSE.read_text(encoding='utf-8'))
+
+
 class ComposeMountTests(unittest.TestCase):
     dc = ['docker', 'compose', '-p', 'demo']
+    memory_dc = dc + ['-f', str(deploy.MEMORY_COMPOSE)]
     image_id = 'sha256:' + '1' * 64
 
     @staticmethod
-    def config(existing=False, box=False):
+    def config(existing=False, box=False, memory=False):
         specs = {'host': ('host:local', [('host-data', '/data')])}
         if box:
             specs['box'] = (deploy.BOX['localTag'], [('box-home', '/home/box'), ('box-workspace', '/workspace')])
@@ -150,9 +304,9 @@ class ComposeMountTests(unittest.TestCase):
         for service, (image, pairs) in specs.items():
             services[service] = {'image': image, 'volumes': [
                 {'type': 'volume', 'source': name, 'target': dest} for name, dest in pairs]}
-            if service == 'box':
+            if service == 'box' and memory:
                 services[service]['volumes'].extend(
-                    {'type': 'volume', 'source': 'host-data', 'target': target,
+                    {'type': 'volume', 'source': 'host-data', 'target': target, 'read_only': True,
                      'volume': {'subpath': str(backup.DATA_SOURCE_ROOT / tree)}}
                     for target, tree in backup.BOX_DATA_TARGETS.items())
             for name, _ in pairs:
@@ -162,9 +316,9 @@ class ComposeMountTests(unittest.TestCase):
         return {'services': services, 'volumes': volumes}
 
     @contextlib.contextmanager
-    def config_only(self, config, existing, pinned=None):
+    def config_only(self, config, existing, pinned=None, dc=None):
         def read(cmd, **kwargs):
-            self.assertEqual(cmd, self.dc + ['config', '--format', 'json'])
+            self.assertEqual(cmd, (dc or self.dc) + ['config', '--format', 'json'])
             self.assertTrue(kwargs['capture'])
             env = kwargs['env']
             self.assertEqual(env['PROKBOT_EXISTING_VOLUMES'], 'true' if existing else 'false')
@@ -179,24 +333,40 @@ class ComposeMountTests(unittest.TestCase):
             finally:
                 run.assert_called_once()
 
-    def images(self, config, existing=False):
-        with self.config_only(config, existing):
-            return deploy.instance_images(self.dc, 'demo', tuple(config['services']), existing)
+    def images(self, config, existing=False, memory=False):
+        dc = self.memory_dc if memory else self.dc
+        with self.config_only(config, existing, dc=dc):
+            return deploy.instance_images(dc, 'demo', tuple(config['services']), existing)
 
     def test_supported_mounts_and_non_overlapping_tmpfs(self):
-        for box in (False, True):
+        for box, memory in ((False, False), (True, False), (True, True)):
             for existing in (False, True):
-                with self.subTest(box=box, existing=existing):
-                    config = self.config(existing, box)
+                with self.subTest(box=box, memory=memory, existing=existing):
+                    config = self.config(existing, box, memory)
                     services = config['services']
                     images = {s: v['image'] for s, v in services.items()}
-                    self.assertEqual(self.images(config, existing), images)
+                    self.assertEqual(self.images(config, existing, memory), images)
                     services['host']['volumes'].insert(0, {'type': 'tmpfs', 'target': '/database'})
                     services['host']['tmpfs'] = '/run:mode=0700'
                     if box:
                         services['box']['volumes'].reverse()
                         services['box']['tmpfs'] = ['/home/box-old', '/run:mode=0700']
-                    self.assertEqual(self.images(config, existing), images)
+                    self.assertEqual(self.images(config, existing, memory), images)
+
+    def test_memory_mounts_follow_the_overlay_and_stay_read_only(self):
+        for config_memory, dc_memory in ((True, False), (False, True)):
+            with self.subTest(config=config_memory, overlay=dc_memory):
+                with self.assertRaisesRegex(ValueError, 'do not match the selected Compose files'):
+                    self.images(self.config(box=True, memory=config_memory), memory=dc_memory)
+        target = '/data/runtime/host-data/agents'
+        for change in ({'read_only': False}, {'read_only': None}, {'volume': {'subpath': 'runtime/host-data'}},
+                       {'volume': {}}, {'source': 'box-home'}):
+            with self.subTest(change=change):
+                config = self.config(box=True, memory=True)
+                mount = next(m for m in config['services']['box']['volumes'] if m['target'] == target)
+                mount.update(change)
+                with self.assertRaisesRegex(ValueError, 'read-only mount of the approved Host-data tree'):
+                    self.images(config, memory=True)
 
     def test_rejects_extra_duplicate_and_shadowing_mounts(self):
         cases = [('host', 'bind', '/fixture', '/logs'), ('host', 'volume', 'extra', '/logs'),
@@ -207,9 +377,9 @@ class ComposeMountTests(unittest.TestCase):
                  ('box', 'volume', 'host-data', '/data/runtime/host-data/agent-transcripts'),
                  ('host', 'tmpfs', None, '/'), ('box', 'tmpfs', None, '/home'),
                  ('host', 'tmpfs', None, '//data/.'), ('host', 'tmpfs', None, '/scratch/../data/cache')]
-        for service, kind, source, target in cases:
-            with self.subTest(service=service, kind=kind, target=target):
-                config = self.config(box=True)
+        for (service, kind, source, target), memory in ((case, memory) for case in cases for memory in (False, True)):
+            with self.subTest(service=service, kind=kind, target=target, memory=memory):
+                config = self.config(box=True, memory=memory)
                 mount = {'type': kind, 'target': target}
                 if source is not None:
                     mount['source'] = source
@@ -217,7 +387,7 @@ class ComposeMountTests(unittest.TestCase):
                     config['volumes'][source] = {'name': 'demo_extra'}
                 config['services'][service]['volumes'].append(mount)
                 with self.assertRaisesRegex(ValueError, service):
-                    self.images(config)
+                    self.images(config, memory=memory)
 
     def test_checks_mounts_outside_service_volumes_list(self):
         for key, value in [('tmpfs', '/data:mode=0700'), ('tmpfs', ['/data/cache:size=64k']),

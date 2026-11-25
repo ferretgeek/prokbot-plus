@@ -1,0 +1,36 @@
+# Optional overlay for compose.yaml: lets the Bot read its memory on its own computer.
+# deploy.py adds it only after Docker Engine 26.0+ (API 1.45+) and Compose 2.26.0+ pass its
+# check, and creates the directories first with data_init.py. Older Engines ignore `subpath`
+# and would mount the whole host-data volume, model keys included; older Compose rejects it.
+services:
+  host:
+    environment:
+      GROKBOT_HOST_MEMORY_MOUNTS: "1"
+  box:
+    volumes:
+      # Read-only, and below RemoteBox.protectedBoxPaths so file-tool checks still apply.
+      - type: volume
+        source: host-data
+        target: /data/runtime/host-data/agents
+        read_only: true
+        volume: { subpath: runtime/host-data/agents }
+      - type: volume
+        source: host-data
+        target: /data/runtime/host-data/user-memory
+        read_only: true
+        volume: { subpath: runtime/host-data/user-memory }
+      - type: volume
+        source: host-data
+        target: /data/runtime/host-data/workflows
+        read_only: true
+        volume: { subpath: runtime/host-data/workflows }
+      - type: volume
+        source: host-data
+        target: /data/runtime/host-data/plugins
+        read_only: true
+        volume: { subpath: runtime/host-data/plugins }
+      - type: volume
+        source: host-data
+        target: /data/runtime/host-data/managed-skills
+        read_only: true
+        volume: { subpath: runtime/host-data/managed-skills }

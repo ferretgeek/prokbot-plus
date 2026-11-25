@@ -66,7 +66,7 @@ Grok Bot 是 xAI 的 AI 助手应用。它的 Bot 除了聊天，还有自己的
 | --- | --- | --- |
 | CPU / 内存 | 2 核 / 4 GB | 4 核 / 8 GB |
 | 硬盘可用空间 | 30 GB | 50 GB |
-| 系统 | 64 位 Linux，Docker 26+ 和 Compose 2.26+，Python 3.10+ | Ubuntu 24.04（系统仓库的 Docker 就够） |
+| 系统 | 64 位 Linux，Docker 和 Compose v2，Python 3.10+ | Ubuntu 24.04（系统仓库的 Docker 就够）；Docker 26+ 和 Compose 2.26+ 时 Bot 能在自己的电脑上读记忆 |
 
 - 2 核 4 GB 和 4 核 8 GB 都从零部署实测可用；2 核 2 GB 实测不够。适合个人或家庭使用，多人同时高强度使用没测过。
 - 平时占用：Host 约 0.7 GB 内存，Bot 的电脑约 0.8 GB（最高 1.7 GB）；镜像约 13 GB。
@@ -106,7 +106,7 @@ ProkBot Plus 自己的版本号见[最新发布](https://github.com/ferretgeek/p
 <a id="android-客户端"></a><a id="web-client"></a>
 **Android App** 不改官方 Android 版（它有防篡改保护），而是把官方桌面版的界面装进本项目写的外壳：能看 Bot 电脑的实时画面并接手操作，收通知不依赖 Google 推送。APK 用你自己的密钥签名。
 
-**网页版** 在电脑上生成界面包、上传到 Host 后，任何设备的浏览器打开 `Host 地址/web/` 输入配对码就能用，也能添加到主屏幕。从外网访问请用 HTTPS。详见[网页版说明](web/README.md)。
+**网页版** 在电脑上生成界面包、上传到 Host 后，任何设备的浏览器打开网页版地址（Host 的单独端口，默认 18081，和管理页分开）输入配对码就能用，也能添加到主屏幕。从外网访问请用 HTTPS，并给网页版单独一个入口。详见[网页版说明](web/README.md)。
 
 ## 安装
 

@@ -66,7 +66,7 @@ Models run through their APIs, so **the server needs no GPU**. It runs two conta
 | --- | --- | --- |
 | CPU / memory | 2 cores / 4 GB | 4 cores / 8 GB |
 | Free disk space | 30 GB | 50 GB |
-| System | 64-bit Linux, Docker 26+ and Compose 2.26+, Python 3.10+ | Ubuntu 24.04 (its own Docker packages are enough) |
+| System | 64-bit Linux, Docker with Compose v2, Python 3.10+ | Ubuntu 24.04 (its own Docker packages are enough); with Docker 26+ and Compose 2.26+ the Bot can read its memory on its own computer |
 
 - Fresh deployments on 2 cores / 4 GB and 4 cores / 8 GB both worked in testing; 2 cores / 2 GB did not. Sized for one person or a household; heavy simultaneous use by several people is untested.
 - Typical use: the Host takes about 0.7 GB of memory and the Bot's computer about 0.8 GB (peak 1.7 GB); the images take about 13 GB.
@@ -106,7 +106,7 @@ ProkBot Plus has its own version numbers; see the [latest release](https://githu
 <a id="android-client"></a><a id="web-client"></a>
 **The Android app** does not modify the official Android app (it is tamper-protected). It puts the official desktop interface into a shell written by this project. You can watch the Bot's computer live and take control, and notifications work without Google push. You sign the APK with your own key.
 
-**The web client** is built on a computer and uploaded to your Host. Then open `<Host address>/web/` in a browser on any device and enter a pairing code; you can also add it to the home screen. Use HTTPS when you access it from outside. See the [web client guide](web/README.en.md).
+**The web client** is built on a computer and uploaded to your Host. Then open the web client address (its own Host port, 18081 by default, apart from the admin page) in a browser on any device and enter a pairing code; you can also add it to the home screen. Use HTTPS when you access it from outside, with an entry of its own for the web client. See the [web client guide](web/README.en.md).
 
 ## Install
 

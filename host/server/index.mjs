@@ -53,7 +53,8 @@ import { attachmentDataUrl } from "./attachments.mjs";
 import { DeviceConnections, proxyHttp, proxyWebSocket } from "./proxy.mjs";
 import { proxyLocalExec } from "./local-exec-proxy.mjs";
 import { VncTickets, vncPath, normalizeVncUpgradeUrl } from "./vnc.mjs";
-import { WebClient, rawBody, webManifest } from "./web-client.mjs";
+import { WebClient, rawBody } from "./web-client.mjs";
+import { createWebRoutes, webMoved } from "./web-routes.mjs";
 import {
   adminMutation,
   bearer,
@@ -64,6 +65,7 @@ import {
   HttpError,
   jsonBody,
   originFor,
+  PAGE_POLICY,
   RateLimit,
   securityHeaders,
   sendJson,
@@ -71,7 +73,7 @@ import {
 
 const publicDir = fileURLToPath(new URL("./public/", import.meta.url));
 const assetTypes = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml" };
-const pages = new Map([["/", "index.html"], ["/admin", "index.html"], ["/connectors/result", "connector-result.html"], ["/web/login", "web-login.html"]]);
+const pages = new Map([["/", "index.html"], ["/admin", "index.html"], ["/connectors/result", "connector-result.html"]]);
 // Admin assets are served from a fixed listing taken at startup.
 const publicAssets = new Set(readdirSync(publicDir).filter((name) => [".js", ".css", ".svg"].includes(extname(name))));
 const adminCookie = "grokbot_admin";
@@ -91,6 +93,17 @@ function endpoint(value) {
     );
   return url;
 }
+function publicPort(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Public port must be 1..65535");
+  return port;
+}
+async function sendPage(response, name) {
+  response.setHeader("content-security-policy", PAGE_POLICY);
+  response.writeHead(200, { "content-type": `${assetTypes[extname(name)]}; charset=utf-8` });
+  response.end(await readFile(join(publicDir, name)));
+}
 export async function createSelfHostServer(options = {}) {
   const dataDir = resolve(
     options.dataDir ?? process.env.GROKBOT_DATA_DIR ?? "/data",
@@ -103,6 +116,15 @@ export async function createSelfHostServer(options = {}) {
   );
   const publicUrl = options.publicUrl ?? process.env.GROKBOT_PUBLIC_URL;
   const canonical = publicUrl ? endpoint(publicUrl).origin : null;
+  // The web client has a listener and origin of its own (web-routes.mjs).
+  const webPublicUrl = options.webPublicUrl ?? process.env.GROKBOT_WEB_PUBLIC_URL;
+  const webCanonical = webPublicUrl ? endpoint(webPublicUrl).origin : null;
+  if (webCanonical && webCanonical === canonical)
+    throw new Error("GROKBOT_WEB_PUBLIC_URL must differ from GROKBOT_PUBLIC_URL");
+  const publicPorts = {
+    main: publicPort(options.publicPort ?? process.env.GROKBOT_PUBLIC_PORT),
+    web: publicPort(options.webPublicPort ?? process.env.GROKBOT_WEB_PUBLIC_PORT),
+  };
   const hostDataDir = resolve(
     options.hostDataDir ??
       process.env.GROKBOT_HOST_DATA_DIR ??
@@ -188,10 +210,10 @@ export async function createSelfHostServer(options = {}) {
   const sockets = new Set();
   function device(request) {
     check(federation.role() === 'primary', 403, 'Connect to the primary Host');
-    // The web client signs in with a cookie instead of a bearer token (web-client.mjs).
-    const browser = webClient.deviceToken(request, request.grokbotOrigin);
-    const found = auth.authenticate(browser ?? bearer(request));
-    check(found && (!browser || found.platform === "web"), 401, "设备凭证无效，请重新配对");
+    // The web listener takes the browser's cookie (web-client.mjs), the main listener the apps' bearer tokens.
+    const web = request.grokbotWeb === true;
+    const found = auth.authenticate(web ? webClient.deviceToken(request, request.grokbotOrigin) : bearer(request));
+    check(found && (found.platform === "web") === web, 401, "设备凭证无效，请重新配对");
     void auth.touch(found.id).catch(() => {});
     return found;
   }
@@ -226,6 +248,7 @@ export async function createSelfHostServer(options = {}) {
       const value = tickets.validate(ticket, route.slot);
       check(value, 401, "桌面访问票据已失效，请重新打开电脑预览");
       found = { id: value.deviceId };
+      check((auth.device(value.deviceId)?.platform === "web") === (request.grokbotWeb === true), 401, "桌面访问票据已失效，请重新打开电脑预览");
       nativeIosTicket =
         request.headers.upgrade?.toLowerCase() === "websocket" &&
         url.searchParams.get("ticket") === ticket &&
@@ -257,62 +280,16 @@ export async function createSelfHostServer(options = {}) {
     tickets.revoke(id);
     connections.revoke(id);
   }
-  /** Sign-in, sign-out and the bundle files of the web client (web-client.mjs); /web/login is a public page. */
-  async function webRoutes(request, response, path, origin, url) {
-    const method = request.method;
-    const fromPage = () => check(request.headers["x-grokbot-web"] === "1" &&
-      (!request.headers.origin || request.headers.origin === origin), 403, "请从网页版登录页操作");
-    if (method === "GET" && path === "/web/api/session") {
-      const signedIn = webClient.browserDevice(request), status = webClient.status();
-      return sendJson(response, 200, { available: status.available, rendererVersion: status.rendererVersion,
-        paired: Boolean(signedIn), deviceName: signedIn?.device.name ?? null, secure: origin.startsWith("https:") });
-    }
-    if (method === "POST" && path === "/web/api/pair") {
-      check(federation.role() === "primary", 403, "Connect to the primary Host");
-      fromPage();
-      check(webClient.available, 404, "网页版未启用");
-      limiter.check(`pair:${request.socket.remoteAddress}`, 6);
-      limiter.check("pair:global", 60);
-      const { pairingKey, deviceName } = await jsonBody(request);
-      const previous = webClient.browserDevice(request);
-      const result = await auth.pair({ pairingKey, deviceName }, { web: true });
-      // Signing in again replaces this browser's earlier device instead of leaving it behind.
-      if (previous) await revokeDevice(previous.device.id);
-      response.setHeader("set-cookie", webClient.sessionCookie(result.token, origin));
-      return sendJson(response, 201, { ok: true, deviceId: result.deviceId });
-    }
-    if (method === "POST" && path === "/web/api/logout") {
-      fromPage();
-      const signedIn = webClient.browserDevice(request);
-      if (signedIn) await revokeDevice(signedIn.device.id);
-      response.setHeader("set-cookie", webClient.sessionCookie("", origin));
-      return sendJson(response, 200, { ok: true });
-    }
-    if (method === "GET" && path === "/web/manifest.webmanifest") {
-      check(webClient.available, 404, "网页版未启用");
-      response.writeHead(200, { "content-type": "application/manifest+json; charset=utf-8" });
-      return response.end(JSON.stringify(webManifest()));
-    }
-    if (["GET", "HEAD"].includes(method) && (path === "/web" || path === "/web/")) {
-      response.writeHead(302, { location: `${webClient.browserDevice(request) ? "/web/renderer/index.html" : "/web/login"}${url.search}` });
-      return response.end();
-    }
-    const file = /^\/web\/((?:renderer|client)\/.+)$/.exec(path);
-    if (file && ["GET", "HEAD"].includes(method)) {
-      let name = null;
-      try { name = decodeURIComponent(file[1]); } catch {}
-      check(name && webClient.has(name), 404, "文件不存在");
-      const signedIn = webClient.browserDevice(request);
-      if (!signedIn && name === "renderer/index.html") {
-        response.writeHead(302, { location: `/web/login${url.search}` });
-        return response.end();
-      }
-      check(signedIn, 401, "请先登录网页版");
-      void auth.touch(signedIn.device.id).catch(() => {});
-      return webClient.serve(request, response, name);
-    }
-    throw new HttpError(404, "页面不存在");
+  const webRoute = createWebRoutes({ webClient, auth, federation, tickets, limiter, revokeDevice, sendPage, publicDir });
+  /** The other listener's origin: configured, or the same host name with that listener's public port. */
+  function peerOrigin(origin, web) {
+    const configured = web ? webCanonical : canonical;
+    if (configured) return configured;
+    const url = new URL(origin);
+    url.port = String(publicPorts[web ? "web" : "main"] ?? (web ? webServer : server).address()?.port ?? "");
+    return url.origin;
   }
+  const webStatus = origin => ({ ...webClient.status(), url: `${peerOrigin(origin, true)}/web/` });
   async function hostStatus({ includeProfile = false } = {}) {
     try {
       const result = await fetch(new URL("/api/listAgents", hostUrl), {
@@ -445,7 +422,7 @@ export async function createSelfHostServer(options = {}) {
           process.env.GROKBOT_REQUIRE_EXECUTION_NODE === '1' && !executionNode.store.value.config.enabled },
         devices: push.devices(),
         pairingKeys: auth.pairingKeys(),
-        webClient: webClient.status(),
+        webClient: webStatus(origin),
         notifications: {
           ...notificationSettings.current(),
           count: notifications.store.value.items.length,
@@ -514,23 +491,21 @@ export async function createSelfHostServer(options = {}) {
     if (method === "POST" && path === "/admin/api/pairing-keys")
       return sendJson(response, 201, await auth.createPairing());
     if (path === "/admin/api/web-client") {
-      if (method === "GET") return sendJson(response, 200, webClient.status());
       if (method === "PUT") {
         check(String(request.headers["content-type"] ?? "").split(";")[0].trim() === "application/zip", 415, "请上传 ZIP 格式的网页版界面包");
-        return sendJson(response, 200, await webClient.install(await rawBody(request)));
+        await webClient.install(await rawBody(request));
       }
-      if (method === "PATCH") return sendJson(response, 200, await webClient.setEnabled((await jsonBody(request)).enabled));
-      if (method === "DELETE") return sendJson(response, 200, await webClient.remove());
+      else if (method === "PATCH") await webClient.setEnabled((await jsonBody(request)).enabled);
+      else if (method === "DELETE") await webClient.remove();
+      if (["GET", "PUT", "PATCH", "DELETE"].includes(method)) return sendJson(response, 200, webStatus(origin));
     }
     if (method === "POST" && path === "/admin/api/web-client/open") {
-      // Opens the web client in the administrator's own browser without a pairing code.
+      // Opens the web client in the administrator's own browser without a pairing code: its sign-in
+      // page exchanges the ticket for a cookie of the web client's origin. The fragment stays out of logs.
       check(webClient.available, 409, "请先上传并启用网页版");
       const { deviceName } = await jsonBody(request);
-      // A browser that is already signed in keeps its device instead of gaining another.
-      if (webClient.browserDevice(request)) return sendJson(response, 200, { ok: true, url: "/web/" });
-      const result = await auth.addWebDevice(typeof deviceName === "string" && deviceName.trim() ? deviceName : "网页版");
-      response.setHeader("set-cookie", webClient.sessionCookie(result.token, origin));
-      return sendJson(response, 201, { ok: true, url: "/web/" });
+      const ticket = webClient.issueTicket(typeof deviceName === "string" && deviceName.trim() ? deviceName : "网页版");
+      return sendJson(response, 201, { ok: true, url: `${peerOrigin(origin, true)}/web/login#ticket=${ticket}` });
     }
     const deviceName = /^\/admin\/api\/devices\/([a-f0-9-]{36})$/.exec(path);
     if (method === "PATCH" && deviceName) {
@@ -576,7 +551,15 @@ export async function createSelfHostServer(options = {}) {
       });
     throw new HttpError(404, "接口不存在");
   }
-  async function handle(request, response) {
+  /** Sets the request's origin and listener; on the main listener a Tailcat ingress request keeps its own address. */
+  function requestOrigin(request, web) {
+    const origin = web ? originFor(request, webCanonical) : originFor(request, network.isIngress(request) ? '' : canonical);
+    delete request.headers['x-grokbot-tailcat-ingress'];
+    request.grokbotOrigin = origin;
+    request.grokbotWeb = web;
+    return origin;
+  }
+  async function handle(request, response, web) {
     securityHeaders(response);
     check(
       request.url?.startsWith("/") && !request.url.startsWith("//"),
@@ -584,19 +567,17 @@ export async function createSelfHostServer(options = {}) {
       "请求地址无效",
     );
     const path = request.url.split("?")[0];
-    const origin = originFor(request, network.isIngress(request) ? '' : canonical);
-    delete request.headers['x-grokbot-tailcat-ingress'];
-    request.grokbotOrigin = origin;
+    const origin = requestOrigin(request, web);
     const url = new URL(request.url, origin);
-    if (path.startsWith("/admin/api/"))
+    // The admin origin, for links that lead back to it: connector authorization and sharing.
+    const mainOrigin = web ? peerOrigin(origin, false) : origin;
+    if (web) {
+      check(origin !== mainOrigin, 403, "网页版需要与管理页不同的地址");
+      if (await webRoute(request, response, path, url, origin, mainOrigin)) return;
+    } else if (path.startsWith("/admin/api/"))
       return adminRoutes(request, response, path, origin);
-    if ((path === "/web" || path.startsWith("/web/")) && path !== "/web/login")
-      return webRoutes(request, response, path, origin, url);
-    if (path === "/local-client/icon.png" && request.method === "GET") {
-      // The desktop settings pages load the program icon from here; the web client serves its own.
-      check(webClient.browserDevice(request) && webClient.has("client/icon.png"), 404, "页面不存在");
-      return webClient.serve(request, response, "client/icon.png");
-    }
+    else if (path === "/web" || path.startsWith("/web/"))
+      return webMoved(request, response, path, url, peerOrigin(origin, true));
     if (await mediaInternal(request, response, path, { internalToken, mediaServices, webServices })) return;
     if (request.method === 'POST' && ['/federation/v1/pair', '/federation/v1/sync', '/federation/v1/revoke'].includes(path)) {
       limiter.check(`federation:${request.socket.remoteAddress}`, 120);
@@ -693,7 +674,7 @@ export async function createSelfHostServer(options = {}) {
     if (path === "/local/connectors" || path.startsWith("/local/connectors/")) {
       const found = device(request);
       return sendJson(response, 200, await connectors.route("local", request.method, path,
-        request.method === "GET" ? {} : await jsonBody(request, 512 * 1024), origin,
+        request.method === "GET" ? {} : await jsonBody(request, 512 * 1024), mainOrigin,
         { kind: "device", id: found.id }));
     }
     if (path.startsWith('/local/app-intents/')) {
@@ -718,20 +699,11 @@ export async function createSelfHostServer(options = {}) {
     }
     if (path.startsWith("/vnc/")) {
       check(["GET", "HEAD"].includes(request.method), 405, "不支持的请求方法");
-      // The web client's computer view runs the bridge the Android shell injects (android/client/vnc-bridge.js).
-      const script = /^\/vnc\/(desktop|fork)\/__grokbot-(vnc-bridge|vnc-preload)\.js$/.exec(path);
-      if (script) {
-        const value = tickets.validate(cookie(request, `grokbot_vnc_${script[1]}`), script[1]);
-        check(value && webClient.available && auth.device(value.deviceId)?.platform === "web", 401, "桌面访问票据已失效，请重新打开电脑预览");
-        const body = await webClient.vncScript(script[2], origin);
-        response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cross-origin-resource-policy": "same-origin" });
-        return response.end(request.method === "HEAD" ? undefined : body);
-      }
       const access = vncAccess(request, url, path, origin);
       connections.track(access.deviceId, response);
-      const page = request.method === "GET" && /^\/vnc\/(desktop|fork)\/vnc(_lite|_auto)?\.html$/.test(path);
-      const web = page && webClient.available && auth.device(access.deviceId)?.platform === "web";
-      return proxyHttp(request, response, web
+      // The web client's computer view gains the bridge the Android shell injects (web-routes.mjs).
+      const page = web && request.method === "GET" && /^\/vnc\/(desktop|fork)\/vnc(_lite|_auto)?\.html$/.test(path);
+      return proxyHttp(request, response, page && webClient.available
         ? { ...access, transformHtml: html => WebClient.injectVncBridge(html, path.slice(0, path.lastIndexOf("/"))) } : access);
     }
     if (await desktopCapabilities.route(request, response, path)) return;
@@ -860,7 +832,7 @@ export async function createSelfHostServer(options = {}) {
       }
       if (connectorApiMethods.has(path.slice("/api/".length)))
         return sendJson(response, 200, await connectors.original(path.slice("/api/".length),
-          await jsonBody(request, 512 * 1024), origin, { kind: "device", id: found.id }));
+          await jsonBody(request, 512 * 1024), mainOrigin, { kind: "device", id: found.id }));
       if (clientCompatMethods.has(path.slice("/api/".length))) {
         const method = path.slice("/api/".length);
         const input = await jsonBody(request, 128 * 1024, { allowEmpty: true });
@@ -876,7 +848,7 @@ export async function createSelfHostServer(options = {}) {
         target: hostUrl,
         path: `${path}${url.search}`,
         token: internalToken,
-        rewrite: (value) => rewriteSharingUrls(tickets.rewrite(value, found.id, origin), origin),
+        rewrite: (value) => rewriteSharingUrls(tickets.rewrite(value, found.id, origin), mainOrigin),
       });
     }
     if (request.method === 'GET' && path === '/grok-bot-icon.png') {
@@ -884,32 +856,30 @@ export async function createSelfHostServer(options = {}) {
       return response.end();
     }
     const asset = pages.get(path) ?? (publicAssets.has(path.slice(1)) ? path.slice(1) : null);
-    if (asset && request.method === "GET") {
-      response.setHeader(
-        "content-security-policy",
-        "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-      );
-      response.writeHead(200, { "content-type": `${assetTypes[extname(asset)]}; charset=utf-8` });
-      return response.end(await readFile(join(publicDir, asset)));
-    }
+    if (asset && request.method === "GET") return sendPage(response, asset);
     throw new HttpError(404, "页面不存在");
   }
-  const server = http.createServer((request, response) => {
-    handle(request, response).catch((error) => {
-      sendJson(response, error.status ?? 500, {
-        error: error.status ? error.message : "服务处理失败，请检查服务日志",
+  /** One listener: the main one for the admin page and the apps, or the web client's (web-routes.mjs). */
+  function listener(web) {
+    const target = http.createServer((request, response) => {
+      handle(request, response, web).catch((error) => {
+        sendJson(response, error.status ?? 500, {
+          error: error.status ? error.message : "服务处理失败，请检查服务日志",
+        });
+        if (!error.status)
+          console.error(`[selfhost] request failed: ${error.code ?? error.name}`);
       });
-      if (!error.status)
-        console.error(`[selfhost] request failed: ${error.code ?? error.name}`);
     });
-  });
-  server.requestTimeout = 120_000;
-  server.headersTimeout = 30_000;
-  server.on("connection", (socket) => {
-    sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
-  });
-  server.on("upgrade", (request, socket, head) => {
+    target.requestTimeout = 120_000;
+    target.headersTimeout = 30_000;
+    target.on("connection", (socket) => {
+      sockets.add(socket);
+      socket.once("close", () => sockets.delete(socket));
+    });
+    target.on("upgrade", (request, socket, head) => upgrade(request, socket, head, web));
+    return target;
+  }
+  function upgrade(request, socket, head, web) {
     try {
       request.url = normalizeVncUpgradeUrl(request.url);
       check(
@@ -922,9 +892,7 @@ export async function createSelfHostServer(options = {}) {
         400,
         "Invalid upgrade",
       );
-      const origin = originFor(request, network.isIngress(request) ? '' : canonical);
-      delete request.headers['x-grokbot-tailcat-ingress'];
-      request.grokbotOrigin = origin;
+      const origin = requestOrigin(request, web);
       const url = new URL(request.url, origin);
       check(federation.role() === 'primary', 403, 'Connect to the primary Host');
       if (url.pathname === '/local/voice/realtime') return voice.upgrade(request, socket, head);
@@ -936,9 +904,11 @@ export async function createSelfHostServer(options = {}) {
         `HTTP/1.1 ${error.status ?? 500} Rejected\r\nConnection: close\r\n\r\n`,
       );
     }
-  });
+  }
+  const server = listener(false), webServer = listener(true);
   return {
     server,
+    webServer,
     auth,
     models,
     speech,
@@ -966,11 +936,14 @@ export async function createSelfHostServer(options = {}) {
     async start(
       port = Number(process.env.GROKBOT_PORT ?? 8000),
       bind = process.env.GROKBOT_BIND ?? "0.0.0.0",
+      // An ephemeral main port (tests, embedding) gets an ephemeral web client port as well.
+      webPort = Number(process.env.GROKBOT_WEB_PORT ?? (port === 0 ? 0 : 8001)),
     ) {
-      await new Promise((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(port, bind, resolve);
-      });
+      for (const [target, value] of [[server, port], [webServer, webPort]])
+        await new Promise((resolve, reject) => {
+          target.once("error", reject);
+          target.listen(value, bind, resolve);
+        });
       federation.start();
       void network.start(`127.0.0.1:${server.address().port}`).catch(() => {});
       if (options.modelAutoSync !== false) {
@@ -994,8 +967,8 @@ export async function createSelfHostServer(options = {}) {
       await connectors.close();
       connections.close();
       for (const socket of sockets) socket.destroy();
-      if (server.listening)
-        await new Promise((resolve) => server.close(resolve));
+      for (const target of [server, webServer])
+        if (target.listening) await new Promise((resolve) => target.close(resolve));
       await Promise.all([
         auth.store.tail,
         models.tail,
@@ -1028,6 +1001,7 @@ if (
       JSON.stringify({
         service: "grokbot-selfhost",
         port: address.port,
+        webPort: app.webServer.address().port,
         initialized: app.auth.initialized,
         ...(app.auth.initialized
           ? {}
