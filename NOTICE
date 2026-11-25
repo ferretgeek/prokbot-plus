@@ -340,15 +340,20 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
     - mac/clients/desktop/: attachments.mjs saves several attachments of a
       message into a chosen folder without replacing files
       (downloadAttachments); local-services.mjs and connectors.mjs answer the
-      other main-edge reads 1.3.0 adds with the official empty values
-      (including automation purchase reads, email-invite eligibility and team
-      member lists). mac/patchers/desktop/patch.mjs signs arm64 builds with
-      --pagesize 16384 so cross-builds on Intel Macs match Apple Silicon, and
-      windows/tools/desktop-recipes/ retains the Settings gear button and
-      exposes Instructions and Notifications in the simplified Details pane.
+      other main-edge reads 1.3.0 adds with the official empty values.
     - ci/release-packages.py requires the 1.2.3 fallback files;
       ci/homepage-versions.mjs marks pins newer than the last real-machine
       test as untested.
+
+24. Desktop 1.3.0 arm64 signing alignment and main-edge read fallbacks.
+    - mac/patchers/desktop/patch.mjs passes --pagesize 16384 when signing
+      arm64 bundles so cross-builds on Intel Macs match the official 1.3.0
+      arm64 slice and Apple Silicon native signing.
+    - mac/clients/desktop/local-services.mjs answers
+      getGrokBotAutomationPurchase (null), getGrokBotInviteByEmailEligibility
+      ("unknown"), and listCursorTeamMembers ({ members: [] }) with the
+      official empty/offline values.
+    - Contributed by @jun9100 (GitHub pull request #21).
 
 Upstream ProkBot changes incorporated
 -------------------------------------

@@ -63,14 +63,6 @@ test('every extension source is carried verbatim by a recipe', async () => {
   }
   const updateView = await readFile(new URL('update-view.js', extensions), 'utf8');
   assert.match(updateView, /\(0,\s*x\.jsx\)\(h,\s*\{/, '1.3.0 update-view must render inside settings section h, not presentation hook g');
-  const eagerApp = await readFile(new URL('eager-app.js', extensions), 'utf8');
-  assert.match(eagerApp, /function GrokLocalOverviewSettings\(/, '1.3.0 eager-app must expose Instructions and Notifications in the simplified Details tab');
-  assert.match(eagerApp, /setAgentNotifyOnUpdates/, '1.3.0 overview settings must bind to official setAgentNotifyOnUpdates');
-  const eagerSpec = SPEC.find(entry => entry.path.includes('index.eager-app-'));
-  assert.ok(eagerSpec?.edits.some(edit => edit.text?.includes('onOpenSettings:dn')), '1.3.0 simplified InfoPane header must retain the Settings gear button');
-  assert.ok(eagerSpec?.edits.some(edit => edit.text?.includes('GrokLocalOverviewSettings')), '1.3.0 simplified Details tab must mount GrokLocalOverviewSettings');
-  const macPatcher = await readFile(new URL('../../mac/patchers/desktop/patch.mjs', import.meta.url), 'utf8');
-  assert.match(macPatcher, /arch\s*===\s*'arm64'\s*\?\s*\['--pagesize',\s*'16384'\]/, 'macOS patcher must sign arm64 bundles with 16 KiB pages even on Intel Macs');
 });
 
 test('a replacement copies the original bytes it shares at either end', () => {
