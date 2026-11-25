@@ -185,6 +185,9 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
     upstream, see below. 1.7.0 to 1.14.0 mounted them writable in
     compose.yaml. ProkBot Plus lets the checks before an update and backups
     accept those writable mounts so that update can replace them.
+    Since 1.15.1 host/runtime/host-attachments.mjs no longer copies managed
+    attachments into a Box that already reads them through the read-only
+    mount; the copy failed with a read-only file system error in 1.15.0.
 
 14. Per-Bot voices. host/server/voice-selection.mjs (new), voice-config.mjs,
     voice-synthesis.mjs, voice-session.mjs, voice.mjs and the admin voice page

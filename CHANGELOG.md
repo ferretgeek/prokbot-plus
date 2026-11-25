@@ -4,6 +4,10 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## ProkBot Plus 1.15.1 (2026-11-25)
+
+修复 1.15.0 的一个问题：同机部署开启只读记忆挂载后，给 Bot 发带附件的消息，这一轮会失败（`EROFS: read-only file system`），Bot 收不到附件。Host 原来每轮都把附件再写一份到 Bot 的电脑上，而这个目录在 1.15.0 起是只读挂载；现在 Bot 的电脑已经能通过只读挂载读到附件时就不再复制，分开部署和没有开启挂载时照旧复制。**已升级到 1.15.0 的 Host 请再执行一次 `python3 deploy.py update < /dev/null`**；客户端不用重新生成。Fixes a 1.15.0 problem: on same-machine deployments with the read-only memory mounts, a message with attachments failed for that turn (`EROFS: read-only file system`) and the Bot did not receive the attachments. The Host copied each attachment to the Bot's computer on every turn, into a directory that 1.15.0 mounts read-only; it now skips the copy when the Bot's computer already reads the attachment through the read-only mount, and still copies it for separate execution nodes and deployments without the mounts. **Hosts already on 1.15.0 should run `python3 deploy.py update < /dev/null` again**; clients need no rebuild.
+
 ## ProkBot Plus 1.15.0 (2026-11-25)
 
 安全修复，移植自上游 ProkBot v2026.11.25。**所有 Host 都建议尽快升级**（`python3 deploy.py update`）；客户端不用重新生成，已上传的网页版界面包继续可用。用 HTTPS 反向代理访问网页版的，升级前先看下面「反向代理」一条。A security release ported from upstream ProkBot v2026.11.25. **Every Host should upgrade soon** (`python3 deploy.py update`); clients need no rebuild, and the uploaded web client bundle keeps working. If browsers reach the web client through an HTTPS reverse proxy, read "Reverse proxy" below before upgrading.
