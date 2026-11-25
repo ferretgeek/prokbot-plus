@@ -16,6 +16,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 RELEASE = Path(__file__).resolve().parent / 'release'
+MEMORY_COMPOSE = RELEASE / 'compose.memory.yaml'
 MIN_DOCKER_ENGINE = (26, 0, 0)
 MIN_DOCKER_API = (1, 45, 0)
 MIN_COMPOSE = (2, 26, 0)
@@ -47,9 +48,6 @@ def initialise(home, args):
     origin = endpoint(args.public_url or f'http://127.0.0.1:{args.port}')
     if ':' in listen:
         listen = f'[{listen}]'
-    # Only the local Box uses subpath mounts; a Host-only instance keeps working on older Docker.
-    if not args.host_only:
-        check_runtime_versions()
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         fd = os.open(home / '.env', os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -61,11 +59,26 @@ def initialise(home, args):
     print(json.dumps({'configCreated': True, 'publicUrl': origin}))
 
 
-def compose(args, home):
+def compose(args, home, *, memory=False):
     if not (home / '.env').is_file():
         raise ValueError('No .env in the instance directory. Run init first or select --home.')
     name = 'compose.host.yaml' if args.host_only else 'compose.yaml'
-    return ['docker', 'compose', '--env-file', str(home / '.env'), '-p', args.project, '-f', str(RELEASE / name)]
+    overlay = ['-f', str(MEMORY_COMPOSE)] if memory else []
+    return ['docker', 'compose', '--env-file', str(home / '.env'), '-p', args.project, '-f', str(RELEASE / name), *overlay]
+
+
+def memory_overlay(dc):
+    return str(MEMORY_COMPOSE) in dc
+
+
+def memory_supported():
+    # Engines before 26 ignore subpath and would mount the whole host-data volume, keys included.
+    try:
+        check_runtime_versions()
+    except ValueError as error:
+        print(f'Bot memory reading on its desktop stays off: {error}', file=sys.stderr)
+        return False
+    return True
 
 
 def instance_settings(args, home):
@@ -161,13 +174,16 @@ def instance_images(dc, project, services, existing, pinned=None):
                     mount.get('target') != dest or mount.get('read_only') or (mount.get('volume') or {}).get('subpath')):
                 raise ValueError(f'Effective Compose mount {s}:{dest} does not select the root of the expected writable project volume.')
         if s == 'box':
-            for target, tree in volume_backup.BOX_DATA_TARGETS.items():
-                mount = mounts.get(target, {})
+            expected = volume_backup.BOX_DATA_TARGETS if memory_overlay(dc) else {}
+            if {t for t in volume_backup.BOX_DATA_TARGETS if t in mounts} != set(expected):
+                raise ValueError('Effective Compose Host-data mounts on box do not match the selected Compose files.')
+            for target, tree in expected.items():
+                mount = mounts[target]
                 subpath = (mount.get('volume') or {}).get('subpath')
                 if (mount.get('type') != 'volume' or mount.get('source') != 'host-data' or
-                        mount.get('target') != target or mount.get('read_only') or
+                        mount.get('target') != target or mount.get('read_only') is not True or
                         subpath != str(volume_backup.DATA_SOURCE_ROOT / tree)):
-                    raise ValueError(f'Effective Compose mount box:{target} does not select the approved Host-data tree.')
+                    raise ValueError(f'Effective Compose mount box:{target} is not a read-only mount of the approved Host-data tree.')
     images = {s: config['services'][s]['image'] for s in services}
     if pinned is not None and images != pinned:
         raise ValueError('Effective Compose configuration did not select the requested immutable images.')
@@ -186,7 +202,9 @@ def build(args, image):
     run(cmd)
 
 
-def inventory(project, services, *, new):
+def inventory(project, services, *, new, legacy_writable=False):
+    # legacy_writable: a box created by Plus 1.7.0-1.14.0 may still mount Host data writable. Only checks
+    # before services are replaced accept it; the checks after a start or recovery require read-only.
     volumes = volume_backup.project_volumes(project)
     expected = {f'{project}_{suffix}' for s in services for suffix in volume_backup.MOUNTS[s]}
     if new:
@@ -197,7 +215,8 @@ def inventory(project, services, *, new):
     if volumes != expected:
         raise ValueError('Volume set does not match this topology; check the original project, --home and --host-only.')
     volume_backup.verify_volumes(project, volumes)
-    containers = volume_backup.project_services(project, services, host_data=f'{project}_host-data' in volumes)
+    containers = volume_backup.project_services(project, services, host_data=f'{project}_host-data' in volumes,
+                                                legacy_writable=legacy_writable)
     volume_backup.verify_users(volumes, containers)
     return containers
 
@@ -279,7 +298,7 @@ def ensure_host_data(project, image):
 
 def up_and_wait(dc, project, services, images, *, existing):
     instance_images(dc, project, services, existing, pinned=images)
-    if 'box' in services:
+    if 'box' in services and memory_overlay(dc):
         ensure_host_data(project, images['host'])
     run(dc + ['up', '-d', '--pull', 'never', '--wait', '--wait-timeout', '180'], env=volume_policy(existing, images))
     current = inventory(project, services, new=False)
@@ -291,7 +310,8 @@ def up_and_wait(dc, project, services, images, *, existing):
 def stop_failed_start(dc, project, services, existing, notice, error):
     try:
         run(dc + ['stop'], env=volume_policy(existing))
-        current = volume_backup.project_services(project, services)
+        # After a failed update the old box, with writable mounts, may still be the one Compose stopped.
+        current = volume_backup.project_services(project, services, legacy_writable=True)
         if any(c['State']['Status'] not in ('exited', 'created') for c in current.values()):
             raise ValueError('some services remain active')
     except (OSError, ValueError, subprocess.SubprocessError) as stop_error:
@@ -374,7 +394,7 @@ def upgrade(args, home, dc, services, image, old, root, continuing):
         raise ValueError('Previous Host image identity is unavailable; refusing to switch.')
     with staged_host(args, services) as images:
         candidate_id = images['host']
-        current = inventory(args.project, services, new=False)
+        current = inventory(args.project, services, new=False, legacy_writable=True)
         if state(current) != state(old) or instance_images(dc, args.project, services, True)['host'] != image:
             raise ValueError('The instance changed during the build; no service was switched.')
         offline_only = volume_backup.check_lineage(root, args.project, continuing=continuing)
@@ -467,7 +487,11 @@ def operate(args, home, dc):
     if args.action == 'recover':
         return recover(args, home, dc, services)
     image = instance_images(dc, args.project, services, args.action != 'up')['host']
-    current = inventory(args.project, services, new=args.action == 'up')
+    current = inventory(args.project, services, new=args.action == 'up', legacy_writable=True)
+    if volume_backup.writable_box_data(current):
+        print('The Bot computer still mounts Host memory writable (ProkBot Plus 1.7.0-1.14.0). '
+              + ('This update replaces those mounts with read-only ones.' if args.action == 'update'
+                 else 'Run update to replace them with read-only mounts.'), file=sys.stderr, flush=True)
     if args.action == 'backup':
         return backup(args, home, current['host']['Image'] if 'host' in current else image)
     root = volume_backup.local_lineage(args.project) if args.action == 'update' else args.project
@@ -532,7 +556,9 @@ def main(argv=None):
         report = {'ok': False, 'project': args.project, 'existingConfig': (home / '.env').is_file()}
         try:
             platform = docker_platform()
-            report.update(hostPlatform=platform, **({} if args.host_only else check_runtime_versions()),
+            memory = not args.host_only and memory_supported()
+            report.update(hostPlatform=platform, memoryMounts=memory,
+                          composeVersion=run(['docker', 'compose', 'version', '--short'], capture=True).stdout.strip(),
                           desktop='remote' if args.host_only else 'native' if platform == BOX['platform'] else 'emulated-amd64',
                           existingVolumes=sorted(volume_backup.project_volumes(args.project)), resources=daemon_resources())
             help_text = run(['docker', 'compose', 'up', '--help'], capture=True).stdout
@@ -540,7 +566,7 @@ def main(argv=None):
                 raise ValueError('This Compose version cannot wait for service health. Install a Compose v2 with up --wait-timeout.')
             report['hostDataVolumes'] = run(['docker', 'volume', 'ls', '-q', '--filter', 'label=com.docker.compose.volume=host-data'], capture=True).stdout.splitlines()
             if report['existingConfig']:
-                run(compose(args, home) + ['config', '--quiet'])
+                run(compose(args, home, memory=memory) + ['config', '--quiet'])
             if not args.host_only:
                 check_box_execution(platform)
             report['ok'] = True
@@ -550,9 +576,8 @@ def main(argv=None):
         if not report['ok']:
             raise SystemExit(1)
         return
-    if args.action in ('up', 'update', 'recover') and not args.host_only:
-        check_runtime_versions()
-    dc = compose(args, home)
+    # Only these actions create containers; the overlay is chosen afresh each time.
+    dc = compose(args, home, memory=args.action in ('up', 'update', 'recover') and not args.host_only and memory_supported())
     if args.action in ('status', 'logs', 'setup-key'):
         return run(dc + {'status': ['ps', '--all'], 'logs': ['logs', '--tail', '100', 'host'],
                          'setup-key': ['exec', '-T', 'host', 'cat', '/data/setup-key']}[args.action])

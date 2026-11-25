@@ -5,8 +5,9 @@ import { promptDigest, promptId, promptRoles, validatePrompt } from '../server/p
 function memoryAccessDirective(memoryRoot) {
   const root = memoryRoot.replace(/\/+$/, '') || '/';
   return [
-    `Memory access is configured for this turn: agent memory is mounted at ${root}/agents and shared user memory at ${root}/user-memory.`,
+    `Memory access is configured for this turn: agent memory is mounted read-only at ${root}/agents and shared user memory at ${root}/user-memory.`,
     'Use memory proactively whenever it can affect the answer, without waiting for the user to ask. The normal Memory sections may already include profile and recent facts; when you need older or omitted facts, inspect the corresponding files with Read or Shell on your own computer.',
+    'These mounts are read-only: do not try to create, edit or delete files under them.',
     'Do not repeat an earlier turn\'s "not mounted" or "not readable" result without rechecking in the current turn.',
     'A missing monthly log means that no file has been recorded for that month yet, not that the entire memory volume is unavailable.',
   ].join(' ');

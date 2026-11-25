@@ -12,7 +12,6 @@ services:
       GROKBOT_BOX_HOST: box
       GROKBOT_VNC_URL: http://box:6080
       GROKBOT_FORK_VNC_URL: http://box:6081
-      GROKBOT_HOST_MEMORY_MOUNTS: "1"
       TZ: ${TZ:-Asia/Singapore}
     volumes:
       - host-data:/data
@@ -30,27 +29,6 @@ services:
     volumes:
       - box-home:/home/box
       - box-workspace:/workspace
-      # Keep every mount below RemoteBox.protectedBoxPaths so file-tool checks still apply.
-      - type: volume
-        source: host-data
-        target: /data/runtime/host-data/agents
-        volume: { subpath: runtime/host-data/agents }
-      - type: volume
-        source: host-data
-        target: /data/runtime/host-data/user-memory
-        volume: { subpath: runtime/host-data/user-memory }
-      - type: volume
-        source: host-data
-        target: /data/runtime/host-data/workflows
-        volume: { subpath: runtime/host-data/workflows }
-      - type: volume
-        source: host-data
-        target: /data/runtime/host-data/plugins
-        volume: { subpath: runtime/host-data/plugins }
-      - type: volume
-        source: host-data
-        target: /data/runtime/host-data/managed-skills
-        volume: { subpath: runtime/host-data/managed-skills }
     logging:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }

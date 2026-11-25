@@ -42,6 +42,7 @@ class Engine:
         self.after_build = lambda: None
         self.before_up = lambda: None
         self.unhealthy = False
+        self.server = {'Version': '29.1.2', 'ApiVersion': '1.52'}
         self.tar = shutil.which('tar')
         if not self.tar:
             raise unittest.SkipTest('system tar is required for archive integration')
@@ -179,12 +180,13 @@ class Engine:
             del self.images[cmd[-1]]
             return ''
         if cmd[:2] == ['version', '--format']:
-            return json.dumps({'Version': '29.1.2', 'ApiVersion': '1.52'})
+            return json.dumps(self.server)
         if cmd[0] == 'compose':
             if 'version' in cmd:
                 return '2.40.3'
             project = cmd[cmd.index('-p')+1]
             modes = ('host',) if any(str(p).endswith('compose.host.yaml') for p in cmd) else ('host', 'box')
+            memory = any(str(p).endswith('compose.memory.yaml') for p in cmd)
             env = kw.get('env') or {}
             external = env.get('PROKBOT_EXISTING_VOLUMES') == 'true'
             refs = {'host': env.get('GROKBOT_HOST_IMAGE', HOST_TAG), 'box': env.get('GROKBOT_BOX_IMAGE', BOX_TAG)}
@@ -192,8 +194,8 @@ class Engine:
                 services = {}
                 for s in modes:
                     volumes = [{'type': 'volume', 'source': n, 'target': t} for n, t in MOUNTS[s].items()]
-                    if s == 'box':
-                        volumes.extend({'type': 'volume', 'source': 'host-data', 'target': target,
+                    if s == 'box' and memory:
+                        volumes.extend({'type': 'volume', 'source': 'host-data', 'target': target, 'read_only': True,
                                         'volume': {'subpath': str(backup.DATA_SOURCE_ROOT/tree)}}
                                        for target, tree in DATA_TARGETS.items())
                     services[s] = {'image': refs[s], 'volumes': volumes}
@@ -217,11 +219,11 @@ class Engine:
                         self.volume(name, {'com.docker.compose.project': project, 'com.docker.compose.volume': suffix,
                                            'com.docker.compose.version': '2.40.3'})
                         mounts.append({'Type': 'volume', 'Name': name, 'Destination': target, 'RW': True})
-                    if s == 'box':
+                    if s == 'box' and memory:
                         for target, tree in DATA_TARGETS.items():
                             name = project+'_host-data'
                             subpath = str(backup.DATA_SOURCE_ROOT/tree)
-                            mounts.append({'Type': 'volume', 'Name': name, 'Destination': target, 'RW': True})
+                            mounts.append({'Type': 'volume', 'Name': name, 'Destination': target, 'RW': False})
                             configured.append({'Type': 'volume', 'Source': name, 'Target': target,
                                                'VolumeOptions': {'Subpath': subpath}})
                     cid = self.container(s, project, mounts, self.images.get(refs[s], refs[s]))
@@ -280,10 +282,10 @@ class VolumeTests(unittest.TestCase):
         for target, tree in DATA_TARGETS.items():
             if bind:
                 container['Mounts'].append({'Type': 'bind',
-                    'Source': f'/srv/prokbot/runtime/host-data/{tree}', 'Destination': target, 'RW': True})
+                    'Source': f'/srv/prokbot/runtime/host-data/{tree}', 'Destination': target, 'RW': False})
             else:
                 container['Mounts'].append({'Type': 'volume', 'Name': PROJECT+'_host-data',
-                                            'Destination': target, 'RW': True})
+                                            'Destination': target, 'RW': False})
                 configured.append({'Type': 'volume', 'Source': PROJECT+'_host-data', 'Target': target,
                                    'VolumeOptions': {'Subpath': str(backup.DATA_SOURCE_ROOT/tree)}})
         if configured:
@@ -464,7 +466,7 @@ class VolumeTests(unittest.TestCase):
                             if m['Destination'] == str(root/tree)) for root in backup.BOX_DATA_ROOTS}
             self.assertEqual(len(sources), 1)
 
-    def test_partial_extra_wrong_and_read_only_box_data_mounts_are_rejected(self):
+    def test_partial_extra_wrong_and_writable_box_data_mounts_are_rejected(self):
         self.e.stack()
         self.add_box_data_mounts()
         box = self.e.containers[PROJECT+'-box']
@@ -487,10 +489,11 @@ class VolumeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'expected Host-data tree'):
                 backup.project_services(PROJECT, ('host', 'box'), host_data=True)
         box['Mounts'] = [dict(item) for item in original]
-        with self.subTest('read-only'):
-            next(item for item in box['Mounts'] if item['Destination'] == '/data/runtime/host-data/agents')['RW'] = False
-            with self.assertRaisesRegex(ValueError, 'not writable'):
+        with self.subTest('writable'):
+            next(item for item in box['Mounts'] if item['Destination'] == '/data/runtime/host-data/agents')['RW'] = True
+            with self.assertRaisesRegex(ValueError, 'writable; it must be read-only'):
                 backup.project_services(PROJECT, ('host', 'box'), host_data=True)
+        box['Mounts'] = [dict(item) for item in original]
         box['Mounts'] = [dict(item) for item in original]
         with self.subTest('wrong-subpath'):
             box['HostConfig']['Mounts'][0]['VolumeOptions']['Subpath'] = 'runtime/host-data/connector-secrets'
@@ -747,6 +750,67 @@ class VolumeTests(unittest.TestCase):
         self.assertEqual(self.e.containers['recovered-host']['Image'], OLD)
         self.assertEqual(self.e.containers['demo-host']['State']['Status'], 'exited')
         self.assertFalse(any(c[0] == 'build' for c in self.e.calls))
+
+    def test_memory_mounts_follow_docker_version_and_stay_read_only(self):
+        def data_mounts():
+            return [m for m in self.e.containers[PROJECT+'-box']['Mounts'] if m['Destination'].startswith('/data')]
+
+        self.e.server = {'Version': '24.0.2', 'ApiVersion': '1.43'}
+        self.invoke('init')
+        with contextlib.redirect_stderr(io.StringIO()) as notice:
+            self.invoke('up')
+        self.assertIn('Docker Engine 24.0.2 is too old', notice.getvalue())
+        self.assertEqual(data_mounts(), [])
+        self.assertFalse((self.restored(PROJECT, 'host-data')/'runtime').exists(), 'data_init runs only with the overlay')
+        self.assertFalse(any(str(deploy.MEMORY_COMPOSE) in c for c in self.e.calls))
+
+        # Upgrading Docker later turns the feature on at the next update.
+        self.e.server = {'Version': '29.1.2', 'ApiVersion': '1.52'}
+        self.invoke('update')
+        self.assertEqual({m['Destination']: m['RW'] for m in data_mounts()}, dict.fromkeys(DATA_TARGETS, False))
+        self.assertEqual({p.name for p in (self.restored(PROJECT, 'host-data')/'runtime/host-data').iterdir()},
+                         set(backup.DATA_TREES))
+        self.invoke('backup')
+
+    def test_update_replaces_writable_memory_mounts_of_earlier_releases_with_read_only_ones(self):
+        # ProkBot Plus 1.7.0-1.14.0 created the box with the five Host-data trees writable.
+        self.invoke('init')
+        self.e.stack()
+        for mount in self.add_box_data_mounts()['Mounts']:
+            if mount['Destination'] in DATA_TARGETS:
+                mount['RW'] = True
+        with self.assertRaisesRegex(ValueError, 'writable; it must be read-only'):
+            backup.project_services(PROJECT, ('host', 'box'), host_data=True)
+        with contextlib.redirect_stderr(io.StringIO()) as notice:
+            self.invoke('backup')
+        self.assertIn('Run update', notice.getvalue())
+        with contextlib.redirect_stderr(io.StringIO()) as notice:
+            self.invoke('update')
+        self.assertIn('replaces those mounts with read-only ones', notice.getvalue())
+        box = self.e.containers[PROJECT+'-box']
+        self.assertEqual({m['Destination']: m['RW'] for m in box['Mounts'] if m['Destination'] in DATA_TARGETS},
+                         dict.fromkeys(DATA_TARGETS, False))
+        self.assertEqual(set(backup.project_services(PROJECT, ('host', 'box'), host_data=True)), {'host', 'box'})
+        self.assertEqual(len(list((self.home / 'backups').glob('*/manifest.json'))), 2)
+        with contextlib.redirect_stderr(io.StringIO()) as notice:
+            self.invoke('backup')
+        self.assertNotIn('writable', notice.getvalue())
+
+    def test_a_started_box_with_writable_memory_mounts_fails_the_update(self):
+        self.invoke('init')
+        self.e.stack()
+        command = self.e.docker
+        def writable(cmd, **kw):
+            result = command(cmd, **kw)
+            if cmd[0] == 'compose' and 'up' in cmd:
+                for mount in self.e.containers['demo-box']['Mounts']:
+                    if mount['Destination'] in DATA_TARGETS:
+                        mount['RW'] = True
+            return result
+        with patch.object(self.e, 'docker', writable), \
+             self.assertRaisesRegex(RuntimeError, 'Project services are stopped.*must be read-only'):
+            self.invoke('update')
+        self.assertTrue(all(c['State']['Status'] == 'exited' for c in self.e.containers.values()))
 
     def test_fresh_install_and_existing_update_reuse_data(self):
         self.invoke('init')
