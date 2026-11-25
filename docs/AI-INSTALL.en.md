@@ -43,7 +43,7 @@ EOF
 
 Do not clone over existing code. Without GitHub access on the server, run `git archive --format=tar.gz -o prokbot-host-src.tar.gz HEAD host` on the client, transfer only that archive, and extract it into a fresh source directory. Never upload your working tree or private files. Builds still require access to the pinned upstream inputs and dependencies.
 
-A successful `doctor` prints JSON with `ok: true`, the Host platform, desktop mode, `memoryMounts`, resources and volumes; with an existing `.env` it also gives the web client address `webClientUrl` and checks that no other container holds the admin or web client port. `hostDataVolumes` includes Host volumes under other project names. If you find an existing instance, confirm its `.env`, project name and topology, then **update** it. Do not change project names to reinstall. A failed probe stops before the large desktop download. For a new instance:
+A successful `doctor` prints JSON with `ok: true`, the Host platform, desktop mode, `memoryMounts`, resources and volumes; with an existing `.env` it also gives the web client address `webClientUrl` and checks that no other container or program holds the admin or web client port. `hostDataVolumes` includes Host volumes under other project names. If you find an existing instance, confirm its `.env`, project name and topology, then **update** it. Do not change project names to reinstall. A failed probe stops before the large desktop download. For a new instance:
 
 ```sh
 cd "$HOME/grokbot/src"

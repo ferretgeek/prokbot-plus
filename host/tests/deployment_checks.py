@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import re
+import socket
 import sys
 import tempfile
 import unittest
@@ -145,6 +146,31 @@ class DeploymentTests(unittest.TestCase):
             config['services']['host']['ports'] = [{'published': '18081', 'target': 8000},
                                                    {'published': '18081', 'target': 8001}]
             with self.assertRaisesRegex(ValueError, 'Port 18081 is published twice'):
+                deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+
+    def test_a_port_held_by_a_program_outside_docker_is_refused(self):
+        # An update from before 1.15.0 adds the web client port; Compose would fail only after the old services stopped.
+        with socket.socket() as holder:
+            holder.bind(('127.0.0.1', 0))
+            holder.listen()
+            port = str(holder.getsockname()[1])
+            config = {'services': {'host': {'ports': [{'published': port, 'target': 8001, 'host_ip': '127.0.0.1'}]}}}
+            published = ''
+            def docker(cmd, **kwargs):
+                if cmd[-3:] == ['config', '--format', 'json']:
+                    return SimpleNamespace(stdout=json.dumps(config))
+                if cmd[:2] == ['docker', 'ps']:
+                    return SimpleNamespace(stdout=published)
+                raise AssertionError(cmd)
+            with patch.object(deploy, 'run', side_effect=docker), \
+                 patch.object(deploy.volume_backup, 'project_ids', return_value=['own']):
+                with self.assertRaisesRegex(ValueError, f'Port {port} of host is already in use by another program'):
+                    deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+                # The instance's own running container is what holds a port it already publishes.
+                published = 'own\n'
+                deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+                published = ''
+                holder.close()
                 deploy.check_free_ports(['docker', 'compose'], 'demo', True)
 
     def test_invalid_url_writes_nothing(self):

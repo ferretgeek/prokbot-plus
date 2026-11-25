@@ -25,7 +25,7 @@ python3 deploy.py up
 网页版由 Host 的第二个端口提供（容器内 8001），管理页和客户端仍然使用 8000。两个端口是两个不同的网址：界面包里是官方界面的代码，放在单独的网址上，即使同一个浏览器登录过管理页，这些代码也调用不了管理接口。网页版端口只提供登录页、界面包和网页版用到的设备接口；旧的 `/web/` 链接会从管理页地址跳转过去。
 
 - **端口**：Compose 把网页版映射到 `.env` 的 `GROKBOT_WEB_PUBLIC_PORT`（`init --web-port`，默认是 `--port` 加 1，即 18081；1.15.0 以前的实例没有这一项，按 18081），监听地址和管理页一样由 `GROKBOT_LISTEN_ADDRESS` 决定。直接用 IP 或域名加端口访问时不需要别的设置，网页版地址就是同一个主机名加上网页版端口。
-- **多个实例**：同一台机器上的每个实例要用不同的 `GROKBOT_PUBLIC_PORT` 和 `GROKBOT_WEB_PUBLIC_PORT`。`up`、`update`、`recover` 和 `doctor` 发现端口已被其他容器占用，或两个端口相同时，在构建、停止或解包前拒绝。
+- **多个实例**：同一台机器上的每个实例要用不同的 `GROKBOT_PUBLIC_PORT` 和 `GROKBOT_WEB_PUBLIC_PORT`。`up`、`update`、`recover` 和 `doctor` 发现端口已被其他容器或本机其他程序占用，或两个端口相同时，在构建、停止或解包前拒绝。
 - **HTTPS 反向代理**：给网页版单独配置一个入口，建议用单独的子域名，并让 Host 知道两个地址：新实例给 `init` 加 `--web-public-url https://web.bot.example.org`，已有实例在 `.env` 加 `GROKBOT_WEB_PUBLIC_URL` 再 `update`。两个地址不能相同，相同时 Host 不会启动，`up`、`update`、`recover` 和 `doctor` 会在改动任何东西之前拒绝；也不要用路径（例如 `https://bot.example.org/web/`）把网页版放在管理页的网址下面。
 - **网页版地址**：`init` 输出的 `webClientUrl`、`up` 和 `update` 结束时的 `Web client` 一行、`doctor` 的 `webClientUrl` 和管理页「网页版」显示的都是它。
 
@@ -90,7 +90,7 @@ python3 deploy.py backup < /dev/null
 - 备份会暂停正在运行的容器，结束后恢复。`update` 先构建候选，再停止旧服务并备份。分机部署不是跨主机原子快照，要协调两端停止写入。
 - **Bot 读记忆**：同机部署时，Docker Engine 26.0+（API 1.45+）且 Compose 2.26.0+ 的 `up`、`update`、`recover` 会加上 `release/compose.memory.yaml`，把 `agents`、`user-memory`、`workflows`、`plugins`、`managed-skills` 五棵数据目录**只读**挂到 Box 的 `/data/runtime/host-data/<目录>`，Bot 能查阅记忆，不能修改任何 Bot 的设置、记忆或自动任务。`agent-transcripts`、`connector-secrets`、`model.env`、`auth.json`、`projects` 和内部令牌都不会暴露给 Box；`agents/<id>/` 里的数据库 Bot 的 Shell 看得到，Read 工具读不了，和官方同机运行时一样。版本不够时提示并跳过，部署照常进行；`doctor` 的 `memoryMounts` 表示能否开启，`--host-only` 不挂这些目录。数据初始化只设置新建目录的属主和权限，不改已有顶层目录。部署、备份和恢复都会核对挂载集合。1.7.0–1.14.0 的 Box 以可写方式挂载这些目录，`backup` 照常备份，`update` 把它们换成只读。
 
-**恢复成一个新实例**：分开保管卷备份、原 `.env`、对应代码版本和镜像；清单的 `serviceImages` 记录完整镜像 ID，目标 Docker 必须已有这些镜像。先确认原实例及其他机器上的同一身份都已停机，不要对原项目运行 `down -v`。以下是回环地址的同机示例，目录和项目名按实际替换；要让原有配对继续可用，用 `init` 的 `--listen`、`--port`、`--public-url` 重现原地址（网页版还有 `--web-port`、`--web-public-url`）；端口被其他容器占用时，`recover` 在解包前拒绝。独立 Host 在 `init` 前加 `--host-only`。
+**恢复成一个新实例**：分开保管卷备份、原 `.env`、对应代码版本和镜像；清单的 `serviceImages` 记录完整镜像 ID，目标 Docker 必须已有这些镜像。先确认原实例及其他机器上的同一身份都已停机，不要对原项目运行 `down -v`。以下是回环地址的同机示例，目录和项目名按实际替换；要让原有配对继续可用，用 `init` 的 `--listen`、`--port`、`--public-url` 重现原地址（网页版还有 `--web-port`、`--web-public-url`）；端口被其他容器或程序占用时，`recover` 在解包前拒绝。独立 Host 在 `init` 前加 `--host-only`。
 
 ```sh
 python3 deploy.py --home "$HOME/grokbot-restored" --project grokbot-restored init < /dev/null

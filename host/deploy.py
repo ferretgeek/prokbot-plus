@@ -3,6 +3,7 @@
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import ipaddress
 import json
 import os
@@ -10,6 +11,7 @@ from pathlib import Path
 import posixpath
 import re
 import shutil
+import socket
 import subprocess
 import sys
 from urllib.parse import urlsplit
@@ -281,23 +283,47 @@ def published_ports(dc, existing):
                 if port in ports:
                     raise ValueError(f'Port {port} is published twice by this instance. Set GROKBOT_WEB_PUBLIC_PORT in '
                                      'its .env to a free port other than GROKBOT_PUBLIC_PORT.')
-                ports[port] = name
+                ports[port] = name, item.get('host_ip') or '0.0.0.0'
     return ports
 
 
+def port_in_use(address, port):
+    """True when a program outside Docker already listens where Compose would publish the port."""
+    address = address.strip('[]')
+    try:
+        family = socket.AF_INET6 if ipaddress.ip_address(address).version == 6 else socket.AF_INET
+    except ValueError:
+        return False
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if os.name != 'nt':
+            # Connections still closing do not block the probe; a listening socket does.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((address, int(port)))
+        except OSError as error:
+            # Other failures (a privileged port, an address of another machine) are left to Compose.
+            return error.errno in (errno.EADDRINUSE, getattr(errno, 'WSAEADDRINUSE', errno.EADDRINUSE))
+    return False
+
+
 def check_free_ports(dc, project, existing):
-    """Refuse ports another running container already publishes, before building, stopping or restoring.
+    """Refuse ports another container or program already uses, before building, stopping or restoring.
 
     Two instances on one machine, such as a recovered copy next to the original, need their own main and
-    web client ports; Compose would otherwise fail only after the old services were stopped."""
+    web client ports, and an update from before 1.15.0 adds the web client port; Compose would otherwise
+    fail only after the old services were stopped."""
     own = set(volume_backup.project_ids(project))
-    for port, service in sorted(published_ports(dc, existing).items()):
-        users = [cid for cid in run(['docker', 'ps', '-q', '--no-trunc', '--filter', f'publish={port}'],
-                                    capture=True).stdout.split() if cid not in own]
-        if users:
+    for port, (service, address) in sorted(published_ports(dc, existing).items()):
+        users = run(['docker', 'ps', '-q', '--no-trunc', '--filter', f'publish={port}'], capture=True).stdout.split()
+        if any(cid not in own for cid in users):
             raise ValueError(f'Port {port} of {service} is already published by another container. Give this instance '
                              'its own ports: GROKBOT_PUBLIC_PORT and GROKBOT_WEB_PUBLIC_PORT in its .env '
                              '(init --port and --web-port).')
+        # A port this instance publishes now is busy because of it; any other must be free.
+        if not users and port_in_use(address, port):
+            raise ValueError(f'Port {port} of {service} is already in use by another program on this machine. Free it, '
+                             'or give this instance other ports: GROKBOT_PUBLIC_PORT and GROKBOT_WEB_PUBLIC_PORT in '
+                             'its .env (init --port and --web-port).')
 
 
 def inventory(project, services, *, new, legacy_writable=False):

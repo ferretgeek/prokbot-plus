@@ -43,7 +43,7 @@ EOF
 
 已有代码不要重复 clone。服务器不能访问 GitHub 时，在本机用 `git archive --format=tar.gz -o prokbot-host-src.tar.gz HEAD host`，只上传这个归档，解到新的源码目录；不要打包工作目录或私密文件。构建仍需访问固定原版来源和依赖源。
 
-`doctor` 成功时输出 JSON：`ok: true`、Host 架构、桌面方式、`memoryMounts`、资源和数据卷；已有 `.env` 时还有网页版地址 `webClientUrl`，并检查管理页和网页版端口没有被其他容器占用。`hostDataVolumes` 包括其他项目名下的 Host 卷。若发现已有实例，先确认原来的 `.env`、项目名和部署方式。仅在明确要升级服务端时才运行 `update`；只更新客户端请跳过服务器步骤。不要换项目名重装。探针失败不会下载大桌面。新装示例：
+`doctor` 成功时输出 JSON：`ok: true`、Host 架构、桌面方式、`memoryMounts`、资源和数据卷；已有 `.env` 时还有网页版地址 `webClientUrl`，并检查管理页和网页版端口没有被其他容器或本机其他程序占用。`hostDataVolumes` 包括其他项目名下的 Host 卷。若发现已有实例，先确认原来的 `.env`、项目名和部署方式。仅在明确要升级服务端时才运行 `update`；只更新客户端请跳过服务器步骤。不要换项目名重装。探针失败不会下载大桌面。新装示例：
 
 ```sh
 cd "$HOME/grokbot/src"
