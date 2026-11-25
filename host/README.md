@@ -26,7 +26,7 @@ python3 deploy.py up
 
 - **端口**：Compose 把网页版映射到 `.env` 的 `GROKBOT_WEB_PUBLIC_PORT`（`init --web-port`，默认是 `--port` 加 1，即 18081；1.15.0 以前的实例没有这一项，按 18081），监听地址和管理页一样由 `GROKBOT_LISTEN_ADDRESS` 决定。直接用 IP 或域名加端口访问时不需要别的设置，网页版地址就是同一个主机名加上网页版端口。
 - **多个实例**：同一台机器上的每个实例要用不同的 `GROKBOT_PUBLIC_PORT` 和 `GROKBOT_WEB_PUBLIC_PORT`。`up`、`update`、`recover` 和 `doctor` 发现端口已被其他容器占用，或两个端口相同时，在构建、停止或解包前拒绝。
-- **HTTPS 反向代理**：给网页版单独配置一个入口，建议用单独的子域名，并让 Host 知道两个地址：新实例给 `init` 加 `--web-public-url https://web.bot.example.org`，已有实例在 `.env` 加 `GROKBOT_WEB_PUBLIC_URL` 再 `update`。两个地址不能相同，相同时 Host 不会启动；也不要用路径（例如 `https://bot.example.org/web/`）把网页版放在管理页的网址下面。
+- **HTTPS 反向代理**：给网页版单独配置一个入口，建议用单独的子域名，并让 Host 知道两个地址：新实例给 `init` 加 `--web-public-url https://web.bot.example.org`，已有实例在 `.env` 加 `GROKBOT_WEB_PUBLIC_URL` 再 `update`。两个地址不能相同，相同时 Host 不会启动，`up`、`update`、`recover` 和 `doctor` 会在改动任何东西之前拒绝；也不要用路径（例如 `https://bot.example.org/web/`）把网页版放在管理页的网址下面。
 - **网页版地址**：`init` 输出的 `webClientUrl`、`up` 和 `update` 结束时的 `Web client` 一行、`doctor` 的 `webClientUrl` 和管理页「网页版」显示的都是它。
 
 ```sh

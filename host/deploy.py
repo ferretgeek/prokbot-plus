@@ -77,6 +77,15 @@ def web_client_url(values):
     return f"{main.scheme}://{host}:{values.get('GROKBOT_WEB_PUBLIC_PORT') or DEFAULT_WEB_PORT}/web/"
 
 
+def check_web_address(home):
+    """Refuse a web client address equal to the admin address before anything changes; the Host would not start."""
+    values = instance_env(home)
+    main, web = values.get('GROKBOT_PUBLIC_URL'), values.get('GROKBOT_WEB_PUBLIC_URL')
+    if main and web and {urlsplit(main).scheme, urlsplit(web).scheme} <= {'http', 'https'} and same_origin(main, web):
+        raise ValueError('GROKBOT_WEB_PUBLIC_URL must differ from GROKBOT_PUBLIC_URL: the web client needs its own '
+                         'address, such as its own subdomain behind the reverse proxy.')
+
+
 def web_notice(home):
     values = instance_env(home)
     https = urlsplit(values.get('GROKBOT_PUBLIC_URL') or 'http:').scheme == 'https'
@@ -558,6 +567,7 @@ def recover(args, home, dc, services):
     check_platform(images['host'])
     instance_images(dc, args.project, services, True, pinned=images)
     check_free_ports(dc, args.project, True)
+    check_web_address(home)
     root = manifest.get('lineageRoot')
     with volume_backup.project_lock(origin), volume_backup.lineage_lock(root):
         volume_backup.check_lineage(root, args.project, original=origin)
@@ -586,6 +596,7 @@ def operate(args, home, dc):
     if args.action == 'backup':
         return backup(args, home, current['host']['Image'] if 'host' in current else image)
     check_free_ports(dc, args.project, args.action != 'up')
+    check_web_address(home)
     root = volume_backup.local_lineage(args.project) if args.action == 'update' else args.project
     # Builders also publish fixed shared base/desktop tags. One daemon-wide writer covers aliases and rollback.
     with volume_backup.lineage_lock(root), volume_backup.operation_lock('prokbot-image-publication-lock'):
@@ -666,6 +677,7 @@ def main(argv=None):
                 run(compose(args, home, memory=memory) + ['config', '--quiet'])
                 report['webClientUrl'] = web_client_url(instance_env(home))
                 check_free_ports(compose(args, home), args.project, bool(report['existingVolumes']))
+                check_web_address(home)
             if not args.host_only:
                 check_box_execution(platform)
             report['ok'] = True

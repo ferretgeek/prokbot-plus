@@ -116,6 +116,15 @@ class DeploymentTests(unittest.TestCase):
                 deploy.web_notice(self.home)
             self.assertIn('https://bot.example.org:18081/web/', notice.getvalue())
             self.assertIn('GROKBOT_WEB_PUBLIC_URL', notice.getvalue())
+            deploy.check_web_address(self.home)
+            # A hand-edited web client URL equal to the admin URL is refused before an update stops anything.
+            (self.home / '.env').write_text('GROKBOT_PUBLIC_URL=https://bot.example.org\n'
+                                            "GROKBOT_WEB_PUBLIC_URL='https://BOT.example.org:443/'\n")
+            with self.assertRaisesRegex(ValueError, 'must differ from GROKBOT_PUBLIC_URL'):
+                deploy.check_web_address(self.home)
+            (self.home / '.env').write_text('GROKBOT_PUBLIC_URL=https://bot.example.org\n'
+                                            'GROKBOT_WEB_PUBLIC_URL=https://web.bot.example.org\n')
+            deploy.check_web_address(self.home)
 
     def test_ports_published_by_another_instance_are_refused_before_anything_changes(self):
         config = {'services': {'host': {'ports': [{'published': '18080', 'target': 8000},
