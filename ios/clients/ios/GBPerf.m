@@ -87,9 +87,8 @@ static void GBPerfUninstallProbes(void) {
     method_setImplementation(GBPerfLayoutMetricsMethod, GBPerfOriginalLayoutMetrics);
   if (GBPerfPropsMethod && GBPerfOriginalProps)
     method_setImplementation(GBPerfPropsMethod, GBPerfOriginalProps);
-  GBPerfOriginalPerform = NULL;
-  GBPerfOriginalLayoutMetrics = NULL;
-  GBPerfOriginalProps = NULL;
+  // Keep GBPerfOriginal* intact so any off-main-thread caller already inside a
+  // trampoline during uninstall still forwards to the original IMP safely.
   GBPerfPerformMethod = NULL;
   GBPerfLayoutMetricsMethod = NULL;
   GBPerfPropsMethod = NULL;
