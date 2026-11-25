@@ -3,14 +3,26 @@ import { constants } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// compose.memory.yaml mounts this tree read-only on a same-machine Bot computer, at the path
+// the Host itself uses.
+const MOUNTED_AGENTS = '/data/runtime/host-data/agents';
+
+/** True when the Bot computer already reads the Host's agents tree through the read-only mount. */
+export function agentsMountedOnBox(agents, env = process.env) {
+  return env.GROKBOT_HOST_MEMORY_MOUNTS === '1' && agents === MOUNTED_AGENTS;
+}
+
 // Host and execution nodes need not share a filesystem. The original prompt
 // identifies managed attachments as already present on the Bot computer.
-export async function syncTurnAttachments(options, turn, library, root = process.env.SAND_DATA_ROOT) {
+// With the read-only memory mounts they already are there, and writing a copy
+// would fail with EROFS and end the turn.
+export async function syncTurnAttachments(options, turn, library, root = process.env.SAND_DATA_ROOT, env = process.env) {
   const paths = [...turn.attachedFilePaths ?? [],
     ...(turn.selectedImages ?? []).map(image => image.path),
     ...(turn.selectedVideos ?? []).map(video => video.path)];
   if (!root || !paths.length) return;
   const agents = join(resolve(root), 'agents');
+  if (agentsMountedOnBox(agents, env)) return;
   const agentId = options.getAgentId?.() ?? options.agentStore?.getId();
   const [context, cancel] = library.createContext().withCancel();
   const timer = setTimeout(() => cancel(new Error('Attachment transfer timed out')), 120_000);
