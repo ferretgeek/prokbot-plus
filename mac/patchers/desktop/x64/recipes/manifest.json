@@ -6,17 +6,17 @@
       "source": "dist/electron-main/main-app.cjs",
       "newFile": true,
       "recipe": "000.gbp.gz",
-      "sha256": "f1d62ecf98c3750c3231e93c63bdc85e38b4cbb1022a33b3c142b87fc66afa22",
-      "targetBytes": 3211727,
-      "addedBytes": 119
+      "sha256": "70b89493e7e6e9c325adfd13be27e9d37a7e82172df298a6885f0910a271a4e2",
+      "targetBytes": 3436416,
+      "addedBytes": 120
     },
     {
       "path": "dist/electron-main/local-shared.cjs",
       "source": "dist/electron-main/main-core.cjs",
       "newFile": true,
       "recipe": "001.gbp.gz",
-      "sha256": "b08cff6eb4484135b5d58d1f6ee09454012bb0724bcbcbbc10071ce577135113",
-      "targetBytes": 1636210,
+      "sha256": "1468f3b1cdc589d506366651074735525c22efbe1cba3ab50c113895ea888c58",
+      "targetBytes": 1650562,
       "addedBytes": 37
     },
     {
@@ -24,8 +24,8 @@
       "source": "dist/local-exec-daemon/main.cjs",
       "newFile": false,
       "recipe": "002.gbp.gz",
-      "sha256": "dad1372decacea4c4cf1a8453ee98179e8de4dbbf3fa3d8f74b3ea283209030f",
-      "targetBytes": 3503384,
+      "sha256": "6098a07133198cc4c7a503cc8b78f1c4087faf2ee242cc3c63063af95212e283",
+      "targetBytes": 3591040,
       "addedBytes": 143
     },
     {
@@ -33,116 +33,116 @@
       "source": "dist/node-agent-coordinator/main.cjs",
       "newFile": true,
       "recipe": "003.gbp.gz",
-      "sha256": "39e32f20a2794801f1b37974a08ca542da01b12b5a4d507863f23969a5c001d9",
-      "targetBytes": 1452153,
+      "sha256": "c4dda71ceb2a8804bbcb9a871fc0b9f08079ca1ddd2b020fd5e641742f1c9b78",
+      "targetBytes": 1543052,
       "addedBytes": 150
     },
     {
-      "path": "dist/renderer/assets/chunk-bot-store-files-library-C-Oexg5k.js",
-      "source": "dist/renderer/assets/chunk-bot-store-files-library-C-Oexg5k.js",
+      "path": "dist/renderer/assets/chunk-bot-store-files-library-C2UXXtjc.js",
+      "source": "dist/renderer/assets/chunk-bot-store-files-library-C2UXXtjc.js",
       "newFile": false,
       "recipe": "004.gbp.gz",
-      "sha256": "7eb8c22b3ff93828df58e92037d95f13612a799b4e4786493f19c73ccb09ad02",
-      "targetBytes": 11154,
+      "sha256": "40dd4eea6594ebbe38857efb2935cc515ef9f4721831ca8103eb198412f8938d",
+      "targetBytes": 11150,
       "addedBytes": 1291
     },
     {
-      "path": "dist/renderer/assets/chunk-general-pane-mzQRAJcg.js",
-      "source": "dist/renderer/assets/chunk-general-pane-mzQRAJcg.js",
+      "path": "dist/renderer/assets/chunk-general-pane-Ce12dsFk.js",
+      "source": "dist/renderer/assets/chunk-general-pane-Ce12dsFk.js",
       "newFile": false,
       "recipe": "005.gbp.gz",
-      "sha256": "d320fc9236652252def1648891912c7c0c349a4563fce9e2be9c2dbdaf7609a8",
-      "targetBytes": 149529,
-      "addedBytes": 17827
+      "sha256": "0669444dab203d1cc893dc5ed1339478f871292ce1a84454581b530d6033d490",
+      "targetBytes": 150440,
+      "addedBytes": 17814
     },
     {
-      "path": "dist/renderer/assets/chunk-marketplace-browse-model-BzNg1DeV.js",
-      "source": "dist/renderer/assets/chunk-marketplace-browse-model-BzNg1DeV.js",
+      "path": "dist/renderer/assets/chunk-marketplace-browse-model-DjXZiX7C.js",
+      "source": "dist/renderer/assets/chunk-marketplace-browse-model-DjXZiX7C.js",
       "newFile": false,
       "recipe": "006.gbp.gz",
-      "sha256": "489bb15667afe6a22d9d25666433345aafd0b84e7eff42885b9386d2758f530a",
-      "targetBytes": 4724,
+      "sha256": "5d8d7373bd231f2395b4342cf7ca698d6b50e39a2fe828a700e3aff11f33d9a8",
+      "targetBytes": 4973,
       "addedBytes": 51
     },
     {
-      "path": "dist/renderer/assets/chunk-plugin-detail-sharepoint-write-kXktwxEL.js",
-      "source": "dist/renderer/assets/chunk-plugin-detail-sharepoint-write-kXktwxEL.js",
+      "path": "dist/renderer/assets/chunk-plugin-detail-sharepoint-write-Dg88w24S.js",
+      "source": "dist/renderer/assets/chunk-plugin-detail-sharepoint-write-Dg88w24S.js",
       "newFile": false,
       "recipe": "007.gbp.gz",
-      "sha256": "19b0fdd7e8f5aaddb45df0ab376b2d5806918526f26c75702e0d1dfcc8c9e7b2",
-      "targetBytes": 41469,
+      "sha256": "b06df9afdb728311e6bc2ca0f4056dc10a18f09f812cc289a46f86d4accbd2e3",
+      "targetBytes": 41977,
       "addedBytes": 98
     },
     {
-      "path": "dist/renderer/assets/chunk-plugin-detail-view-CRBo_LQw.js",
-      "source": "dist/renderer/assets/chunk-plugin-detail-view-CRBo_LQw.js",
+      "path": "dist/renderer/assets/chunk-plugin-detail-view-BvMbet6K.js",
+      "source": "dist/renderer/assets/chunk-plugin-detail-view-BvMbet6K.js",
       "newFile": false,
       "recipe": "008.gbp.gz",
-      "sha256": "cad25953073ec0781ed2213d94c18d3c160ce59e3b56a3cdcef5174d0174b04f",
-      "targetBytes": 91830,
+      "sha256": "f4aeb97371858dfaff31c8294f43e46b800cc3cb44b94067701718b8be1eb013",
+      "targetBytes": 100447,
       "addedBytes": 83
     },
     {
-      "path": "dist/renderer/assets/chunk-sentry-sdk-HCUyCkaO.js",
-      "source": "dist/renderer/assets/chunk-sentry-sdk-HCUyCkaO.js",
+      "path": "dist/renderer/assets/chunk-sentry-sdk-Cw7rY2oR.js",
+      "source": "dist/renderer/assets/chunk-sentry-sdk-Cw7rY2oR.js",
       "newFile": false,
       "recipe": "009.gbp.gz",
-      "sha256": "d21725418879636391c89ff7e1037521b3e894a5b2097c2219a9d4b48c8d0121",
+      "sha256": "c9ec805d95d1bdfc7d18e9d311735406edecdbf233fb593afaec4c512f380b05",
       "targetBytes": 131,
       "addedBytes": 131
     },
     {
-      "path": "dist/renderer/assets/chunk-view-BRGRN7FA.js",
-      "source": "dist/renderer/assets/chunk-view-BRGRN7FA.js",
+      "path": "dist/renderer/assets/chunk-view-BC5Twrke.js",
+      "source": "dist/renderer/assets/chunk-view-BC5Twrke.js",
       "newFile": false,
       "recipe": "010.gbp.gz",
-      "sha256": "931d84a4a8592ae46afa468f3dc31e2ecf34707161ee6780054f96392a7167ee",
-      "targetBytes": 10153,
+      "sha256": "1972eb2738de323d5f1f4590fa7c741bff3f0252413c5036d5c1b37575bcd77d",
+      "targetBytes": 69977,
+      "addedBytes": 715
+    },
+    {
+      "path": "dist/renderer/assets/chunk-view-CR79mJex.js",
+      "source": "dist/renderer/assets/chunk-view-CR79mJex.js",
+      "newFile": false,
+      "recipe": "011.gbp.gz",
+      "sha256": "b240547c5b401119a4e75877191ee5ced8276f6ecb55295c6e5f7adc9e123333",
+      "targetBytes": 10201,
       "addedBytes": 955
     },
     {
-      "path": "dist/renderer/assets/chunk-view-C3j3Yy0H.js",
-      "source": "dist/renderer/assets/chunk-view-C3j3Yy0H.js",
-      "newFile": false,
-      "recipe": "011.gbp.gz",
-      "sha256": "56a31d2b49a5af34a1fd7634ba210ac65c35e3c4db467dad89cbbc4d1553438c",
-      "targetBytes": 173512,
-      "addedBytes": 22
-    },
-    {
-      "path": "dist/renderer/assets/chunk-view-CLKzvWVb.js",
-      "source": "dist/renderer/assets/chunk-view-CLKzvWVb.js",
+      "path": "dist/renderer/assets/chunk-view-xNHC-_w2.js",
+      "source": "dist/renderer/assets/chunk-view-xNHC-_w2.js",
       "newFile": false,
       "recipe": "012.gbp.gz",
-      "sha256": "51f9456ddd6d25bfde6da0bcb1d742bbb3e9a4ba2d872fb9a5da042a8f2bb936",
-      "targetBytes": 70214,
-      "addedBytes": 718
+      "sha256": "1cdb7d64ba40aa87a0026bb15e9bc21eec9bd3b40646732a106673af66c8c2cc",
+      "targetBytes": 174226,
+      "addedBytes": 22
     },
     {
       "path": "dist/renderer/assets/grok-local-i18n.js",
       "source": null,
       "newFile": true,
       "recipe": "013.gbp.gz",
-      "sha256": "a88f931c219413d2078655b879d5e2cb1ebb4e8b467854b1e7c4b14393d0e74b",
+      "sha256": "305d9bf3ef451d746810507d63a30ddcac07b1afd3adacdb794afc76c35be513",
       "targetBytes": 478,
       "addedBytes": 478
     },
     {
-      "path": "dist/renderer/assets/index.eager-app-BiroyIsg.js",
-      "source": "dist/renderer/assets/index.eager-app-BiroyIsg.js",
+      "path": "dist/renderer/assets/index.eager-app-6m_k8xdV.js",
+      "source": "dist/renderer/assets/index.eager-app-6m_k8xdV.js",
       "newFile": false,
       "recipe": "014.gbp.gz",
-      "sha256": "78f5a756b4c72c170ab1f02ef59782d52479d998359814db7cafa4273d4ece4e",
-      "targetBytes": 5398224,
-      "addedBytes": 4991
+      "sha256": "317e4d935d05dbc18ada0d31232146af59ebee0046d2dc54f4365944da7095e1",
+      "targetBytes": 5747609,
+      "addedBytes": 4990
     },
     {
-      "path": "dist/renderer/assets/index.eager-common-D2eZn7JB.js",
-      "source": "dist/renderer/assets/index.eager-common-D2eZn7JB.js",
+      "path": "dist/renderer/assets/index.eager-common-rGW_2t4Y.js",
+      "source": "dist/renderer/assets/index.eager-common-rGW_2t4Y.js",
       "newFile": false,
       "recipe": "015.gbp.gz",
-      "sha256": "c27722fcb9a8095cd406d9fcf4171e8eaa17fdac94733c76882a9b17d7b1be42",
-      "targetBytes": 418192,
+      "sha256": "6a3f8b900be96e7ec95069a76854bf9cc2b8157f7418706a1776c692a94c45ed",
+      "targetBytes": 422046,
       "addedBytes": 14
     },
     {
@@ -150,8 +150,8 @@
       "source": "dist/renderer/index.html",
       "newFile": false,
       "recipe": "016.gbp.gz",
-      "sha256": "eb64e3eff1b46aac1de4c4c218584cea3dd3b463b42675a75ef21177364c4597",
-      "targetBytes": 8997,
+      "sha256": "244644c0f456f9bf7636fa869c0943c27afb8dba350d2ffa0c79caae93f3e75e",
+      "targetBytes": 6979,
       "addedBytes": 0
     }
   ]
