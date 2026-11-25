@@ -151,6 +151,8 @@ export async function createLocalServices(profile, window, { command, request, a
     }),
     getCursorSelectedTeam: () => ({ selectedTeamId: null, fallback: null }),
     listCursorTeamMemberships: () => [],
+    listCursorTeamMembers: () => ({ members: [] }),
+    getGrokBotInviteByEmailEligibility: () => "unknown",
     getCursorAvatar: () => null,
     getSandAccess: () => access,
     getSandAccessFresh: () => access,
@@ -234,6 +236,7 @@ export async function createLocalServices(profile, window, { command, request, a
     getGrokBotAgentPreview: () => ({ people: [], stats: null, popularWithRoles: [] }),
     browseGrokBotTeamAgents: () => ({ kind: 'unranked' }),
     getPluginMcpServerLinks: () => null,
+    getGrokBotAutomationPurchase: () => null,
     // The official handler opens an internal developer window and does nothing in release builds.
     openBotDictationSettings: () => null,
     listCursorTeamGroups: () => [],

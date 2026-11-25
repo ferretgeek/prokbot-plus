@@ -63,6 +63,9 @@ test('desktop IPC probes require a trusted window, a declaration and an installe
   assert.deepEqual(await call('getGrokBotAgentPreview', { agentId: 'a', maxPeople: 3 }), { people: [], stats: null, popularWithRoles: [] });
   assert.deepEqual(await call('browseGrokBotTeamAgents'), { kind: 'unranked' });
   assert.equal(await call('getPluginMcpServerLinks', { pluginId: '1' }), null);
+  assert.equal(await call('getGrokBotAutomationPurchase', { agentId: 'a', automationId: 'b' }), null);
+  assert.equal(await call('getGrokBotInviteByEmailEligibility'), 'unknown');
+  assert.deepEqual(await call('listCursorTeamMembers', { teamId: 1 }), { members: [] });
   assert.deepEqual(await call('getMcpMarketplaceLinkNeeds'), { bitbucketServerHostIds: [] });
   assert.equal(await call('openBotDictationSettings'), null);
   for (const passive of ['reportComputerControl', 'reportInfoPaneToggled', 'reportTasksPanelOpened', 'reportTaskOpened'])

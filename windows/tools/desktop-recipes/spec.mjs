@@ -214,9 +214,18 @@ export function buildSpec(target = 'windows') {
       // Signing out disconnects from the Host; nothing stays on a cloud computer.
       { replace: 'description:toe(e)===null?xi._({id:`5qRD8O`}):xi._({id:`W51kAS`}),', text: 'description:``,' },
       // Bot settings: title, instructions and library files are kept on the Host; the Host
-      // chooses the voice, so neither the Bot nor a call offers voice settings.
+      // chooses the voice, so neither the Bot nor a call offers voice settings. When the
+      // simplified right pane (sand_simplified_right_pane) is active, keep the official
+      // Settings gear button and surface Instructions + Notifications in the Details tab.
       { replace: '(c=(0,Z.jsxs)(`div`,{...r,children:[i,o,s]}),',
         text: '(c=(0,Z.jsxs)(`div`,{...r,children:[i,o,s,(0,Z.jsx)(GrokLocalSettings,{agent:n})]}),' },
+      { replace: 'G=!M&&n.viewerIsOwner!==!1,', text: 'G=n.viewerIsOwner!==!1,' },
+      { replace: 'else if(G){let e;t[120]===Symbol.for(`react.memo_cache_sentinel`)?(e={onOpenSettings:dn},t[120]=e):e=t[120],hn=e}',
+        text: 'else if(G&&!M){let e;t[120]===Symbol.for(`react.memo_cache_sentinel`)?(e={onOpenSettings:dn},t[120]=e):e=t[120],hn=e}' },
+      { replace: 't[135]===o?s=t[136]:(s={actions:o},t[135]=o,t[136]=s),hn=s}',
+        text: 'hn=G?{actions:o,onOpenSettings:dn}:{actions:o}}' },
+      { replace: 'let m;return t[14]!==f||t[15]!==p?(m=(0,Z.jsxs)(Z.Fragment,{children:[f,p]}),t[14]=f,t[15]=p,t[16]=m):m=t[16],m}',
+        text: 'return(0,Z.jsxs)(Z.Fragment,{children:[f,p,(0,Z.jsx)(GrokLocalOverviewSettings,{agent:n})]})}' },
       { insertAfter: 'function _Nt(e){', text: 'return null;' },
       { replace: 'let M=j;!M&&(g===`settings`||v===`settings`)', text: 'let M=!1;!M&&(g===`settings`||v===`settings`)' },
       // Connected apps: hide built-in official 1Password native entry; no link to the cloud Bot templates.
