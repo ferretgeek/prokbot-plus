@@ -267,7 +267,12 @@ def published_ports(dc, existing):
     for name, service in config['services'].items():
         for item in service.get('ports') or []:
             if isinstance(item, dict) and item.get('published'):
-                ports[str(item['published'])] = name
+                port = str(item['published'])
+                # An instance from before 1.15.0 initialised with --port 18081 meets the default web client port.
+                if port in ports:
+                    raise ValueError(f'Port {port} is published twice by this instance. Set GROKBOT_WEB_PUBLIC_PORT in '
+                                     'its .env to a free port other than GROKBOT_PUBLIC_PORT.')
+                ports[port] = name
     return ports
 
 

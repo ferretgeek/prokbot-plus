@@ -132,6 +132,11 @@ class DeploymentTests(unittest.TestCase):
                 deploy.check_free_ports(['docker', 'compose'], 'demo', True)
             config['services']['host']['ports'].pop()
             deploy.check_free_ports(['docker', 'compose'], 'demo', True)
+            # An earlier instance on --port 18081 collides with the default web client port of its own.
+            config['services']['host']['ports'] = [{'published': '18081', 'target': 8000},
+                                                   {'published': '18081', 'target': 8001}]
+            with self.assertRaisesRegex(ValueError, 'Port 18081 is published twice'):
+                deploy.check_free_ports(['docker', 'compose'], 'demo', True)
 
     def test_invalid_url_writes_nothing(self):
         for url in ['http://bot/path', 'http://user@bot', 'https://bot:65536', 'http://bot?key=x', 'https://bot:0']:
