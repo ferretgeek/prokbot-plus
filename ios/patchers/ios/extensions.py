@@ -5,6 +5,11 @@ import re
 import struct
 
 EXTENSIONS_BY_RELEASE = {
+    ('1.28.0', '29649'): {
+        'Widgets.appex': ('widgets', 'cec882b9743ca49fae06a6c675f3916a156e1b5bb376d8c8beb9c5b413225a28'),
+        'ImageShareExtension.appex': ('share', '99386e2e1d94f853c0778d5cf363aad7f27a69496fdfb18c42069466d6be1820'),
+        'NotificationService.appex': ('NotificationService', '880c9587061468f9c0e1a5e5b37556d59c6df2fe999572e52efb7e7cfcb36599'),
+    },
     ('1.27.0', '29519'): {
         'Widgets.appex': ('widgets', 'f0099f0a76eaed154724f1ab4229d047e84a53a43a801186e274bdd40f62feb0'),
         'ImageShareExtension.appex': ('share', '799dc218e713251168c082ad2d2def4be22d033e0ac6172195e78af971d9a01a'),
@@ -23,12 +28,13 @@ EXTENSIONS_BY_RELEASE = {
 }
 
 WIDGETS_SCHEME_COUNTS_BY_RELEASE = {
+    ('1.28.0', '29649'): 2,
     ('1.27.0', '29519'): 2,
     ('1.26.0', '29388'): 1,
     ('1.16.0', '23152'): 1,
 }
 
-EXTENSIONS = EXTENSIONS_BY_RELEASE[('1.27.0', '29519')]
+EXTENSIONS = EXTENSIONS_BY_RELEASE[('1.28.0', '29649')]
 
 # The widget embeds its deep-link scheme as four back-to-back MOV-wide
 # immediates spelling "grokbot\0". Locate that exact sequence instead of
@@ -94,7 +100,7 @@ def prepare_extensions(app, bundle_id, group, commands, release=None):
         if name == 'Widgets.appex':
             # Original GrokBotActionURL builds a seven-character Swift string.
             # Keep its ABI/length and change only the four MOV-wide immediates.
-            release_key = tuple(release) if release is not None else ('1.27.0', '29519')
+            release_key = tuple(release) if release is not None else ('1.28.0', '29649')
             if release_key not in WIDGETS_SCHEME_COUNTS_BY_RELEASE:
                 raise ValueError('Unsupported release for widget scheme patching: ' + repr(release_key))
             expected_sites = WIDGETS_SCHEME_COUNTS_BY_RELEASE[release_key]

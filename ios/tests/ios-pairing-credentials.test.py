@@ -76,6 +76,30 @@ class PairingCredentialsTests(unittest.TestCase):
         self.assertIn("config.identifier.length", connectors)
         self.assertIn("GBResolveReactSymbol", diagnostics)
         self.assertIn('@"RCTFatalException"', diagnostics)
+        self.assertIn('@"Bot computer"', bootstrap)
+        voice = (
+            Path(__file__).resolve().parents[1] / "clients" / "ios" / "GBVoice.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("isVoiceStatusRequest:", voice)
+        self.assertIn('[request.URL.host.lowercaseString isEqual:@"local.voice"]', voice)
+        self.assertIn('[request.URL.path isEqual:@"/local/voice/status"]', voice)
+        self.assertIn('@"Cache-Control":@"no-store"', voice)
+        perf_h = (
+            Path(__file__).resolve().parents[1] / "clients" / "ios" / "GBPerf.h"
+        ).read_text(encoding="utf-8")
+        perf_m = (
+            Path(__file__).resolve().parents[1] / "clients" / "ios" / "GBPerf.m"
+        ).read_text(encoding="utf-8")
+        deeplinks = (
+            Path(__file__).resolve().parents[1] / "clients" / "ios" / "GBDeepLinks.m"
+        ).read_text(encoding="utf-8")
+        self.assertIn("BOOL GBPerfHandleURL(NSURL *url);", perf_h)
+        self.assertNotIn("GBPerfInstallGesture", perf_h)
+        self.assertNotIn("GBPerfInstallGesture", perf_m)
+        self.assertNotIn("UITapGestureRecognizer", perf_m)
+        self.assertNotIn("GBPerfInstallGesture", deeplinks)
+        self.assertIn("if (GBPerfHandleURL(url)) return YES;", deeplinks)
+        self.assertIn("__builtin_expect(GBPerfActive, 0)", bootstrap)
 
 
 if __name__ == "__main__":

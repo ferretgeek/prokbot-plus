@@ -11,6 +11,7 @@ from ios.tools.build_ios_126_recipe import (
     enable_chat_avatar_motion,
 )
 from ios.tools import build_ios_127_recipe
+from ios.tools import build_ios_128_recipe
 
 
 class ChatAvatarMotionTests(unittest.TestCase):
@@ -32,6 +33,14 @@ class ChatAvatarMotionTests(unittest.TestCase):
         self.assertEqual(build_ios_127_recipe.CHAT_AVATAR_LOAD_OFFSET, 52)
         self.assertTrue(callable(build_ios_127_recipe.enable_chat_avatar_motion))
         self.assertTrue(callable(build_ios_127_recipe.assert_chat_avatar_motion))
+
+    def test_128_chat_avatar_pins(self):
+        self.assertEqual(build_ios_128_recipe.CHAT_AVATAR_FUNCTION, 43388)
+        self.assertEqual(build_ios_128_recipe.CHAT_AVATAR_DEFAULT_STATIC_INDEX, 13623)
+        self.assertEqual(build_ios_128_recipe.CHAT_AVATAR_LIVE_INDEX, 12891)
+        self.assertEqual(build_ios_128_recipe.CHAT_AVATAR_LOAD_OFFSET, 52)
+        self.assertFalse(hasattr(build_ios_128_recipe, 'enable_chat_avatar_motion'))
+        self.assertTrue(callable(build_ios_128_recipe.assert_chat_avatar_static))
 
 
 if __name__ == '__main__':

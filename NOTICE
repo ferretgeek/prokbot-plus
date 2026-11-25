@@ -345,6 +345,24 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
       ci/homepage-versions.mjs marks pins newer than the last real-machine
       test as untested.
 
+24. iOS 1.28.0 (build 29649), static ChatAvatar scroll-jank fix, restored
+    Realtime Voice toggle sync, and opt-in URL scroll profiler.
+    - ios/recipes/ios/ pins the official 1.28.0 (build 29649) and archives
+      1.27.0 (29519) under ios/recipes/ios/1.27.0/ alongside 1.26.0 (29388) and
+      1.16.0 (23152) as fallbacks. ios/tools/build_ios_128_recipe.py (new)
+      rebuilds the 1.28.0 HBC 98 recipes from the user's own app, keeping
+      ChatAvatar's stock "static" default on 1.28.0 (avoiding per-frame
+      GrokBotFace SVG redraws on home Bot list rows) and mounting the
+      experimental Realtime Voice toggle into SettingsSheet synced with Host
+      GET /local/voice/status.
+    - ios/patchers/ios/extensions.py adds the 1.28.0 extension digests and two
+      widget scheme sites; ios/clients/ios/GBBootstrap.m adds 1.28.0
+      sentence-case label matching; ios/clients/ios/GBVoice.m intercepts
+      GET https://local.voice/local/voice/status; ios/clients/ios/GBPerf.{h,m}
+      and GBDeepLinks.m add opt-in URL-only scroll diagnostics
+      (grokbot-local://perf/start). Rebuilt ios/bin/GrokBotLocal.dylib and
+      updated all four iOS manifests.
+
 Upstream ProkBot changes incorporated
 -------------------------------------
 

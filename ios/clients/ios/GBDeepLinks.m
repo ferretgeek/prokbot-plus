@@ -1,5 +1,6 @@
 #import "GBDeepLinks.h"
 #import "GBDiagnostics.h"
+#import "GBPerf.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 
@@ -52,6 +53,7 @@ NSURL *GBNormalizeLocalURL(NSURL *url) {
 }
 
 static BOOL GBLinkURL(id self, SEL cmd, id application, NSURL *url, NSDictionary *options) {
+  if (GBPerfHandleURL(url)) return YES;
   return ((BOOL (*)(id, SEL, id, id, id))GBOriginalLinkURL)(
       self, cmd, application, GBNormalizeLocalURL(url), options);
 }
@@ -68,8 +70,14 @@ static void GBInitialURL(id self, SEL cmd, void (^resolve)(id), id reject) {
         GBPendingNotificationURL = nil;
       }
     }
-    if ([value isKindOfClass:NSString.class])
-      value = GBNormalizeLocalURL([NSURL URLWithString:value]).absoluteString ?: value;
+    if ([value isKindOfClass:NSString.class]) {
+      NSURL *parsed = [NSURL URLWithString:value];
+      if (parsed && GBPerfHandleURL(parsed)) {
+        value = nil;
+      } else {
+        value = GBNormalizeLocalURL(parsed).absoluteString ?: value;
+      }
+    }
     GBDiagnosticsEvent(@"link.initial", @{@"url":[value isKindOfClass:NSString.class] ? value : @""});
     resolve(value);
   };

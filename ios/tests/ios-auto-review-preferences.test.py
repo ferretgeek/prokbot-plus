@@ -15,6 +15,38 @@ OBJC_HARNESS = r"""
 #include <stdlib.h>
 
 #import "GBConnectors.m"
+#import "GBVoice.m"
+
+static int mockVoiceHostStatusCode = 200;
+static NSString *mockVoiceHostBody = @"{\"enabled\":true}";
+static NSString *lastForwardedAuth = nil;
+static NSString *lastForwardedURL = nil;
+
+@interface GBMockHostHTTPProtocol : NSURLProtocol
+@end
+@implementation GBMockHostHTTPProtocol
++ (BOOL)canInitWithRequest:(NSURLRequest *)request {
+  return [request.URL.host isEqual:@"127.0.0.1"];
+}
++ (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
+- (void)startLoading {
+  lastForwardedURL = self.request.URL.absoluteString;
+  lastForwardedAuth = [self.request valueForHTTPHeaderField:@"Authorization"];
+  NSHTTPURLResponse *resp = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL
+    statusCode:mockVoiceHostStatusCode HTTPVersion:@"HTTP/1.1"
+    headerFields:@{@"Content-Type":@"application/json"}];
+  [self.client URLProtocol:self didReceiveResponse:resp cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+  NSData *data = [mockVoiceHostBody dataUsingEncoding:NSUTF8StringEncoding];
+  if (data.length) [self.client URLProtocol:self didLoadData:data];
+  [self.client URLProtocolDidFinishLoading:self];
+}
+- (void)stopLoading {}
+@end
+
+BOOL GBVoiceAudioAvailable(void) { return YES; }
+void GBVoiceAudioObserveSocket(id socket) {}
+BOOL GBVoiceCredentialIsValid(id credential, NSString *serverURL) { return YES; }
+NSString *GBL(NSString *zh, NSString *en) { return en; }
 
 @interface GBConnection ()
 @property(nonatomic, readwrite) NSString *serverURL;
@@ -38,11 +70,12 @@ static NSMutableArray<NSString *> *handledPaths = nil;
 
 NSURLSession *GBHTTPSession(void) {
   httpSessionCalls++;
-  return [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.ephemeralSessionConfiguration];
+  NSURLSessionConfiguration *cfg = NSURLSessionConfiguration.ephemeralSessionConfiguration;
+  cfg.protocolClasses = @[GBMockHostHTTPProtocol.class];
+  return [NSURLSession sessionWithConfiguration:cfg];
 }
 Class GBPrivacyProtocolClass(void) { return NSURLProtocol.class; }
 Class GBSpeechProtocolClass(void) { return NSURLProtocol.class; }
-Class GBVoiceProtocolClass(void) { return NSURLProtocol.class; }
 Class GBAppIntentsProtocolClass(void) { return NSURLProtocol.class; }
 Class GBSharingProtocolClass(void) { return NSURLProtocol.class; }
 void GBDiagnosticsEvent(NSString *event, NSDictionary *value) {
@@ -126,7 +159,53 @@ int main(void) { @autoreleasepool {
   CHECK((bgProtocolsBefore == nil && bgResult.protocolClasses == nil) ||
         [bgResult.protocolClasses isEqual:bgProtocolsBefore]);
 
-  puts("PASS: iOS Auto-review local preference RPC interception and background session bypass");
+  NSString *voiceStatusUrl = @"https://local.voice/local/voice/status";
+  CHECK([GBVoiceProtocolClass() canInitWithRequest:makeRequest(@"GET", voiceStatusUrl)]);
+  CHECK(![GBVoiceProtocolClass() canInitWithRequest:makeRequest(@"POST", voiceStatusUrl)]);
+  CHECK(![GBVoiceProtocolClass() canInitWithRequest:makeRequest(@"GET", @"https://api2.cursor.sh/local/voice/status")]);
+
+  NSURLSessionConfiguration *voiceCfg = [NSURLSessionConfiguration ephemeralSessionConfiguration];
+  voiceCfg.protocolClasses = @[GBVoiceProtocolClass()];
+  NSURLSession *voiceSession = [NSURLSession sessionWithConfiguration:voiceCfg];
+
+  NSString *(^fetchVoiceStatus)(void) = ^NSString *(void) {
+    dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+    __block NSInteger status = 0;
+    __block NSString *cacheControl = nil;
+    __block NSString *text = nil;
+    [[voiceSession dataTaskWithRequest:makeRequest(@"GET", voiceStatusUrl)
+                     completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+      CHECK(error == nil);
+      status = [(NSHTTPURLResponse *)response statusCode];
+      cacheControl = [(NSHTTPURLResponse *)response valueForHTTPHeaderField:@"Cache-Control"];
+      text = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+      dispatch_semaphore_signal(sem);
+    }] resume];
+    CHECK(dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0);
+    CHECK(status == 200);
+    CHECK([cacheControl isEqual:@"no-store"]);
+    return text;
+  };
+
+  mockVoiceHostStatusCode = 200;
+  mockVoiceHostBody = @"{\"enabled\":true}";
+  CHECK([fetchVoiceStatus() isEqual:@"{\"enabled\":true}"]);
+  CHECK([lastForwardedURL isEqual:@"http://127.0.0.1:18080/local/voice/status"]);
+  CHECK([lastForwardedAuth isEqual:@"Bearer test-device-token"]);
+
+  mockVoiceHostBody = @"{\"enabled\":false}";
+  CHECK([fetchVoiceStatus() isEqual:@"{\"enabled\":false}"]);
+
+  mockVoiceHostStatusCode = 502;
+  mockVoiceHostBody = @"bad gateway";
+  CHECK([fetchVoiceStatus() isEqual:@"{\"enabled\":false}"]);
+
+  GBConnection.shared.deviceToken = nil;
+  mockVoiceHostStatusCode = 200;
+  mockVoiceHostBody = @"{\"enabled\":true}";
+  CHECK([fetchVoiceStatus() isEqual:@"{\"enabled\":false}"]);
+
+  puts("PASS: iOS Auto-review RPC interception, voice status sync, and background session bypass");
   return 0;
 } }
 """
