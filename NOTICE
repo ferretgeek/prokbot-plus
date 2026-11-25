@@ -39,8 +39,7 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
      platform.mjs, main.mjs, connection.mjs, settings.mjs, sounds.mjs,
      connect.css, native-provider.mjs, codex-bridge.mjs, codex-process.mjs,
      local-exec.mjs (UTF-8 command output on Windows, linux- machine ID on
-     Linux, /local/computers machine roster, rename and per-machine permissions
-     for 1.3.0 Settings > Computer) and attachments.mjs (POSIX Host image paths).
+     Linux) and attachments.mjs (POSIX Host image paths).
    - The 1.1.0 interfaces: per-edge RPC registration and window visibility
      events (main.mjs, local-services.mjs), dictation through the Host
      (dictation.mjs), search mapping (gateway.mjs) and startup defaults.
@@ -345,6 +344,20 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
     - ci/release-packages.py requires the 1.2.3 fallback files;
       ci/homepage-versions.mjs marks pins newer than the last real-machine
       test as untested.
+
+24. Desktop Settings > Computer section order and /local/computers roster.
+    - windows/tools/desktop-recipes/spec.mjs and extensions/computer-view.js
+      (and the regenerated 1.3.0 recipe sets across Windows x64, macOS ARM64,
+      macOS Intel, Linux x64 and Linux ARM64): restore GrokRemoteDesktop to the
+      official bottom bot-computer slot in Settings > Computer while keeping
+      your-computer at the top.
+    - mac/clients/desktop/local-exec.mjs, native-provider.mjs and main.mjs:
+      add connected status to getSandMachines, merge paired computers from Host
+      /local/computers, implement updateSandMachineLabel (sanitized rename on
+      this computer with immediate provider re-registration) and
+      removeSandMachine refusal handling, and reject permission or rename
+      changes targeting other computers.
+    - Contributed by @jun9100 (GitHub pull request #22).
 
 Upstream ProkBot changes incorporated
 -------------------------------------
