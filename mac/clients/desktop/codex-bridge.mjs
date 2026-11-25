@@ -27,9 +27,10 @@ export const codexTools = [
 
 /** Ownership lives on the Mac, separately for every paired Host/device and Bot. */
 export async function createCodexBridge({ profile, config, root, decideLocalUse, enabled = () => true,
-  executable, processFactory = options => new CodexProcess(options) }) {
-  executable ??= await findCodex();
-  if (!executable) return { tools: [], close() {}, async call() { return { status: 'failed', error: `Install and sign in to Codex on this ${machine}.` }; } };
+  executable, findExecutable = findCodex, processFactory = options => new CodexProcess(options) }) {
+  executable ??= await findExecutable();
+  // local-exec stops Codex on every Host disconnect and when local use is set to never.
+  if (!executable) return { tools: [], stop() {}, close() {}, async call() { return { status: 'failed', error: `Install and sign in to Codex on this ${machine}.` }; } };
   const namespace = createHash('sha256').update(`${config.address ?? config.server}\0${config.deviceId}`).digest('hex');
   const directory = join(profile, 'codex-jobs', namespace), file = join(directory, 'jobs.json');
   await mkdir(directory, { recursive: true, mode: 0o700 });
