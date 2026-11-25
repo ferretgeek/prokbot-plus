@@ -4,6 +4,10 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## Unreleased
+
+- **桌面 1.3.0 签名页大小与读取兜底 / Desktop 1.3.0 arm64 page size and read fallbacks**：macOS 补丁工具在签名 `arm64` 客户端时显式传入 `--pagesize 16384`，使在 Intel Mac 上交叉生成 `arm64` 包时的签名页大小与官方 1.3.0 `arm64` 切片及 Apple Silicon 原生签名保持一致；`local-services.mjs` 补充桌面 1.3.0 新增的自动化购买查询（`getGrokBotAutomationPurchase`）、邮件邀请资格（`getGrokBotInviteByEmailEligibility`）和团队成员列表（`listCursorTeamMembers`）等主通道读取的官方空值响应，避免打开自动化详情时报未实现错误。Host 与移动端不变。The macOS patcher now passes `--pagesize 16384` when signing `arm64` bundles so cross-builds on Intel Macs match the official 1.3.0 `arm64` slice and Apple Silicon native signing; `local-services.mjs` answers 1.3.0 `getGrokBotAutomationPurchase`, `getGrokBotInviteByEmailEligibility` and `listCursorTeamMembers` main-edge reads with the official empty/offline values instead of failing when opening automation details. The Host and mobile clients are unchanged.
+
 ## ProkBot Plus 1.16.0 (2026-11-25)
 
 桌面客户端适配官方 1.3.0（Windows x64、macOS Apple 芯片与 Intel、Linux x64 与 ARM64）。要用 1.3.0，用新的 Windows、Mac 或 Linux 包重新生成客户端；Host、iOS、Android 和网页版不变。Linux x64 版已在 Ubuntu 24.04 的容器里（虚拟显示）实际运行，逐项测了配对、对话、附件、重连、设置、资料库、连接应用和本机命令；Windows 和 Mac 版通过了补丁回放和生成校验，还没有实际运行。Desktop clients now support the official 1.3.0 (Windows x64, macOS Apple Silicon and Intel, Linux x64 and ARM64). To use 1.3.0, rebuild the client with the new Windows, Mac or Linux package; the Host, iOS, Android and the web client are unchanged. The Linux x64 client was run on Ubuntu 24.04 in a container with a virtual display and tested item by item: pairing, chat, attachments, reconnection, settings, the library, connectors and local commands; the Windows and Mac clients passed the recipe replay and build checks but have not been run yet.

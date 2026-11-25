@@ -182,9 +182,12 @@ try {
     // --deep does not cover every library under Electron's Framework/Libraries
     // directory. Sign each native binary first so hardened-runtime library
     // validation sees the same developer identity throughout the bundle.
+    // On Intel Macs, codesign defaults to 4 KiB pages even for arm64 slices;
+    // explicitly use 16 KiB pages for arm64 builds to match Apple Silicon.
+    const signPageSize = arch === 'arm64' ? ['--pagesize', '16384'] : [];
     for (const filename of (await nativeFiles(path.join(output, 'Contents'))).sort((a, b) => b.length - a.length))
-      run('codesign', ['--force', '--sign', signingIdentity, '--timestamp=none', filename], { timeout: 20000 });
-    run('codesign', ['--force', '--deep', '--sign', signingIdentity, '--options', 'runtime', '--timestamp=none', '--entitlements', entitlements, output], { timeout: 20000 });
+      run('codesign', ['--force', '--sign', signingIdentity, '--timestamp=none', ...signPageSize, filename], { timeout: 20000 });
+    run('codesign', ['--force', '--deep', '--sign', signingIdentity, '--options', 'runtime', '--timestamp=none', ...signPageSize, '--entitlements', entitlements, output], { timeout: 20000 });
     run('codesign', ['--verify', '--deep', '--strict', output]);
     if (await hash(asarPath) !== asarSha256) throw new Error('原版文件意外变化。');
     const iconUnchanged = await hash(path.join(app, 'Contents/Resources/icon.icns')) === await hash(path.join(outResources, 'icon.icns'));
