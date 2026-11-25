@@ -12,6 +12,7 @@ static BOOL GBObserving;
 static BOOL GBHasBeenActive;
 static NSURL *GBPendingNotificationURL;
 static NSURL *GBInitialNotificationURL;
+static NSString *GBHandledInitialPerfURL;
 
 static void GBDeliverURL(NSURL *url) {
   GBDiagnosticsEvent(@"link.deliver", @{@"url":url.absoluteString ?: @""});
@@ -72,7 +73,16 @@ static void GBInitialURL(id self, SEL cmd, void (^resolve)(id), id reject) {
     }
     if ([value isKindOfClass:NSString.class]) {
       NSURL *parsed = [NSURL URLWithString:value];
-      if (parsed && GBPerfHandleURL(parsed)) {
+      if (parsed && [parsed.scheme.lowercaseString isEqualToString:@"grokbot-local"] &&
+          [parsed.host.lowercaseString isEqualToString:@"perf"]) {
+        BOOL shouldHandle = NO;
+        @synchronized (NSClassFromString(@"RCTLinkingManager")) {
+          if (![GBHandledInitialPerfURL isEqualToString:value]) {
+            GBHandledInitialPerfURL = [value copy];
+            shouldHandle = YES;
+          }
+        }
+        if (shouldHandle) GBPerfHandleURL(parsed);
         value = nil;
       } else {
         value = GBNormalizeLocalURL(parsed).absoluteString ?: value;

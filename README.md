@@ -86,7 +86,7 @@ Grok Bot 是 xAI 的 AI 助手应用。它的 Bot 除了聊天，还有自己的
 | Linux x64 / ARM64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/linux-x64/sand) | 1.3.0（.deb 原包；已在 Ubuntu 24.04 x64 的容器（虚拟显示）里实测，原生桌面和 ARM64 未实测） |
 | macOS ARM64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/darwin-arm64/sand) | 1.3.0（未在 Mac 真机上测试） |
 | macOS Intel (x64) | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/darwin-x64/sand) | 1.3.0（1.3.0 未在 Mac 真机上测试；1.2.3 曾在 Intel Mac 上实测可用） |
-| iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.28.0（构建 29649；已在 iPad 上验证连接、发消息和 App Intent） |
+| iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.28.0（构建 29649；1.28.0 尚未完成全部真机回归（仅在 iPhone 上实测部分项目）；1.27.0 曾在 iPad 上验证连接、发消息和 App Intent） |
 | Android 9+（自开发，非官方） | 不用官方 Android 版 | App **1.1.0**（构建 10100），界面取自 Windows **1.1.0** 安装包（推荐；用不了再用 0.71.2） |
 | 网页版（浏览器，非官方） | 不用安装 | 界面取自 Windows **1.1.0** 安装包（推荐；用不了再用 0.71.2），生成后上传到你的 Host |
 | Linux 服务端 | 不适用 | Host `d0a4baa`；Bot 的电脑 `9d2ac1b`（x86_64） |
@@ -101,7 +101,7 @@ ProkBot Plus 自己的版本号见[最新发布](https://github.com/ferretgeek/p
 | Android | Android 9+，系统 WebView 89+ | 本项目自开发的 App，不是官方 Android 版。在 Android 15 / 16 模拟器上测过，未经真机测试。 |
 | 网页版 | 新版 Chrome、Edge、Firefox、Safari | 由你的 Host 提供，手机、平板、电脑自动适配，用配对码登录。只操作 Bot 的电脑，不操作你本机。 |
 | Mac | Apple 芯片或 Intel 芯片 | 支持官方 1.3.0 的 Apple 芯片与 Intel 芯片（1.3.0 尚未在 Mac 真机上测试；上一版 1.2.3 已在 Intel Mac 真机实测可用，仍需 1.2.3 时用 ProkBot Plus v1.15.0 的 Mac 包）。 |
-| iPhone / iPad | 自备已解密的 IPA 和签名证书 | 支持官方 1.27.0（构建 29519，推荐），可回退 1.26.0 和 1.16.0。贡献者在 iPad 上实测了 1.27.0 的升级、配对、对话和附件，iPhone 还没有完整测试。 |
+| iPhone / iPad | 自备已解密的 IPA 和签名证书 | 支持官方 1.28.0（构建 29649，推荐），可回退 1.27.0、1.26.0 和 1.16.0。贡献者在 iPhone 上实测了 1.28.0 早期构建的生成、配对和首页 120Hz 滑动（最终构建的实时语音开关与完整回归待真机确认）；1.27.0 曾在 iPad 上实测升级、配对、对话、附件与 App Intent。 |
 
 <a id="android-客户端"></a><a id="web-client"></a>
 **Android App** 不改官方 Android 版（它有防篡改保护），而是把官方桌面版的界面装进本项目写的外壳：能看 Bot 电脑的实时画面并接手操作，收通知不依赖 Google 推送。APK 用你自己的密钥签名。

@@ -1,8 +1,10 @@
 #import "GBPerf.h"
+#import "GBDiagnostics.h"
 #import "GBLocalize.h"
 #import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 #import <mach/mach_time.h>
+#import <math.h>
 #import <objc/runtime.h>
 
 BOOL GBPerfActive = NO;
@@ -39,6 +41,8 @@ static CFMutableDictionaryRef GBPerfClassCounts;
 // non-trivial types, which the arm64 ABI passes as pointers, so forwarding the
 // pointer unchanged is exact. Counting happens only while a session is active.
 static IMP GBPerfOriginalPerform, GBPerfOriginalLayoutMetrics, GBPerfOriginalProps;
+static Method GBPerfPerformMethod, GBPerfLayoutMetricsMethod, GBPerfPropsMethod;
+static BOOL GBPerfProbesInstalled;
 static void GBPerfPerform(id self, SEL cmd, void *coordinator) {
   if (!GBPerfActive || !NSThread.isMainThread) {
     ((void (*)(id, SEL, void *))GBPerfOriginalPerform)(self, cmd, coordinator);
@@ -61,16 +65,35 @@ static void GBPerfProps(id self, SEL cmd, const void *props, const void *old) {
   ((void (*)(id, SEL, const void *, const void *))GBPerfOriginalProps)(self, cmd, props, old);
 }
 static void GBPerfInstallProbes(void) {
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{
-    Method perform = class_getInstanceMethod(NSClassFromString(@"RCTMountingManager"), sel_registerName("performTransaction:"));
-    if (perform) GBPerfOriginalPerform = method_setImplementation(perform, (IMP)GBPerfPerform);
-    Class view = NSClassFromString(@"RCTViewComponentView");
-    Method metrics = class_getInstanceMethod(view, sel_registerName("updateLayoutMetrics:oldLayoutMetrics:"));
-    if (metrics) GBPerfOriginalLayoutMetrics = method_setImplementation(metrics, (IMP)GBPerfLayoutMetrics);
-    Method props = class_getInstanceMethod(view, sel_registerName("updateProps:oldProps:"));
-    if (props) GBPerfOriginalProps = method_setImplementation(props, (IMP)GBPerfProps);
-  });
+  if (GBPerfProbesInstalled) return;
+  GBPerfPerformMethod = class_getInstanceMethod(NSClassFromString(@"RCTMountingManager"),
+                                                sel_registerName("performTransaction:"));
+  if (GBPerfPerformMethod)
+    GBPerfOriginalPerform = method_setImplementation(GBPerfPerformMethod, (IMP)GBPerfPerform);
+  Class view = NSClassFromString(@"RCTViewComponentView");
+  GBPerfLayoutMetricsMethod = class_getInstanceMethod(view, sel_registerName("updateLayoutMetrics:oldLayoutMetrics:"));
+  if (GBPerfLayoutMetricsMethod)
+    GBPerfOriginalLayoutMetrics = method_setImplementation(GBPerfLayoutMetricsMethod, (IMP)GBPerfLayoutMetrics);
+  GBPerfPropsMethod = class_getInstanceMethod(view, sel_registerName("updateProps:oldProps:"));
+  if (GBPerfPropsMethod)
+    GBPerfOriginalProps = method_setImplementation(GBPerfPropsMethod, (IMP)GBPerfProps);
+  GBPerfProbesInstalled = YES;
+}
+static void GBPerfUninstallProbes(void) {
+  if (!GBPerfProbesInstalled) return;
+  if (GBPerfPerformMethod && GBPerfOriginalPerform)
+    method_setImplementation(GBPerfPerformMethod, GBPerfOriginalPerform);
+  if (GBPerfLayoutMetricsMethod && GBPerfOriginalLayoutMetrics)
+    method_setImplementation(GBPerfLayoutMetricsMethod, GBPerfOriginalLayoutMetrics);
+  if (GBPerfPropsMethod && GBPerfOriginalProps)
+    method_setImplementation(GBPerfPropsMethod, GBPerfOriginalProps);
+  GBPerfOriginalPerform = NULL;
+  GBPerfOriginalLayoutMetrics = NULL;
+  GBPerfOriginalProps = NULL;
+  GBPerfPerformMethod = NULL;
+  GBPerfLayoutMetricsMethod = NULL;
+  GBPerfPropsMethod = NULL;
+  GBPerfProbesInstalled = NO;
 }
 
 void GBPerfRecordLayoutClass(Class cls) {
@@ -118,18 +141,44 @@ static void GBPerfCloseFrameBucket(void) {
   GBPerfC.frameHookTicks = GBPerfC.frameOriginalTicks = GBPerfC.frameLayoutCalls = GBPerfC.frameMountTicks = 0;
 }
 
-static void GBPerfPresent(NSString *title, NSString *message, NSArray<UIAlertAction *> *actions) {
+static BOOL GBPerfPresent(NSString *title, NSString *message, NSArray<UIAlertAction *> *actions) {
   UIViewController *top = GBTopController();
-  if (!top) return;
+  if (!top || [top isKindOfClass:UIAlertController.class] || top.isBeingDismissed ||
+      top.presentedViewController != nil || !top.viewIfLoaded.window)
+    return NO;
   UIAlertController *alert = [UIAlertController alertControllerWithTitle:title message:message
                                                           preferredStyle:UIAlertControllerStyleAlert];
   for (UIAlertAction *action in actions) [alert addAction:action];
   [top presentViewController:alert animated:YES completion:nil];
+  return alert.presentingViewController != nil;
+}
+
+static void GBPerfPruneOldFiles(NSFileManager *fm, NSURL *dir, NSUInteger keepCount) {
+  NSArray<NSURL *> *items = [fm contentsOfDirectoryAtURL:dir
+                              includingPropertiesForKeys:@[NSURLContentModificationDateKey]
+                                                 options:NSDirectoryEnumerationSkipsHiddenFiles
+                                                   error:nil];
+  NSMutableArray<NSURL *> *perfFiles = [NSMutableArray array];
+  for (NSURL *item in items) {
+    NSString *name = item.lastPathComponent;
+    if ([name hasPrefix:@"perf-"] && [name hasSuffix:@".json"])
+      [perfFiles addObject:item];
+  }
+  if (perfFiles.count <= keepCount) return;
+  [perfFiles sortUsingComparator:^NSComparisonResult(NSURL *a, NSURL *b) {
+    NSDate *da = nil, *db = nil;
+    [a getResourceValue:&da forKey:NSURLContentModificationDateKey error:nil];
+    [b getResourceValue:&db forKey:NSURLContentModificationDateKey error:nil];
+    return [(db ?: NSDate.distantPast) compare:(da ?: NSDate.distantPast)];
+  }];
+  for (NSUInteger i = keepCount; i < perfFiles.count; i++)
+    [fm removeItemAtURL:perfFiles[i] error:nil];
 }
 
 static void GBPerfFinish(void) {
   [GBPerfLink invalidate];
   GBPerfLink = nil;
+  GBPerfUninstallProbes();
   GBPerfCloseFrameBucket();
   BOOL hooksOff = GBPerfLayoutHooksDisabled;
   GBPerfActive = NO;
@@ -203,9 +252,19 @@ static void GBPerfFinish(void) {
   NSURL *dir = [[NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject
       URLByAppendingPathComponent:@"HostValidation" isDirectory:YES];
   if (dir) {
-    [NSFileManager.defaultManager createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSFileManager *fm = NSFileManager.defaultManager;
+    [fm createDirectoryAtURL:dir
+        withIntermediateDirectories:YES
+                  attributes:@{
+                    NSFileProtectionKey :
+                        NSFileProtectionCompleteUntilFirstUserAuthentication
+                  }
+                       error:nil];
+    GBPerfPruneOldFiles(fm, dir, 9);
     NSString *name = [NSString stringWithFormat:@"perf-%@-%.0f.json", hooksOff ? @"off" : @"on", NSDate.date.timeIntervalSince1970];
-    [json writeToURL:[dir URLByAppendingPathComponent:name] atomically:YES];
+    [json writeToURL:[dir URLByAppendingPathComponent:name]
+             options:NSDataWritingAtomic | NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication
+               error:nil];
   }
   NSString *message = [NSString stringWithFormat:
       GBL(@"\n帧数 %lu（目标 %.1f ms/帧）\n掉帧 %lu 次，卡顿 %.1f ms/秒\n最长一帧 %.1f ms，P95 %.1f ms\n布局回调 %llu 次，插件耗时 %.1f ms\n单帧插件最大 %.2f ms，超过 4ms 的帧 %llu 个\n读取文字标签 %llu 次，共 %.1f ms\nRN 提交 %llu 次，共 %.1f ms，单帧最多 %.1f ms",
@@ -311,22 +370,31 @@ static void GBPerfPrompt(BOOL hooksOff, BOOL chooseMode, NSTimeInterval seconds)
   NSString *title = chooseMode ? GBL(@"滑动性能记录", @"Scroll performance recording")
       : (hooksOff ? GBL(@"滑动性能记录（插件布局回调：关）", @"Scroll recording (layout hooks OFF)")
                   : GBL(@"滑动性能记录（插件布局回调：开）", @"Scroll recording (layout hooks ON)"));
-  GBPerfPresent(title, message, actions);
+  if (!GBPerfPresent(title, message, actions))
+    GBPerfPrompting = NO;
 }
 
 BOOL GBPerfHandleURL(NSURL *url) {
   if (![url.scheme.lowercaseString isEqualToString:@"grokbot-local"] ||
       ![url.host.lowercaseString isEqualToString:@"perf"])
     return NO;
+  if (!GBDiagnosticsEnabled())
+    return YES;
   NSURLComponents *components = [NSURLComponents componentsWithURL:url resolvingAgainstBaseURL:NO];
   NSString *hooks = @"";
   NSTimeInterval seconds = 15;
   for (NSURLQueryItem *item in components.queryItems) {
     if ([item.name isEqualToString:@"hooks"]) hooks = item.value.lowercaseString ?: @"";
-    if ([item.name isEqualToString:@"seconds"]) seconds = MIN(60, MAX(5, item.value.doubleValue ?: 15));
+    if ([item.name isEqualToString:@"seconds"]) {
+      double parsed = item.value.doubleValue;
+      if (isfinite(parsed) && parsed > 0)
+        seconds = MIN(60.0, MAX(5.0, parsed));
+    }
   }
-  BOOL chooseMode = ![hooks isEqualToString:@"on"] && ![hooks isEqualToString:@"off"];
-  BOOL hooksOff = [hooks isEqualToString:@"off"];
-  dispatch_async(dispatch_get_main_queue(), ^{ GBPerfPrompt(hooksOff, chooseMode, seconds); });
+  if (!isfinite(seconds) || seconds < 5.0 || seconds > 60.0) seconds = 15.0;
+  // External URLs may select hooks=on or open the interactive prompt, never
+  // pre-select hooks=off (which suppresses Host layout overlays).
+  BOOL chooseMode = ![hooks isEqualToString:@"on"];
+  dispatch_async(dispatch_get_main_queue(), ^{ GBPerfPrompt(NO, chooseMode, seconds); });
   return YES;
 }

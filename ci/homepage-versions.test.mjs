@@ -101,13 +101,17 @@ test('a Linux or Intel Mac pin newer than the last real-machine test says it is 
   assert.ok(en.includes('Intel') && render(fixture,'en',data).includes(' | 1.2.3 (tested working on an Intel Mac with 1.2.3) |'));
 });
 
-test('iOS marks a newer observed App Store release unsupported but keeps the pinned build', async () => {
+test('iOS marks a newer observed App Store release unsupported and reports tested baseline', async () => {
   const data = await fixtureData();
-  data.ios = { ...data.ios, version: '1.26.0', build: '29388' };
-  data.snap.ios = { ...data.snap.ios, version: '1.27.0' };
+  data.ios = { ...data.ios, version: '1.27.0', build: '29519' };
+  data.snap.ios = { ...data.snap.ios, version: '1.28.0' };
   const zh = render(fixture, 'zh', data), en = render(fixture, 'en', data);
-  assert.ok(zh.includes('| iOS | [1.27.0](https://apps.apple.com/us/app/grok-bot/id6794501026)（此补丁不支持） | 1.26.0（构建 29388；已在 iPad 上验证连接、发消息和 App Intent） |'));
-  assert.ok(en.includes('| iOS | [1.27.0](https://apps.apple.com/us/app/grok-bot/id6794501026) (not supported by this patch) | 1.26.0 (build 29388; pairing, messaging and App Intents verified on an iPad) |'));
+  assert.ok(zh.includes('| iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026)（此补丁不支持） | 1.27.0（构建 29519；已在 iPad 上验证连接、发消息和 App Intent） |'));
+  assert.ok(en.includes('| iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026) (not supported by this patch) | 1.27.0 (build 29519; pairing, messaging and App Intents verified on an iPad) |'));
+  data.ios = { ...data.ios, version: '1.28.0', build: '29649' };
+  const zhNew = render(fixture, 'zh', data), enNew = render(fixture, 'en', data);
+  assert.ok(zhNew.includes('| iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.28.0（构建 29649；1.28.0 尚未完成全部真机回归（仅在 iPhone 上实测部分项目）；1.27.0 曾在 iPad 上验证连接、发消息和 App Intent） |'));
+  assert.ok(enNew.includes('| iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.28.0 (build 29649; 1.28.0 not yet fully live-tested (partial iPhone testing only); 1.27.0 was verified on an iPad for pairing, messaging and App Intents) |'));
 });
 
 test('vendor observation does not promote supported client, shell, or cloud inputs', async () => {

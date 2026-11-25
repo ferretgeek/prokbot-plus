@@ -54,6 +54,8 @@
     };
     self.task = [GBHTTPSession() dataTaskWithRequest:statusReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
       if (self.cancelled) return;
+      // Conservatively fall back to disabled on both Host errors and explicit
+      // enabled:false so the call button stays hidden unless Host confirms ready.
       BOOL enabled = NO;
       if (!error && [response isKindOfClass:NSHTTPURLResponse.class]) {
         NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;

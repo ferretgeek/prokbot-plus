@@ -86,7 +86,7 @@ You also need a model API with tool calling (and image input, if the Bot should 
 | Linux x64 / ARM64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/linux-x64/sand) | 1.3.0 (.deb archive; tested on Ubuntu 24.04 x64 in a container with a virtual display; native desktops and ARM64 untested) |
 | macOS ARM64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/darwin-arm64/sand) | 1.3.0 (not tested on a Mac) |
 | macOS Intel (x64) | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/darwin-x64/sand) | 1.3.0 (1.3.0 not tested on a Mac; 1.2.3 was tested working on an Intel Mac) |
-| iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.28.0 (build 29649; pairing, messaging and App Intents verified on an iPad) |
+| iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.28.0 (build 29649; 1.28.0 not yet fully live-tested (partial iPhone testing only); 1.27.0 was verified on an iPad for pairing, messaging and App Intents) |
 | Android 9+ (unofficial) | Does not use the official Android app | App **1.1.0** (build 10100), interface taken from the Windows **1.1.0** installer (recommended; 0.71.2 if it does not work) |
 | Web client (browser, unofficial) | Nothing to install | Interface taken from the Windows **1.1.0** installer (recommended; 0.71.2 if it does not work), built once and uploaded to your Host |
 | Linux server | n/a | Host `d0a4baa`; Bot computer `9d2ac1b` (x86_64) |
@@ -101,7 +101,7 @@ ProkBot Plus has its own version numbers; see the [latest release](https://githu
 | Android | Android 9+, system WebView 89+ | Our own app, not the official Android app. Tested on Android 15 / 16 emulators, not on a real phone. |
 | Web client | Current Chrome, Edge, Firefox or Safari | Served by your Host and adapts to phones, tablets and computers; sign in with a pairing code. It works with the Bot's computer only, never your own device. |
 | Mac | Apple Silicon or Intel | Supports official 1.3.0 on both Apple Silicon and Intel Macs (1.3.0 not yet tested on a Mac; the previous 1.2.3 was live-tested on an Intel Mac; if you still need 1.2.3, use the ProkBot Plus v1.15.0 Mac package). |
-| iPhone / iPad | Your own decrypted IPA and signing certificate | Supports official 1.27.0 (build 29519, recommended), with 1.26.0 and 1.16.0 fallbacks. The contributor tested upgrading, pairing, chat and attachments with 1.27.0 on an iPad; iPhone has not been fully tested. |
+| iPhone / iPad | Your own decrypted IPA and signing certificate | Supports official 1.28.0 (build 29649, recommended), with 1.27.0, 1.26.0 and 1.16.0 fallbacks. The contributor live-tested building, pairing and 120 Hz home-list scrolling on an iPhone with an earlier 1.28.0 build (the final build's realtime voice toggle and full regression await device confirmation); 1.27.0 was live-tested on an iPad for upgrading, pairing, chat, attachments and App Intents. |
 
 <a id="android-client"></a><a id="web-client"></a>
 **The Android app** does not modify the official Android app (it is tamper-protected). It puts the official desktop interface into a shell written by this project. You can watch the Bot's computer live and take control, and notifications work without Google push. You sign the APK with your own key.

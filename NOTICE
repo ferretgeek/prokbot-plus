@@ -358,10 +358,13 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
     - ios/patchers/ios/extensions.py adds the 1.28.0 extension digests and two
       widget scheme sites; ios/clients/ios/GBBootstrap.m adds 1.28.0
       sentence-case label matching; ios/clients/ios/GBVoice.m intercepts
-      GET https://local.voice/local/voice/status; ios/clients/ios/GBPerf.{h,m}
-      and GBDeepLinks.m add opt-in URL-only scroll diagnostics
-      (grokbot-local://perf/start). Rebuilt ios/bin/GrokBotLocal.dylib and
-      updated all four iOS manifests.
+      GET https://local.voice/local/voice/status (defaulting conservatively to
+      disabled on Host errors as well as enabled:false);
+      ios/clients/ios/GBPerf.{h,m} and GBDeepLinks.m add opt-in URL-only scroll
+      diagnostics (grokbot-local://perf/start, gated behind
+      GBDiagnosticsEnabled() and restoring Fabric probes on finish). Rebuilt
+      ios/bin/GrokBotLocal.dylib and updated all four iOS manifests.
+    - Contributed by @jun9100 (GitHub pull request #20).
 
 Upstream ProkBot changes incorporated
 -------------------------------------

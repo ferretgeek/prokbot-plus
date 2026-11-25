@@ -97,8 +97,14 @@ class PairingCredentialsTests(unittest.TestCase):
         self.assertNotIn("GBPerfInstallGesture", perf_h)
         self.assertNotIn("GBPerfInstallGesture", perf_m)
         self.assertNotIn("UITapGestureRecognizer", perf_m)
+        self.assertIn("GBDiagnosticsEnabled()", perf_m)
+        self.assertIn("isfinite(", perf_m)
+        self.assertIn("GBPerfUninstallProbes()", perf_m)
+        self.assertIn("NSDataWritingFileProtectionCompleteUntilFirstUserAuthentication", perf_m)
+        self.assertIn('![hooks isEqualToString:@"on"]', perf_m)
         self.assertNotIn("GBPerfInstallGesture", deeplinks)
         self.assertIn("if (GBPerfHandleURL(url)) return YES;", deeplinks)
+        self.assertIn("GBHandledInitialPerfURL", deeplinks)
         self.assertIn("__builtin_expect(GBPerfActive, 0)", bootstrap)
 
 
