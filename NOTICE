@@ -363,6 +363,7 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
     - windows/tools/desktop-recipes/spec.mjs hides the unserved local Mac
       device-tool section and local Obsidian vault entry in Connected Apps,
       regenerating the connectedApps recipe across all five 1.3.0 targets.
+    - Contributed by @jun9100 (GitHub pull request #23).
 
 Upstream ProkBot changes incorporated
 -------------------------------------
