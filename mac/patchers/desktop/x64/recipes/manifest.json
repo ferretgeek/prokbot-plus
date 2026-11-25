@@ -96,9 +96,9 @@
       "source": "dist/renderer/assets/chunk-view-BC5Twrke.js",
       "newFile": false,
       "recipe": "010.gbp.gz",
-      "sha256": "1972eb2738de323d5f1f4590fa7c741bff3f0252413c5036d5c1b37575bcd77d",
-      "targetBytes": 69977,
-      "addedBytes": 715
+      "sha256": "8390708605aac7842111df0a931dc64b9344ccb6bae04ef0f9bf5f4bc5cf58cf",
+      "targetBytes": 69973,
+      "addedBytes": 705
     },
     {
       "path": "dist/renderer/assets/chunk-view-CR79mJex.js",

@@ -177,11 +177,11 @@ export function buildSpec(target = 'windows') {
       { append: extension('general-pane.js') },
     ]),
 
-    // Settings > Computer: the Host manages the Bot's computer; this computer's access stays.
+    // Settings > Computer: this computer's access stays at the top; the Host manages the Bot's computer at the bottom.
     edit(chunks.computerView, [
       { prepend: I18N },
       { replace: '(0,Q.jsxs)(`div`,{...n,children:[i,a,o,s]})',
-        text: '(0,Q.jsxs)(`div`,{...n,children:[(0,Q.jsx)(GrokRemoteDesktop,{}),i,a,o]})' },
+        text: '(0,Q.jsxs)(`div`,{...n,children:[i,a,o,(0,Q.jsx)(GrokRemoteDesktop,{})]})' },
       { append: extension('computer-view.js') },
     ]),
 

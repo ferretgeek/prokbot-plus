@@ -69,6 +69,7 @@ python3 ios/tests/ios-network.test.py && python3 ios/tests/ios-auto-review-prefe
 - **双语文档**：README 和 `docs/` 下的文档都有中英两份，改一份就要同步另一份，并保证锚点链接有效。
 - **部署手册的命令要实测**：`docs/AI-INSTALL.md` 里的服务器命令通过 `ssh … 'bash -s' <<'EOF'` 发送。会读取标准输入的命令（`docker compose exec`、`apt-get`、备份脚本）必须加 `< /dev/null`，否则会吞掉脚本后面的内容。改了手册里的命令，要在真实服务器上跑一遍。
 - **固定版本**：补丁只对 `supported.json` 和各 `manifest.json` 里的版本生效。支持新版本要重新制作 recipe，不要放宽哈希校验。
+- **遵循官方布局**：除官方客户端不存在的新功能外，桌面端与移动端的入口位置、区块上下顺序、`anchorId` 与交互层级必须对齐官方原版代码；官方已有原生槽位或 RPC 的能力直接原位对接，不在侧边栏、菜单或页面末尾自造重复入口，升级客户端版本时同步清理已被新版原生界面取代的旧覆盖层。
 
 ## 在 Windows 上提交
 

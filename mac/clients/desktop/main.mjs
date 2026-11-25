@@ -182,7 +182,7 @@ async function showWorkspace() {
   void voiceAvailability.refresh();
   accountProfile = createProfile({ request: gateway.request, window: win, auth, server: activeConfig.server, onChange: reportConnection });
   await accountProfile.refresh().catch(() => {});
-  localExec = await createLocalExec({ payload, profile, config: activeConfig, command: gateway.command, window: win });
+  localExec = await createLocalExec({ payload, profile, config: activeConfig, command: gateway.command, request: gateway.request, window: win });
   browserProviders = await createBrowserProviders({ payload, profile, config: activeConfig, window: win,
     BrowserWindow, locale: () => language.resolved });
   win.on('focus', reportFocus); win.on('blur', reportFocus);

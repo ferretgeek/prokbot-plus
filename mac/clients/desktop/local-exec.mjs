@@ -33,7 +33,62 @@ export function machineIdForPlatform(deviceId, platform = process.platform) {
   return `${prefix}-${deviceId}`;
 }
 
-export async function createLocalExec({ payload, profile, config, command, window }) {
+export function mergeSandMachines({ currentMachine, remotePayload, perMachinePermissions = {} } = {}) {
+  const rawList = Array.isArray(remotePayload?.computers) ? remotePayload.computers : [];
+  const normalized = [];
+  for (const item of rawList) {
+    if (!item || typeof item !== 'object') continue;
+    const id = typeof item.id === 'string' ? item.id.trim() : '';
+    if (!id) continue;
+    const label = (typeof item.label === 'string' && item.label.trim()) || id;
+    const platform = typeof item.platform === 'string' && item.platform.trim() ? item.platform.trim() : 'darwin';
+    normalized.push({ id, label, connected: item.connected === true, platform });
+  }
+  const currentId = typeof currentMachine?.machineId === 'string' ? currentMachine.machineId : '';
+  const remoteSelf = currentId ? normalized.find(item => item.id === currentId) : null;
+  const machines = [];
+
+  if (currentId) {
+    const connected = Boolean(currentMachine.connected || remoteSelf?.connected);
+    const label = (typeof currentMachine.label === 'string' && currentMachine.label.trim())
+      || remoteSelf?.label
+      || currentId;
+    const permission = ['ask', 'never', 'always'].includes(currentMachine.localToolPermission)
+      ? currentMachine.localToolPermission
+      : 'ask';
+    machines.push({
+      machineId: currentId,
+      name: label,
+      label,
+      platform: currentMachine.platform || remoteSelf?.platform || 'darwin',
+      kind: 'desktop',
+      isCurrent: true,
+      connected,
+      isOnline: connected,
+      localToolPermission: permission,
+    });
+  }
+
+  for (const item of normalized) {
+    if (item.id === currentId) continue;
+    const perm = perMachinePermissions?.[item.id];
+    machines.push({
+      machineId: item.id,
+      name: item.label,
+      label: item.label,
+      platform: item.platform,
+      kind: 'desktop',
+      isCurrent: false,
+      connected: item.connected,
+      isOnline: item.connected,
+      localToolPermission: ['ask', 'never', 'always'].includes(perm) ? perm : 'ask',
+    });
+  }
+
+  return { machines, currentMachineRemoved: false };
+}
+
+export async function createLocalExec({ payload, profile, config, command, request, window }) {
   const original = loadLocalExecDaemon(path.join(payload, 'local-exec-daemon/main.cjs'));
   const directory = path.join(profile, 'local-exec');
   await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -46,11 +101,18 @@ export async function createLocalExec({ payload, profile, config, command, windo
   let native, codex, closed = false;
   // The Host derives the platform from this prefix; macOS keeps its original form.
   const machineId = machineIdForPlatform(config.deviceId);
-  let permission = 'ask', writes = Promise.resolve();
-  try { const value = JSON.parse(await readFile(settingsPath, 'utf8')); if (['ask', 'never', 'always'].includes(value.permission)) permission = value.permission; } catch {}
+  let permission = 'ask', customLabel = '', writes = Promise.resolve();
+  const remotePermissions = new Map();
+  try {
+    const value = JSON.parse(await readFile(settingsPath, 'utf8'));
+    if (['ask', 'never', 'always'].includes(value.permission)) permission = value.permission;
+    if (typeof value.label === 'string' && value.label.trim()) customLabel = [...value.label.trim()].slice(0, 100).join('');
+  } catch {}
+  const currentLabel = () => customLabel || os.hostname();
   const serialize = task => { writes = writes.catch(() => {}).then(task); return writes; };
   const save = async (filename, value) => { await writeFile(`${filename}.tmp`, JSON.stringify(value), { mode: 0o600 }); await rename(`${filename}.tmp`, filename); };
-  const provider = new original.Provider({ root, computerId: machineId, computerLabel: os.hostname(),
+  const persistSettings = () => save(settingsPath, { permission, ...(customLabel ? { label: customLabel } : {}) });
+  const provider = new original.Provider({ root, computerId: machineId, computerLabel: currentLabel(),
     resolveConnection: async () => ({ baseUrl: config.server, token: config.token }),
     isSupervised: async () => !window.isDestroyed(),
     messages: { available: () => false },
@@ -88,9 +150,14 @@ export async function createLocalExec({ payload, profile, config, command, windo
     handlers: {
       getLocalToolPermission: () => permission,
       setLocalToolPermission: async args => {
-        if (!['ask', 'never', 'always'].includes(args.permission) || args.machineId && args.machineId !== machineId) throw new Error(grokText('无效的本机权限设置', 'Invalid local access permission'));
+        if (!['ask', 'never', 'always'].includes(args?.permission)) throw new Error(grokText('无效的本机权限设置', 'Invalid local access permission'));
+        if (args.machineId && args.machineId !== machineId) {
+          await command('setHostSettings', { localToolPermission: args.permission, localToolPermissionMachineId: args.machineId });
+          remotePermissions.set(args.machineId, args.permission);
+          return args.permission;
+        }
         await publishPermission(args.permission);
-        permission = args.permission; await serialize(() => save(settingsPath, { permission }));
+        permission = args.permission; await serialize(persistSettings);
         if (permission === 'never') codex?.stop();
         return permission;
       },
@@ -103,8 +170,48 @@ export async function createLocalExec({ payload, profile, config, command, windo
         await save(approvalsPath, { approvals: [...entries.filter(item => item.id !== record.id), record].slice(-500) });
       }),
       clearLocalToolApprovals: () => serialize(async () => { await rm(approvalsPath, { force: true }); await rm(retirementsPath, { force: true }); }),
-      getSandMachines: () => ({ machines: [{ machineId, name: os.hostname(), label: os.hostname(), platform: process.platform,
-        isCurrent: true, localToolPermission: permission, isOnline: Boolean(provider.providerId) }], currentMachineRemoved: false }),
+      getSandMachines: async () => {
+        const currentMachine = {
+          machineId,
+          label: currentLabel(),
+          platform: process.platform,
+          connected: Boolean(provider.providerId),
+          localToolPermission: permission,
+        };
+        if (typeof request !== 'function') return mergeSandMachines({ currentMachine, remotePayload: null });
+        const [remotePayload, hostSettings] = await Promise.all([
+          request('/local/computers', undefined, AbortSignal.timeout(10_000), 'GET').catch(() => null),
+          typeof command === 'function' ? command('getHostSettings').catch(() => null) : null,
+        ]);
+        const perMachinePermissions = {
+          ...(hostSettings?.localToolPermissions && typeof hostSettings.localToolPermissions === 'object' ? hostSettings.localToolPermissions : {}),
+          ...(hostSettings?.machineLocalToolPermissions && typeof hostSettings.machineLocalToolPermissions === 'object' ? hostSettings.machineLocalToolPermissions : {}),
+          ...Object.fromEntries(remotePermissions),
+        };
+        return mergeSandMachines({ currentMachine, remotePayload, perMachinePermissions });
+      },
+      updateSandMachineLabel: async ({ machineId: targetId, label } = {}) => {
+        const trimmed = typeof label === 'string' ? label.trim() : '';
+        if (!trimmed || [...trimmed].length > 100) throw new Error(grokText('无效的电脑名称', 'Invalid computer name'));
+        if (targetId && targetId !== machineId) throw new Error(grokText('请在该电脑上修改名称。', 'Rename that computer from its own Grok Bot app.'));
+        customLabel = trimmed;
+        await serialize(persistSettings);
+        const connected = Boolean(provider.providerId);
+        return {
+          machineId,
+          name: customLabel,
+          label: customLabel,
+          platform: process.platform,
+          kind: 'desktop',
+          isCurrent: true,
+          connected,
+          isOnline: connected,
+          localToolPermission: permission,
+        };
+      },
+      removeSandMachine: async () => {
+        throw new Error('sand-machine/removal-refused: not_removable');
+      },
       getLocalExecutionStatus: () => ({ connected: Boolean(provider.providerId), machineId, root, permission }),
     },
   };

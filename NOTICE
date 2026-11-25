@@ -39,7 +39,8 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
      platform.mjs, main.mjs, connection.mjs, settings.mjs, sounds.mjs,
      connect.css, native-provider.mjs, codex-bridge.mjs, codex-process.mjs,
      local-exec.mjs (UTF-8 command output on Windows, linux- machine ID on
-     Linux) and attachments.mjs (POSIX Host image paths).
+     Linux, /local/computers machine roster, rename and per-machine permissions
+     for 1.3.0 Settings > Computer) and attachments.mjs (POSIX Host image paths).
    - The 1.1.0 interfaces: per-edge RPC registration and window visibility
      events (main.mjs, local-services.mjs), dictation through the Host
      (dictation.mjs), search mapping (gateway.mjs) and startup defaults.
