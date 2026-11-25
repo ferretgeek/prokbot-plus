@@ -114,9 +114,9 @@
       "source": "dist/renderer/assets/chunk-view-xNHC-_w2.js",
       "newFile": false,
       "recipe": "012.gbp.gz",
-      "sha256": "1cdb7d64ba40aa87a0026bb15e9bc21eec9bd3b40646732a106673af66c8c2cc",
-      "targetBytes": 174226,
-      "addedBytes": 22
+      "sha256": "26f92cfa4b443952c0dac9fee646c15138955d794a774f852fc134796f824444",
+      "targetBytes": 174120,
+      "addedBytes": 34
     },
     {
       "path": "dist/renderer/assets/grok-local-i18n.js",

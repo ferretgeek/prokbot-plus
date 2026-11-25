@@ -345,16 +345,42 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
       ci/homepage-versions.mjs marks pins newer than the last real-machine
       test as untested.
 
-24. iOS 1.28.0 (build 29649), static ChatAvatar scroll-jank fix, restored
-    Realtime Voice toggle sync, and opt-in URL scroll profiler.
+24. Desktop 1.3.0 arm64 signing alignment and main-edge read fallbacks.
+    - mac/patchers/desktop/patch.mjs passes --pagesize 16384 when signing
+      arm64 bundles so cross-builds on Intel Macs match the official 1.3.0
+      arm64 slice and Apple Silicon native signing.
+    - mac/clients/desktop/local-services.mjs answers
+      getGrokBotAutomationPurchase (null), getGrokBotInviteByEmailEligibility
+      ("unknown"), and listCursorTeamMembers ({ members: [] }) with the
+      official empty/offline values.
+    - Contributed by @jun9100 (GitHub pull request #21).
+
+25. Desktop 1.3.0 Connected Apps local device-tool and Obsidian fallbacks.
+    - mac/clients/desktop/local-services.mjs (and android/client/services.js)
+      answers readDeviceToolPermission and requestDeviceToolPermission
+      ("unavailable") plus readObsidianVault, chooseObsidianVault and
+      clearObsidianVault (null) with the official unavailable/empty values.
+    - windows/tools/desktop-recipes/spec.mjs hides the unserved local Mac
+      device-tool section and local Obsidian vault entry in Connected Apps,
+      regenerating the connectedApps recipe across all five 1.3.0 targets.
+    - Contributed by @jun9100 (GitHub pull request #23).
+
+26. iOS 1.28.0 (build 29649), static ChatAvatar scroll-jank fix, restored
+    Realtime Voice toggle sync, HBC 98 closure/call-frame audits, and opt-in
+    URL scroll profiler.
     - ios/recipes/ios/ pins the official 1.28.0 (build 29649) and archives
       1.27.0 (29519) under ios/recipes/ios/1.27.0/ alongside 1.26.0 (29388) and
       1.16.0 (23152) as fallbacks. ios/tools/build_ios_128_recipe.py (new)
       rebuilds the 1.28.0 HBC 98 recipes from the user's own app, keeping
       ChatAvatar's stock "static" default on 1.28.0 (avoiding per-frame
-      GrokBotFace SVG redraws on home Bot list rows) and mounting the
-      experimental Realtime Voice toggle into SettingsSheet synced with Host
-      GET /local/voice/status.
+      GrokBotFace SVG redraws on home Bot list rows) and appending all 11
+      experimental Realtime Voice closures as NewFunction entries (with
+      callable FunctionHeader flags and safe Hermes call-frame margins,
+      preserving stock AgentPickerRow and ConnectorGrantCard closures) mounted
+      into SettingsSheet and synced with Host GET /local/voice/status.
+    - ios/tools/hbc98/audit.py adds closure-prohibit-call and
+      call-frame-overlap structural checks to guard Hermes ProhibitInvoke flags
+      and StackFrameLayout::CallerExtraRegistersAtEnd margins.
     - ios/patchers/ios/extensions.py adds the 1.28.0 extension digests and two
       widget scheme sites; ios/clients/ios/GBBootstrap.m adds 1.28.0
       sentence-case label matching; ios/clients/ios/GBVoice.m intercepts
