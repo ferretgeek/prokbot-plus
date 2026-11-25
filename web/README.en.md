@@ -48,7 +48,7 @@ The Host checks the size and SHA-256 of every file against the bundle's own mani
 
 ### 3. Sign in
 
-1. On the device you want to use, open the web client address in a browser. The web client has its own Host port and address, apart from the admin page: by default the Host's host name with port 18081, for example `http://192.168.1.10:18081/web/`; behind an HTTPS reverse proxy, the address set up for it, for example `https://web.bot.example.org/web/` (see the [Host guide](../host/README.en.md#web-client)). The **Web client** page of the admin page shows this address with a copy button; old `<admin address>/web/` links redirect there.
+1. On the device you want to use, open the web client address in a browser. The web client has its own Host port and address, apart from the admin page: by default the Host's host name with port 18081, for example `http://192.0.2.10:18081/web/`; behind an HTTPS reverse proxy, the address set up for it, for example `https://web.bot.example.org/web/` (see the [Host guide](../host/README.en.md#web-client)). The **Web client** page of the admin page shows this address with a copy button; old `<admin address>/web/` links redirect there.
 2. Create a 6-character pairing code under **Devices & notifications** on the admin page and enter it. Each browser pairs separately; a code is valid for 5 minutes and works once.
 3. In the browser where the admin page is open, click **Open in this browser** at the top right of the **Web client** page instead. No pairing code is needed: the admin page issues a one-time ticket, valid for two minutes, and the new tab uses it to sign in on the web client's address.
 
