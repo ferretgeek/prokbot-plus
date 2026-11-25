@@ -57,6 +57,7 @@ from ios.tools.build_ios_127_recipe import (  # noqa: E402
     promise_true_equal_length_body,
 )
 from ios.tools.hbc98.audit import (  # noqa: E402
+    CALLER_EXTRA_REGISTERS_AT_END,
     _FUNCTION_INDEX_OPERANDS,
     _STRING_INDEX_OPERANDS,
     audit_hbc,
@@ -93,9 +94,17 @@ EXPECTED_UNPAIRED_128_SHA256 = (
     'd6728b6ae7be0170b6d856c5c5a7586d90f7c0dac51f24f5d27d75a22cfc79ea'
 )
 EXPECTED_GATEWAY_128_SHA256 = (
-    'ccc131ea9574f2a6d179dcf239b759766b3ae2d9b44d70b438a56ecfd4435b2a'
+    '8780a5983fbaaadc73006776a7274d381e34f7eac22e15f67678720d9d0219c9'
 )
-NATIVE_PLUGIN_ENTRIES_OFFSET = 35475244
+NATIVE_PLUGIN_ENTRIES_OFFSET = 35475316
+
+# Hermes FunctionHeaderFlag: ProhibitInvoke=ProhibitConstruct(0x01) | StrictMode(0x04).
+# ProhibitInvoke=0x00 is ProhibitCall (class constructor) and throws TypeError on Call*.
+CALLABLE_ARROW_FLAGS = 0x05
+# Minimum frame_size for synthesized Realtime Voice helper closures so all
+# Call1..Call4 instructions keep their source registers strictly below
+# frame_size - (CallerExtraRegistersAtEnd + argCount).
+VOICE_HELPER_MIN_FRAME_SIZE = 24
 
 BACKEND_CALL_FUNCTION = 32902
 BACKEND_CALL_PUBLIC_FUNCTION = 32904
@@ -108,23 +117,25 @@ NEW_FUNCTION_START = STOCK_128_FUNCTION_COUNT
 SKILL_DETAIL_ADDED_COUNT = 6
 SKILL_DETAIL_JSON_HELPER_FUNCTION = NEW_FUNCTION_START + 3
 VOICE_TOGGLE_GROUP_FUNCTION = NEW_FUNCTION_START + SKILL_DETAIL_ADDED_COUNT
-VOICE_CALL_SUB_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 1
-VOICE_APPLY_STATUS_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 2
-VOICE_CATCH_STATUS_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 3
-VOICE_SYNC_STATUS_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 4
-VOICE_ADDED_COUNT = 5
+VOICE_SNAPSHOT_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 1
+VOICE_STORAGE_SPEC_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 2
+VOICE_DISPOSE_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 3
+VOICE_TOGGLE_CHANGE_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 4
+VOICE_SUBSCRIBE_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 5
+VOICE_SCHEMA_PARSE_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 6
+VOICE_CALL_SUB_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 7
+VOICE_APPLY_STATUS_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 8
+VOICE_CATCH_STATUS_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 9
+VOICE_SYNC_STATUS_FUNCTION = VOICE_TOGGLE_GROUP_FUNCTION + 10
+VOICE_ADDED_COUNT = 11
 NEW_FUNCTION_COUNT = SKILL_DETAIL_ADDED_COUNT + VOICE_ADDED_COUNT
 OLD_NEW_FUNCTION_START = 91316
 
 SETTINGS_SHEET_MODULE_FUNCTION = 6665
 SETTINGS_TRY_ON_SELFIE_ENV_SLOT = 39
 VOICE_TOGGLE_127_SOURCE_FUNCTION = 44896
-VOICE_SNAPSHOT_FUNCTION = 74307
-VOICE_STORAGE_SPEC_FUNCTION = 74308
-VOICE_DISPOSE_FUNCTION = 74310
-VOICE_TOGGLE_CHANGE_FUNCTION = 74311
-VOICE_SUBSCRIBE_FUNCTION = 75297
-VOICE_SCHEMA_PARSE_FUNCTION = 78752
+VOICE_STORAGE_SPEC_127_SOURCE_FUNCTION = 72315
+VOICE_SCHEMA_PARSE_127_SOURCE_FUNCTION = 76444
 
 GATEWAY_SHELL_FUNCTION = 26756
 CHAT_AVATAR_FUNCTION = 43388
@@ -193,17 +204,20 @@ PORTED_FUNCTIONS = {
     62728: 65721,  # (voice tool drain helper)
     64660: 65908,  # isVoiceCallEnabled
     67866: 64181,  # resolveLocalTool
-    72315: VOICE_STORAGE_SPEC_FUNCTION,  # _t2
-    76444: VOICE_SCHEMA_PARSE_FUNCTION,  # t20
 }
 
 # Complete closure-target remapping from gateway 1.27.0 -> gateway 1.28.0.
+# All Realtime Voice closures are appended as NewFunction entries rather than
+# overwriting stock 1.28.0 closures (75297 is AgentPickerRow._t3 and 78752 is
+# ConnectorGrantCard.t20 in stock 1.28.0).
 CLOSURE_TARGET_MAP = {
     **PORTED_FUNCTIONS,
     72314: VOICE_SNAPSHOT_FUNCTION,
+    VOICE_STORAGE_SPEC_127_SOURCE_FUNCTION: VOICE_STORAGE_SPEC_FUNCTION,
     72317: VOICE_DISPOSE_FUNCTION,
     72318: VOICE_TOGGLE_CHANGE_FUNCTION,
     73416: VOICE_SUBSCRIBE_FUNCTION,
+    VOICE_SCHEMA_PARSE_127_SOURCE_FUNCTION: VOICE_SCHEMA_PARSE_FUNCTION,
     62015: 65170,  # ?anon_0_finish
     62727: 65720,  # settleAgentSpeech sibling closure
     63513: 68304,  # ?anon_0_call
@@ -234,8 +248,6 @@ EXPECTED_PORTED_NAMES = {
     65721: '',
     65908: 'isVoiceCallEnabled',
     64181: 'resolveLocalTool',
-    VOICE_STORAGE_SPEC_FUNCTION: '_t2',
-    VOICE_SCHEMA_PARSE_FUNCTION: 't20',
 }
 
 _VOICE_STORAGE_KEY_PARTS = ('grokbot', '.', 'voice', '.', 'storage')
@@ -300,7 +312,7 @@ def build_realtime_voice_bodies(
     if object_sid > 0xFFFF:
         raise ValueError(f'Object string ID {object_sid} exceeds UInt16 TryGetById')
 
-    # 94845: callVoiceSub(cb) -> if (cb) cb();
+    # 94851: callVoiceSub(cb) -> if (cb) cb();
     invoke_cb = (
         _encode_ins(opcodes, 'LoadConstUndefined', 0)
         + _encode_ins(opcodes, 'Call1', 0, 1, 0)
@@ -313,7 +325,7 @@ def build_realtime_voice_bodies(
         + _encode_ins(opcodes, 'Ret', 0)
     )
 
-    # 94846: applyHostVoiceStatus(data) -> updates globalThis['grokbot.voice.host']
+    # 94852: applyHostVoiceStatus(data) -> updates globalThis['grokbot.voice.host']
     # and notifies subscribers via Object.values(subs).forEach(callVoiceSub).
     read_enabled = (
         _encode_get_by_id(opcodes, 7, 6, 0, _unique_str_idx(strs, 'enabled'))
@@ -350,7 +362,7 @@ def build_realtime_voice_bodies(
         + _encode_ins(opcodes, 'Ret', 0)
     )
 
-    # 94847: catchHostVoiceStatus() -> applyHostVoiceStatus(undefined)
+    # 94853: catchHostVoiceStatus() -> applyHostVoiceStatus(undefined)
     body_catch_status = (
         _encode_ins(opcodes, 'LoadConstUndefined', 0)
         + _encode_ins(opcodes, 'CreateClosureLongIndex', 1, 0, VOICE_APPLY_STATUS_FUNCTION)
@@ -359,7 +371,7 @@ def build_realtime_voice_bodies(
         + _encode_ins(opcodes, 'Ret', 0)
     )
 
-    # 94848: syncHostVoiceStatus() -> coalesced fetch('https://local.voice/local/voice/status')
+    # 94854: syncHostVoiceStatus() -> coalesced fetch('https://local.voice/local/voice/status')
     do_fetch = (
         _encode_ins(opcodes, 'PutByValStrict', 1, 2, 5)
         + _encode_concat_strings(opcodes, strs, 6, 3, _VOICE_STATUS_URL_PARTS)
@@ -395,7 +407,19 @@ def build_realtime_voice_bodies(
         + _encode_ins(opcodes, 'Ret', 0)
     )
 
-    # 74307: getSnapshot() -> hostEnabled === true && localPref === 'true'
+    # getSnapshot() -> hostEnabled === true && localPref === 'true'
+    read_store_value = (
+        _encode_get_by_id(
+            opcodes, 6, 5, 1, _unique_str_idx(strs, 'getString')
+        )
+        + _encode_concat_strings(
+            opcodes, strs, 2, 3, _VOICE_LOCAL_PREF_KEY_PARTS
+        )
+        + _encode_ins(opcodes, 'Call2', 4, 6, 5, 2)
+        + _encode_load_const_string(opcodes, 5, _unique_str_idx(strs, 'true'))
+        + _encode_ins(opcodes, 'StrictEq', 0, 4, 5)
+        + _encode_ins(opcodes, 'Ret', 0)
+    )
     read_local_pref = (
         _encode_concat_strings(opcodes, strs, 2, 3, _VOICE_STORAGE_KEY_PARTS)
         + _encode_ins(opcodes, 'GetByVal', 4, 1, 2)
@@ -404,16 +428,7 @@ def build_realtime_voice_bodies(
             'JmpFalseLong',
             (
                 _encode_get_by_id(opcodes, 5, 4, 0, _unique_str_idx(strs, 'store'))
-                + _encode_get_by_id(
-                    opcodes, 6, 5, 1, _unique_str_idx(strs, 'getString')
-                )
-                + _encode_concat_strings(
-                    opcodes, strs, 2, 3, _VOICE_LOCAL_PREF_KEY_PARTS
-                )
-                + _encode_ins(opcodes, 'Call2', 4, 6, 5, 2)
-                + _encode_load_const_string(opcodes, 5, _unique_str_idx(strs, 'true'))
-                + _encode_ins(opcodes, 'StrictEq', 0, 4, 5)
-                + _encode_ins(opcodes, 'Ret', 0)
+                + _jmp_over(opcodes, 'JmpFalseLong', read_store_value, 5)
             ),
             4,
         )
@@ -428,7 +443,7 @@ def build_realtime_voice_bodies(
         + _encode_ins(opcodes, 'Ret', 0)
     )
 
-    # 75297: subscribe(cb) -> subscribes storage + host status map, refreshes status
+    # 94849: subscribe(cb) -> subscribes storage + host status map, refreshes status
     sub_storage_block = (
         _encode_get_by_id(opcodes, 7, 4, 0, _unique_str_idx(strs, 'subscribe'))
         + _encode_concat_strings(opcodes, strs, 2, 3, _VOICE_LOCAL_PREF_KEY_PARTS)
@@ -470,7 +485,7 @@ def build_realtime_voice_bodies(
         + _encode_ins(opcodes, 'Ret', 10)
     )
 
-    # 74310: dispose() -> disposes storage sub + deletes host status sub
+    # 94847: dispose() -> disposes storage sub + deletes host status sub
     dispose_storage_sub = (
         _encode_get_by_id(opcodes, 2, 1, 0, _unique_str_idx(strs, 'dispose'))
         + _encode_ins(opcodes, 'Call1', 3, 2, 1)
@@ -491,7 +506,7 @@ def build_realtime_voice_bodies(
         + _encode_ins(opcodes, 'Ret', 0)
     )
 
-    # 74311: onValueChange(val) -> writes preference; syncs status on true, hangs up on false
+    # 94848: onValueChange(val) -> writes preference; syncs status on true, hangs up on false
     sync_when_true = (
         _encode_ins(opcodes, 'LoadConstUndefined', 5)
         + _encode_ins(
@@ -528,13 +543,12 @@ def build_realtime_voice_bodies(
         + _encode_ins(opcodes, 'Ret', 0)
     )
 
-    replaced = {
-        VOICE_SNAPSHOT_FUNCTION: body_snapshot,
-        VOICE_SUBSCRIBE_FUNCTION: body_subscribe,
-        VOICE_DISPOSE_FUNCTION: body_dispose,
-        VOICE_TOGGLE_CHANGE_FUNCTION: body_toggle_change,
-    }
+    replaced: dict[int, bytes] = {}
     added = {
+        VOICE_SNAPSHOT_FUNCTION: (1, body_snapshot),
+        VOICE_DISPOSE_FUNCTION: (2, body_dispose),
+        VOICE_TOGGLE_CHANGE_FUNCTION: (2, body_toggle_change),
+        VOICE_SUBSCRIBE_FUNCTION: (2, body_subscribe),
         VOICE_CALL_SUB_FUNCTION: (2, body_call_sub),
         VOICE_APPLY_STATUS_FUNCTION: (2, body_apply_status),
         VOICE_CATCH_STATUS_FUNCTION: (1, body_catch_status),
@@ -609,6 +623,13 @@ def assert_realtime_voice_wired(file: HBCFile, label: str) -> None:
         raise AssertionError(
             f'{label}: voice status sync fn#{VOICE_SYNC_STATUS_FUNCTION} does not fetch /local/voice/status'
         )
+
+    for added_idx in range(NEW_FUNCTION_START, NEW_FUNCTION_START + NEW_FUNCTION_COUNT):
+        eh_added = effective_header(file, added_idx)
+        if (eh_added.flags & 0x03) == 0:
+            raise AssertionError(
+                f'{label}: added fn#{added_idx} has ProhibitCall flags={eh_added.flags}'
+            )
 
 
 def port_function_body(
@@ -1131,6 +1152,8 @@ def build_gateway(
     opcodes.decode(shell_body, 0, len(shell_body))
     shell_meta = replace(
         FunctionMetadata.from_header(sh_gw),
+        number_reg_count=0,
+        non_pointer_reg_count=0,
         frame_size=max(sh_gw.frame_size, 3),
         read_cache_size=0,
         write_cache_size=max(sh_gw.write_cache_size, 2),
@@ -1171,6 +1194,8 @@ def build_gateway(
     req_stamp = body_requirements(opcodes, body_stamp)
     meta_stamp = replace(
         FunctionMetadata.from_header(sh_stamp),
+        number_reg_count=0,
+        non_pointer_reg_count=0,
         frame_size=max(sh_stamp.frame_size, req_stamp.frame_size, 14),
         read_cache_size=max(sh_stamp.read_cache_size, req_stamp.read_cache_entries, 2),
     )
@@ -1211,6 +1236,8 @@ def build_gateway(
     req_owner = body_requirements(opcodes, body_owner)
     meta_owner = replace(
         FunctionMetadata.from_header(oh),
+        number_reg_count=0,
+        non_pointer_reg_count=0,
         frame_size=max(oh.frame_size, req_owner.frame_size),
         read_cache_size=max(oh.read_cache_size, req_owner.read_cache_entries),
         write_cache_size=max(oh.write_cache_size, req_owner.write_cache_entries, 1),
@@ -1247,9 +1274,14 @@ def build_gateway(
 
     # 11. StorageService initializer (fn#13806): expose globalThis['grokbot.voice.storage'] = this
     # and trigger initial Host /local/voice/status sync.
+    # Stock fn#13806 has frame_size=14 and hardcodes ``Mov 6, 4; Construct 1, 1, 1``
+    # (r6 == frame_size - 8 is the outgoing ThisArg slot), so frame_size MUST remain 14
+    # and Call1 source operands MUST stay < 6 (r3/r4, never r6).
     sth = effective_header(stock, 13806)
     if strs[sth.function_name].text != '<instance_members_initializer:StorageService>':
         raise ValueError('Function 13806 is not StorageService initializer')
+    if sth.non_pointer_reg_count > 1 or sth.frame_size != 14:
+        raise ValueError('StorageService fn#13806 register layout changed')
     storig = stock.data[sth.offset:sth.offset + sth.bytecode_size]
     if storig[-4:] != _encode_ins(opcodes, 'LoadConstUndefined', 0) + _encode_ins(opcodes, 'Ret', 0):
         raise ValueError('StorageService fn#13806 epilogue moved')
@@ -1257,19 +1289,16 @@ def build_gateway(
         _encode_ins(opcodes, 'GetGlobalObject', 4)
         + _encode_concat_strings(opcodes, strs, 1, 3, _VOICE_STORAGE_KEY_PARTS)
         + _encode_ins(opcodes, 'PutByValStrict', 4, 1, 2)
-        + _encode_ins(opcodes, 'LoadConstUndefined', 5)
+        + _encode_ins(opcodes, 'LoadConstUndefined', 3)
         + _encode_ins(
-            opcodes, 'CreateClosureLongIndex', 6, 5, VOICE_SYNC_STATUS_FUNCTION
+            opcodes, 'CreateClosureLongIndex', 4, 3, VOICE_SYNC_STATUS_FUNCTION
         )
-        + _encode_ins(opcodes, 'Call1', 5, 6, 5)
+        + _encode_ins(opcodes, 'Call1', 5, 4, 3)
     )
     body_storage = storig[:-4] + suffix_storage + storig[-4:]
     opcodes.decode(body_storage, 0, len(body_storage))
     req_storage = body_requirements(opcodes, body_storage)
-    meta_storage = replace(
-        FunctionMetadata.from_header(sth),
-        frame_size=max(sth.frame_size, req_storage.frame_size),
-    )
+    meta_storage = FunctionMetadata.from_header(sth)
     require_metadata(req_storage, meta_storage, label='StorageService fn#13806')
     replacements[13806] = FunctionEdit(body=body_storage, metadata=meta_storage)
 
@@ -1315,6 +1344,10 @@ def build_gateway(
     )
 
     # 12. Group/identity gateway writes (fn#83406, fn#83409, fn#83410).
+    # Stock fn#83406 has frame_size=21 and ends with ``CallBuiltin 0, 44, 2`` using
+    # r12 == frame_size - 9, so frame_size MUST remain 21. Move r11 -> r7 (r7 is
+    # dead after reading .gateway and overwritten by Call3's dst) so every Call3
+    # source operand stays strictly below 21 - (7 + 3) == 11.
     h_grp = effective_header(stock, 83406)
     if strs[h_grp.function_name].text != '?anon_0_setGroupMembers':
         raise ValueError('Function 83406 is not ?anon_0_setGroupMembers')
@@ -1322,8 +1355,8 @@ def build_gateway(
     patch_grp = (
         _encode_get_by_id(opcodes, 9, 7, 1, _unique_str_idx(strs, 'gateway'))
         + _encode_get_by_id(opcodes, 8, 9, 2, _unique_str_idx(strs, 'setGroupMembers'))
-        + _encode_ins(opcodes, 'Call3', 7, 8, 9, 11, 10)
-        + _encode_ins(opcodes, 'Mov', 12, 12)
+        + _encode_ins(opcodes, 'Mov', 7, 11)
+        + _encode_ins(opcodes, 'Call3', 7, 8, 9, 7, 10)
         + _encode_ins(opcodes, 'LoadConstUndefined', 12) * 7
     )
     if len(patch_grp) != 268 - 233:
@@ -1458,7 +1491,7 @@ def build_gateway(
     require_metadata(req_pin, meta_pin, label=f'buildPinnedGate fn#{BUILD_PINNED_GATE_FUNCTION}')
     replacements[BUILD_PINNED_GATE_FUNCTION] = FunctionEdit(body=body_pin, metadata=meta_pin)
 
-    # 15. Semantically port the 22 complex functions from verified gateway 1.27.0.
+    # 15. Semantically port the 15 complex functions from verified gateway 1.27.0.
     ported_records: list[dict[str, object]] = []
     for src_idx, dst_idx in PORTED_FUNCTIONS.items():
         dst_h = effective_header(stock, dst_idx)
@@ -1483,6 +1516,8 @@ def build_gateway(
         req = body_requirements(opcodes, body)
         meta = replace(
             FunctionMetadata.from_header(dst_h),
+            number_reg_count=0,
+            non_pointer_reg_count=0,
             frame_size=max(dst_h.frame_size, src_h.frame_size, req.frame_size),
             read_cache_size=max(dst_h.read_cache_size, src_h.read_cache_size, req.read_cache_entries),
             write_cache_size=max(dst_h.write_cache_size, src_h.write_cache_size, req.write_cache_entries),
@@ -1517,43 +1552,14 @@ def build_gateway(
             }
         )
 
-    # 15b. Replace the 4 voice gate/subscription/toggle handlers with Host-synced versions.
-    voice_replaced, voice_added = build_realtime_voice_bodies(opcodes, strs)
-    expected_voice_names = {
-        VOICE_SNAPSHOT_FUNCTION: '',
-        VOICE_SUBSCRIBE_FUNCTION: '_t3',
-        VOICE_DISPOSE_FUNCTION: 't14',
-        VOICE_TOGGLE_CHANGE_FUNCTION: 't17',
-    }
-    for dst_idx, body in voice_replaced.items():
-        dst_h = effective_header(stock, dst_idx)
-        dst_name = strs[dst_h.function_name].text
-        if dst_name != expected_voice_names[dst_idx]:
-            raise ValueError(
-                f'Voice target fn#{dst_idx} is {dst_name!r}, '
-                f'expected {expected_voice_names[dst_idx]!r}'
-            )
-        req = body_requirements(opcodes, body)
-        meta = replace(
-            FunctionMetadata.from_header(dst_h),
-            number_reg_count=0,
-            non_pointer_reg_count=0,
-            frame_size=max(dst_h.frame_size, req.frame_size),
-            read_cache_size=max(dst_h.read_cache_size, req.read_cache_entries),
-            write_cache_size=max(dst_h.write_cache_size, req.write_cache_entries),
-        )
-        require_metadata(req, meta, label=f'voice fn#{dst_idx}')
-        replacements[dst_idx] = FunctionEdit(
-            body=body,
-            metadata=meta,
-            exception_handlers=(),
-            debug_offset=None,
-            replace_exception_handlers=True,
-            replace_debug_offset=True,
-        )
+    _, voice_added = build_realtime_voice_bodies(opcodes, strs)
 
     # 16. Semantically port the 6 added SkillDetail publication functions (94838..94843)
-    # plus the 5 added Realtime Voice functions (94844..94848).
+    # plus the 11 added Realtime Voice functions (94844..94854).
+    # Appending all Realtime Voice closures avoids overwriting any stock 1.28.0
+    # functions (such as AgentPickerRow._t3 at 75297 or ConnectorGrantCard.t20 at 78752),
+    # and sets CALLABLE_ARROW_FLAGS (ProhibitConstruct | StrictMode = 0x05) so Hermes
+    # never treats added closures as ProhibitCall (0x00) class constructors.
     # In 1.28.0 fn#6901 keeps InsetGroup* at slot 12, jsx/jsxs/Fragment at slot 18,
     # useLingui at slot 2, useLocalSearchParams at slot 3, and React at module ID 50.
     global_name_id = _unique_str_idx(strs, 'global')
@@ -1583,59 +1589,112 @@ def build_gateway(
         require_metadata(req, meta, label=f'added fn#{dst_idx}')
         additions.append(NewFunction(body=body, metadata=meta))
 
-    src_voice_toggle_h = effective_header(gateway_127, VOICE_TOGGLE_127_SOURCE_FUNCTION)
-    body_voice_toggle = port_function_body(
-        gateway_127,
-        stock,
-        VOICE_TOGGLE_127_SOURCE_FUNCTION,
-        closure_map=CLOSURE_TARGET_MAP,
-        source_strings=strs_127,
-        target_strings=strs,
-        target_by_text=target_by_text,
-        env_slot_remap=_SETTINGS_VOICE_ENV_REMAP,
-    )
-    req_voice_toggle = body_requirements(opcodes, body_voice_toggle)
-    meta_voice_toggle = replace(
-        FunctionMetadata.from_header(src_voice_toggle_h),
-        function_name=global_name_id,
-        number_reg_count=0,
-        non_pointer_reg_count=0,
-        frame_size=max(src_voice_toggle_h.frame_size, req_voice_toggle.frame_size),
-        read_cache_size=max(
-            src_voice_toggle_h.read_cache_size, req_voice_toggle.read_cache_entries
-        ),
-        write_cache_size=max(
-            src_voice_toggle_h.write_cache_size, req_voice_toggle.write_cache_entries
-        ),
-    )
-    require_metadata(
-        req_voice_toggle, meta_voice_toggle, label=f'added fn#{VOICE_TOGGLE_GROUP_FUNCTION}'
-    )
-    additions.append(NewFunction(body=body_voice_toggle, metadata=meta_voice_toggle))
+    def _make_ported_voice_addition(
+        src_127_idx: int,
+        dst_128_idx: int,
+        *,
+        env_slot_remap: Mapping[tuple[int, int], int] | None = None,
+    ) -> NewFunction:
+        src_vh = effective_header(gateway_127, src_127_idx)
+        v_body = port_function_body(
+            gateway_127,
+            stock,
+            src_127_idx,
+            closure_map=CLOSURE_TARGET_MAP,
+            source_strings=strs_127,
+            target_strings=strs,
+            target_by_text=target_by_text,
+            env_slot_remap=env_slot_remap,
+        )
+        v_req = body_requirements(opcodes, v_body)
+        v_flags = src_vh.flags if (src_vh.flags & 0x03) != 0 else CALLABLE_ARROW_FLAGS
+        v_meta = replace(
+            FunctionMetadata.from_header(src_vh),
+            function_name=global_name_id,
+            number_reg_count=0,
+            non_pointer_reg_count=0,
+            frame_size=max(src_vh.frame_size, v_req.frame_size),
+            read_cache_size=max(src_vh.read_cache_size, v_req.read_cache_entries),
+            write_cache_size=max(src_vh.write_cache_size, v_req.write_cache_entries),
+            flags=v_flags,
+        )
+        require_metadata(v_req, v_meta, label=f'added fn#{dst_128_idx}')
+        return NewFunction(body=v_body, metadata=v_meta)
 
-    for helper_idx in (
-        VOICE_CALL_SUB_FUNCTION,
-        VOICE_APPLY_STATUS_FUNCTION,
-        VOICE_CATCH_STATUS_FUNCTION,
-        VOICE_SYNC_STATUS_FUNCTION,
-    ):
+    def _make_helper_voice_addition(helper_idx: int) -> NewFunction:
         param_count, helper_body = voice_added[helper_idx]
         req_helper = body_requirements(opcodes, helper_body)
+        min_frame_size = max(
+            VOICE_HELPER_MIN_FRAME_SIZE,
+            req_helper.frame_size + CALLER_EXTRA_REGISTERS_AT_END + 4,
+        )
         meta_helper = FunctionMetadata(
             param_count=param_count,
             loop_depth=0,
             function_name=global_name_id,
             number_reg_count=0,
             non_pointer_reg_count=0,
-            frame_size=max(16, req_helper.frame_size),
+            frame_size=min_frame_size,
             read_cache_size=max(4, req_helper.read_cache_entries),
             write_cache_size=req_helper.write_cache_entries,
             num_cache_new_object=0,
             private_name_cache_size=0,
-            flags=0,
+            flags=CALLABLE_ARROW_FLAGS,
         )
         require_metadata(req_helper, meta_helper, label=f'added fn#{helper_idx}')
-        additions.append(NewFunction(body=helper_body, metadata=meta_helper))
+        return NewFunction(body=helper_body, metadata=meta_helper)
+
+    voice_addition_plan = (
+        (
+            VOICE_TOGGLE_GROUP_FUNCTION,
+            lambda: _make_ported_voice_addition(
+                VOICE_TOGGLE_127_SOURCE_FUNCTION,
+                VOICE_TOGGLE_GROUP_FUNCTION,
+                env_slot_remap=_SETTINGS_VOICE_ENV_REMAP,
+            ),
+        ),
+        (VOICE_SNAPSHOT_FUNCTION, lambda: _make_helper_voice_addition(VOICE_SNAPSHOT_FUNCTION)),
+        (
+            VOICE_STORAGE_SPEC_FUNCTION,
+            lambda: _make_ported_voice_addition(
+                VOICE_STORAGE_SPEC_127_SOURCE_FUNCTION,
+                VOICE_STORAGE_SPEC_FUNCTION,
+            ),
+        ),
+        (VOICE_DISPOSE_FUNCTION, lambda: _make_helper_voice_addition(VOICE_DISPOSE_FUNCTION)),
+        (
+            VOICE_TOGGLE_CHANGE_FUNCTION,
+            lambda: _make_helper_voice_addition(VOICE_TOGGLE_CHANGE_FUNCTION),
+        ),
+        (VOICE_SUBSCRIBE_FUNCTION, lambda: _make_helper_voice_addition(VOICE_SUBSCRIBE_FUNCTION)),
+        (
+            VOICE_SCHEMA_PARSE_FUNCTION,
+            lambda: _make_ported_voice_addition(
+                VOICE_SCHEMA_PARSE_127_SOURCE_FUNCTION,
+                VOICE_SCHEMA_PARSE_FUNCTION,
+            ),
+        ),
+        (VOICE_CALL_SUB_FUNCTION, lambda: _make_helper_voice_addition(VOICE_CALL_SUB_FUNCTION)),
+        (
+            VOICE_APPLY_STATUS_FUNCTION,
+            lambda: _make_helper_voice_addition(VOICE_APPLY_STATUS_FUNCTION),
+        ),
+        (
+            VOICE_CATCH_STATUS_FUNCTION,
+            lambda: _make_helper_voice_addition(VOICE_CATCH_STATUS_FUNCTION),
+        ),
+        (
+            VOICE_SYNC_STATUS_FUNCTION,
+            lambda: _make_helper_voice_addition(VOICE_SYNC_STATUS_FUNCTION),
+        ),
+    )
+    for expected_idx, builder in voice_addition_plan:
+        actual_idx = STOCK_128_FUNCTION_COUNT + len(additions)
+        if actual_idx != expected_idx:
+            raise AssertionError(
+                f'Voice addition index drift: expected {expected_idx}, got {actual_idx}'
+            )
+        additions.append(builder())
 
     output = stock.write(replacements=replacements, additions=additions)
     target = HBCFile.parse(output, strict=True)

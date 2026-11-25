@@ -25,7 +25,7 @@ RECIPES_DIR = REPO_ROOT / 'ios' / 'recipes' / 'ios'
 RECIPES_127_DIR = RECIPES_DIR / '1.27.0'
 
 # Relocated offset of patched buildPinnedGate (fn#27266) in 1.28.0 gateway-template.hbc.
-BUILD_PINNED_GATE_128_OFFSET = 40390928
+BUILD_PINNED_GATE_128_OFFSET = 40391000
 EXPECTED_PINNED_GATE_128_ADD_PREFIX = bytes.fromhex(
     '890201'
     '9003d59d'
