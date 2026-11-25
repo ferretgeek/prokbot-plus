@@ -211,26 +211,6 @@ function retryableFailure(error, { controller, upstreamSignal, idleTimedOut }) {
     'ENETUNREACH', 'ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_SOCKET'].includes(error?.code);
 }
 
-function distinctCredentialCandidates(candidates, { exhausted = false } = {}) {
-  if (!exhausted) return candidates;
-  const keys = new Set();
-  return candidates.filter(candidate => {
-    // A fallback sharing a key has the same quota and cannot recover an exhausted account.
-    if (keys.has(candidate.apiKey)) return false;
-    keys.add(candidate.apiKey);
-    return true;
-  });
-}
-
-function skippedCredentialCandidates(candidates) {
-  const keys = new Set();
-  return candidates.filter(candidate => {
-    const duplicate = keys.has(candidate.apiKey);
-    keys.add(candidate.apiKey);
-    return duplicate;
-  });
-}
-
 function publicCandidate(candidate) {
   return { profileId: candidate.profileId, profileName: candidate.profileName,
     providerId: candidate.providerId, providerName: candidate.providerName,
@@ -427,9 +407,11 @@ export function createModelSession({ baseUrl, apiKey, model, onRequestId, apiFor
                 }
               }
               if (quotaExhausted(error)) {
-                const remaining = candidates.slice(attempt);
-                const skipped = skippedCredentialCandidates(remaining);
-                candidates = distinctCredentialCandidates(candidates, { exhausted: true });
+                // Only later candidates on the exhausted key are skipped. Candidates already tried keep
+                // their positions, so attempt + 1 still names the next untried candidate.
+                const later = candidates.slice(attempt + 1);
+                const skipped = later.filter(item => item.apiKey === candidate.apiKey);
+                candidates = [...candidates.slice(0, attempt + 1), ...later.filter(item => item.apiKey !== candidate.apiKey)];
                 const nextDistinct = candidates[attempt + 1];
                 if (skipped.length) {
                   try {
