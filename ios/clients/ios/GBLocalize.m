@@ -1,20 +1,57 @@
 #import <UIKit/UIKit.h>
 #import "GBLocalize.h"
-static NSString *GBLocaleKey = @"GrokBotLocal.interfaceLanguage";
-BOOL GBIsChinese(void) {
-  NSString *language = [NSUserDefaults.standardUserDefaults stringForKey:GBLocaleKey];
+static NSString *const GBLocaleKey = @"GrokBotLocal.interfaceLanguage";
+static NSString *GBCachedLanguage;
+static BOOL GBLanguageLoaded;
+static BOOL GBCachedIsChinese;
+static BOOL GBComputeIsChinese(NSString *language) {
   if (!language.length) language = NSLocale.preferredLanguages.firstObject;
   return [language.lowercaseString hasPrefix:@"zh"];
 }
+static void GBEnsureLanguageLoadedLocked(void) {
+  if (GBLanguageLoaded) return;
+  GBCachedLanguage = [NSUserDefaults.standardUserDefaults stringForKey:GBLocaleKey];
+  GBCachedIsChinese = GBComputeIsChinese(GBCachedLanguage);
+  GBLanguageLoaded = YES;
+}
+BOOL GBIsChinese(void) {
+  @synchronized (GBLocaleKey) {
+    GBEnsureLanguageLoadedLocked();
+    return GBCachedIsChinese;
+  }
+}
 NSString *GBL(NSString *chinese, NSString *english) { return GBIsChinese() ? chinese : english; }
 void GBObserveAppLanguage(NSString *label) {
+  if (!label.length || label.length > 32) return;
+  static NSSet<NSString *> *zhLabels;
+  static NSSet<NSString *> *enLabels;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    zhLabels = [NSSet setWithArray:@[
+      @"账户", @"调试", @"用量", @"语言", @"连接服务端", @"退出登录", @"登出",
+      @"通过 Apple 登录", @"透過 Apple 登入", @"用邮箱继续"
+    ]];
+    enLabels = [NSSet setWithArray:@[
+      @"Account", @"Debug", @"Usage", @"Language", @"Connect to Host",
+      @"Sign out", @"Sign in with Apple", @"Continue with email"
+    ]];
+  });
   // These labels are emitted by the original Lingui settings/account controls.
   // Observe their resolved language, so an in-app override wins over iOS locale.
   NSString *language = nil;
-  if ([@[@"账户", @"调试", @"用量", @"语言", @"连接服务端", @"退出登录", @"登出", @"通过 Apple 登录", @"透過 Apple 登入", @"用邮箱继续"] containsObject:label]) language = @"zh";
-  if ([@[@"Account", @"Debug", @"Usage", @"Language", @"Connect to Host", @"Sign out", @"Sign in with Apple", @"Continue with email"] containsObject:label]) language = @"en";
-  if (language && ![language isEqual:[NSUserDefaults.standardUserDefaults stringForKey:GBLocaleKey]])
-    [NSUserDefaults.standardUserDefaults setObject:language forKey:GBLocaleKey];
+  if ([zhLabels containsObject:label]) language = @"zh";
+  else if ([enLabels containsObject:label]) language = @"en";
+  if (!language) return;
+  BOOL changed = NO;
+  @synchronized (GBLocaleKey) {
+    GBEnsureLanguageLoadedLocked();
+    if (![language isEqualToString:GBCachedLanguage]) {
+      GBCachedLanguage = language;
+      GBCachedIsChinese = [language isEqualToString:@"zh"];
+      changed = YES;
+    }
+  }
+  if (changed) [NSUserDefaults.standardUserDefaults setObject:language forKey:GBLocaleKey];
 }
 UIViewController *GBTopController(void) {
   UIViewController *top = nil;

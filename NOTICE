@@ -287,6 +287,30 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-24)
       manual only when --context or --efforts is given.
     - Contributed by @jun9100 (GitHub pull request #19).
 
+22. iOS injection library thermal, scroll-performance, overlay, and
+    thread-safety hardening.
+    - ios/clients/ios/ and ios/bin/GrokBotLocal.dylib: eliminated the 120Hz
+      Fabric RCTRecursiveAccessibilityLabel addSubview/removeFromSuperview
+      thrash loop on plugin buttons, skipped expensive non-target Fabric
+      subclasses in GBLayout with container size/subview gates in replaceEntry:
+      and GBTouches, added weak pointer-identity view tracking for O(1) recycle
+      fast paths and cached sets/classes/settings-context lookups, guarded
+      frame/text/zPosition and bringSubviewToFront updates, switched the
+      Library row overlay to a transparent touch button with bidirectional
+      ancestor/descendant overlay deduplication, scoped global Push switch
+      replacement to Global App Settings with Bark hidden-switch restoration,
+      restored hidden sibling paragraph views on recycle, limited
+      GBObserveRequest JSON parsing to openAgentWindowed, verified App Intent
+      keychain presence on foreground, cached GBDiagnosticsEnabled() and
+      privacy domain lists, added capped exponential backoff (3–60s) and
+      buffer-safe O(N) SSE parsing in GBNotifications, made direct-mode
+      GBNetwork checks lock-free and off the main thread, synchronized
+      cross-thread credential/protocol/voice-socket close state, and fixed
+      voice socket/audio leaks, swizzle ordering, and KVO/NSNull/empty
+      displayName crashes. Updated dylibSha256 across 1.27.0, 1.26.0, and
+      1.16.0 manifests.
+    - Contributed by @jun9100 (GitHub pull request #15).
+
 Third-party components
 ----------------------
 

@@ -1,4 +1,5 @@
 #import "GBConnection.h"
+#import "GBVoiceAudio.h"
 #import <Foundation/Foundation.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -41,10 +42,13 @@ static void GBSetSocketState(id socket, NSInteger state) {
 }
 
 @interface GBVoiceSocket : NSObject <NSURLSessionWebSocketDelegate>
-@property(nonatomic, weak) id socket;
-@property(nonatomic, strong) NSURLSession *session;
-@property(nonatomic, strong) NSURLSessionWebSocketTask *task;
+@property(atomic, weak) id socket;
+@property(atomic, strong) NSURLSession *session;
+@property(atomic, strong) NSURLSessionWebSocketTask *task;
 @property(atomic) BOOL terminal;
+@property(atomic) BOOL clientClosed;
+@property(atomic) NSInteger closeCode;
+@property(atomic, copy) NSString *closeReason;
 - (void)start:(id)socket;
 - (BOOL)send:(id)value error:(NSError **)error;
 - (void)close:(NSInteger)code reason:(NSString *)reason;
@@ -65,23 +69,37 @@ static void GBSetSocketState(id socket, NSInteger state) {
   NSURLSessionConfiguration *configuration = NSURLSessionConfiguration.ephemeralSessionConfiguration;
   configuration.TLSMinimumSupportedProtocolVersion = tls_protocol_version_TLSv12;
   NSOperationQueue *queue = [NSOperationQueue new]; queue.maxConcurrentOperationCount = 1;
-  self.session = [NSURLSession sessionWithConfiguration:configuration delegate:self delegateQueue:queue];
-  self.task = [self.session webSocketTaskWithRequest:request];
-  self.task.maximumMessageSize = 16 * 1024 * 1024;
-  [self.task resume];
+  NSURLSession *session = [NSURLSession sessionWithConfiguration:configuration delegate:self delegateQueue:queue];
+  NSURLSessionWebSocketTask *task = [session webSocketTaskWithRequest:request];
+  task.maximumMessageSize = 16 * 1024 * 1024;
+  self.session = session;
+  self.task = task;
+  [task resume];
 }
 - (BOOL)finish {
+  NSURLSession *session = nil;
   @synchronized (self) {
     if (self.terminal) return NO;
     self.terminal = YES;
+    session = self.session;
+    self.session = nil;
   }
   id socket = self.socket;
   if (socket) GBSetSocketState(socket, 3);
-  [self.session finishTasksAndInvalidate];
-  self.session = nil;
+  [session finishTasksAndInvalidate];
   return YES;
 }
+- (void)completeCloseWithCode:(NSInteger)code reason:(NSString *)reason wasClean:(BOOL)wasClean {
+  if (![self finish]) return;
+  id socket = self.socket;
+  if (socket) GBDispatchSocket(socket, ^(id delegate) {
+    SEL selector = @selector(webSocket:didCloseWithCode:reason:wasClean:);
+    if ([delegate respondsToSelector:selector])
+      ((void (*)(id, SEL, id, NSInteger, id, BOOL))objc_msgSend)(delegate, selector, socket, code, reason, wasClean);
+  });
+}
 - (void)fail:(NSError *)error {
+  NSURLSessionWebSocketTask *task = self.task;
   if (![self finish]) return;
   id socket = self.socket;
   if (socket) GBDispatchSocket(socket, ^(id delegate) {
@@ -89,12 +107,13 @@ static void GBSetSocketState(id socket, NSInteger state) {
     if ([delegate respondsToSelector:selector])
       ((void (*)(id, SEL, id, id))objc_msgSend)(delegate, selector, socket, error);
   });
-  [self.task cancel];
+  [task cancel];
 }
 - (void)URLSession:(NSURLSession *)session webSocketTask:(NSURLSessionWebSocketTask *)task
     didOpenWithProtocol:(NSString *)protocol {
   if (self.terminal) return;
   id socket = self.socket;
+  if (!socket) { [self finish]; [task cancel]; return; }
   GBSetSocketState(socket, 1);
   GBDispatchSocket(socket, ^(id delegate) {
     SEL selector = @selector(webSocketDidOpen:);
@@ -104,13 +123,31 @@ static void GBSetSocketState(id socket, NSInteger state) {
   [self receive];
 }
 - (void)receive {
-  if (self.terminal) return;
-  [self.task receiveMessageWithCompletionHandler:^(NSURLSessionWebSocketMessage *message, NSError *error) {
+  NSURLSessionWebSocketTask *task = self.task;
+  if (self.terminal || !task) return;
+  [task receiveMessageWithCompletionHandler:^(NSURLSessionWebSocketMessage *message, NSError *error) {
     if (self.terminal) return;
-    if (error) { [self fail:error]; return; }
+    if (error) {
+      BOOL clientClosed = NO;
+      NSInteger closeCode = 0;
+      NSString *closeReason = nil;
+      @synchronized (self) {
+        clientClosed = self.clientClosed;
+        closeCode = self.closeCode;
+        closeReason = self.closeReason;
+      }
+      if (clientClosed) {
+        BOOL clean = [error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled;
+        [self completeCloseWithCode:closeCode reason:closeReason wasClean:clean];
+      } else {
+        [self fail:error];
+      }
+      return;
+    }
     id socket = self.socket;
+    if (!socket) { [self finish]; [task cancel]; return; }
     id value = message.type == NSURLSessionWebSocketMessageTypeString ? message.string : message.data;
-    if (socket) GBDispatchSocket(socket, ^(id delegate) {
+    GBDispatchSocket(socket, ^(id delegate) {
       SEL typed = message.type == NSURLSessionWebSocketMessageTypeString ?
         @selector(webSocket:didReceiveMessageWithString:) : @selector(webSocket:didReceiveMessageWithData:);
       SEL selector = [delegate respondsToSelector:typed] ? typed : @selector(webSocket:didReceiveMessage:);
@@ -121,7 +158,8 @@ static void GBSetSocketState(id socket, NSInteger state) {
   }];
 }
 - (BOOL)send:(id)value error:(NSError **)error {
-  if (self.terminal || self.task.state != NSURLSessionTaskStateRunning ||
+  NSURLSessionWebSocketTask *task = self.task;
+  if (self.terminal || !task || task.state != NSURLSessionTaskStateRunning ||
       (![value isKindOfClass:NSString.class] && ![value isKindOfClass:NSData.class])) {
     if (error) *error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorNetworkConnectionLost userInfo:nil];
     return NO;
@@ -129,32 +167,57 @@ static void GBSetSocketState(id socket, NSInteger state) {
   NSURLSessionWebSocketMessage *message = [value isKindOfClass:NSString.class] ?
     [[NSURLSessionWebSocketMessage alloc] initWithString:value] :
     [[NSURLSessionWebSocketMessage alloc] initWithData:value];
-  [self.task sendMessage:message completionHandler:^(NSError *failure) { if (failure) [self fail:failure]; }];
+  [task sendMessage:message completionHandler:^(NSError *failure) {
+    if (!failure) return;
+    BOOL clientClosed = NO;
+    @synchronized (self) { clientClosed = self.clientClosed; }
+    if (!clientClosed) [self fail:failure];
+  }];
   return YES;
 }
 - (void)close:(NSInteger)code reason:(NSString *)reason {
-  if (self.terminal) return;
+  NSURLSessionWebSocketTask *task = nil;
+  @synchronized (self) {
+    if (self.terminal) return;
+    self.closeCode = code;
+    self.closeReason = [reason copy];
+    self.clientClosed = YES;
+    task = self.task;
+  }
   id socket = self.socket;
-  GBSetSocketState(socket, 2);
-  [self.task cancelWithCloseCode:code reason:[reason dataUsingEncoding:NSUTF8StringEncoding]];
+  if (socket) GBSetSocketState(socket, 2);
+  if (task) {
+    [task cancelWithCloseCode:code reason:[reason dataUsingEncoding:NSUTF8StringEncoding]];
+  } else {
+    [self completeCloseWithCode:code reason:reason wasClean:YES];
+  }
 }
 - (void)URLSession:(NSURLSession *)session webSocketTask:(NSURLSessionWebSocketTask *)task
     didCloseWithCode:(NSURLSessionWebSocketCloseCode)code reason:(NSData *)reason {
-  if (![self finish]) return;
-  id socket = self.socket;
   NSString *text = reason ? [[NSString alloc] initWithData:reason encoding:NSUTF8StringEncoding] : nil;
-  if (socket) GBDispatchSocket(socket, ^(id delegate) {
-    SEL selector = @selector(webSocket:didCloseWithCode:reason:wasClean:);
-    if ([delegate respondsToSelector:selector])
-      ((void (*)(id, SEL, id, NSInteger, id, BOOL))objc_msgSend)(delegate, selector, socket, code, text, YES);
-  });
+  [self completeCloseWithCode:code reason:text wasClean:YES];
 }
 - (void)URLSession:(NSURLSession *)session task:(NSURLSessionTask *)task didCompleteWithError:(NSError *)error {
+  BOOL clientClosed = NO;
+  NSInteger closeCode = 0;
+  NSString *closeReason = nil;
+  @synchronized (self) {
+    clientClosed = self.clientClosed;
+    closeCode = self.closeCode;
+    closeReason = self.closeReason;
+  }
+  if (clientClosed) {
+    BOOL clean = !error || ([error.domain isEqualToString:NSURLErrorDomain] && error.code == NSURLErrorCancelled);
+    [self completeCloseWithCode:closeCode reason:closeReason wasClean:clean];
+    return;
+  }
   if (error) [self fail:error];
+  else [self completeCloseWithCode:NSURLSessionWebSocketCloseCodeNormalClosure reason:nil wasClean:YES];
 }
 @end
 
 static void GBOpenSocket(id socket, SEL selector) {
+  GBVoiceAudioObserveSocket(socket);
   NSURL *url = ((id (*)(id, SEL))objc_msgSend)(socket, @selector(url));
   if (!GBIsLocalVoiceURL(url)) { GBOriginalOpen(socket, selector); return; }
   if (objc_getAssociatedObject(socket, GBVoiceSocketKey)) return;
@@ -181,8 +244,14 @@ static void GBSend(id socket, SEL selector, id data) {
 static BOOL GBPing(id socket, SEL selector, NSData *data, NSError **error) {
   GBVoiceSocket *context = objc_getAssociatedObject(socket, GBVoiceSocketKey);
   if (!context) return GBOriginalPing(socket, selector, data, error);
-  if (context.terminal) return NO;
-  [context.task sendPingWithPongReceiveHandler:^(NSError *failure) { if (failure) [context fail:failure]; }];
+  NSURLSessionWebSocketTask *task = context.task;
+  if (context.terminal || !task || task.state != NSURLSessionTaskStateRunning) {
+    if (error) *error = [NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorNetworkConnectionLost userInfo:nil];
+    return NO;
+  }
+  [task sendPingWithPongReceiveHandler:^(NSError *failure) {
+    if (failure && !context.clientClosed) [context fail:failure];
+  }];
   return YES;
 }
 __attribute__((constructor)) static void GBInstallVoiceSocket(void) {

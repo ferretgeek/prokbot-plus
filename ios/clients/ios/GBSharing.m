@@ -6,7 +6,7 @@
 // authenticates its small publication API against the paired Host.
 @interface GBSharingProtocol : NSURLProtocol
 @property(nonatomic,strong) NSURLSessionDataTask *task;
-@property(nonatomic,assign) BOOL cancelled;
+@property(atomic,assign) BOOL cancelled;
 @end
 @implementation GBSharingProtocol
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
@@ -44,7 +44,7 @@
   NSString *agent = [args[@"agentId"] isKindOfClass:NSString.class] ? args[@"agentId"] : @"";
   if (![self.request.HTTPMethod isEqual:@"POST"] || !methods[method] || !workflow.length || workflow.length > 128 ||
       [workflow rangeOfCharacterFromSet:allowed.invertedSet].location != NSNotFound ||
-      (status && ![[NSUUID alloc] initWithUUIDString:agent]) || !token.length) {
+      (status && ![[NSUUID alloc] initWithUUIDString:agent]) || !token.length || !server.length) {
     [self finish:@{@"error":@"Invalid request"}]; return;
   }
   NSURL *url = [NSURL URLWithString:[server stringByAppendingFormat:@"/api/%@", methods[method]]];
@@ -55,7 +55,8 @@
   request.HTTPBody = [NSJSONSerialization dataWithJSONObject:status ? @{@"id":agent} : @{@"workflowId":workflow,@"teamId":@1} options:0 error:nil];
   self.task = [GBHTTPSession() dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
     if (self.cancelled) return;
-    NSInteger code = [(NSHTTPURLResponse *)response statusCode];
+    NSInteger code = [response isKindOfClass:NSHTTPURLResponse.class]
+        ? ((NSHTTPURLResponse *)response).statusCode : 0;
     id result = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     if (error || code < 200 || code >= 300 || !result) { [self finish:@{@"error":@"Request failed"}]; return; }
     if (status) {

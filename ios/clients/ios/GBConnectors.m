@@ -40,13 +40,16 @@ static NSData *GBLocalPreferenceResponse(NSURLRequest *request) {
   NSString *path = request.URL.path;
   if ([path isEqual:@"/aiserver.v1.DashboardService/GetTeamAdminSettingsOrEmptyIfNotInTeam"] ||
       [path isEqual:@"/aiserver.v1.BackgroundComposerService/GetBackgroundComposerUserSettings"]) {
-    return [@"{}" dataUsingEncoding:NSUTF8StringEncoding];
+    static NSData *emptyJson;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ emptyJson = [@"{}" dataUsingEncoding:NSUTF8StringEncoding]; });
+    return emptyJson;
   }
   return nil;
 }
 @interface GBConnectorProtocol : NSURLProtocol
 @property(nonatomic,strong) NSURLSessionDataTask *task;
-@property(nonatomic,assign) BOOL cancelled;
+@property(atomic,assign) BOOL cancelled;
 @end
 @implementation GBConnectorProtocol
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
@@ -67,16 +70,31 @@ static NSData *GBLocalPreferenceResponse(NSURLRequest *request) {
     [self.client URLProtocolDidFinishLoading:self];
     return;
   }
+  NSString *serverURL = GBConnection.shared.serverURL;
+  NSString *deviceToken = GBConnection.shared.deviceToken;
   NSString *method = GBConnectorMethod(self.request);
+  if (!serverURL.length || !deviceToken.length || !method.length) {
+    [self.client URLProtocol:self didFailWithError:[NSError errorWithDomain:@"GrokBotConnectors" code:401 userInfo:nil]];
+    return;
+  }
   NSString *path = [@"/local/mobile-rpc/" stringByAppendingString:method];
+  NSURL *targetURL = [NSURL URLWithString:[serverURL stringByAppendingString:path]];
+  if (!targetURL) {
+    [self.client URLProtocol:self didFailWithError:[NSError errorWithDomain:@"GrokBotConnectors" code:400 userInfo:nil]];
+    return;
+  }
   NSMutableURLRequest *request = [self.request mutableCopy];
-  request.URL = [NSURL URLWithString:[GBConnection.shared.serverURL stringByAppendingString:path]];
+  request.URL = targetURL;
   request.allHTTPHeaderFields = @{ @"Content-Type": @"application/json", @"Accept": @"application/json",
-    @"Authorization": [@"Bearer " stringByAppendingString:GBConnection.shared.deviceToken] };
+    @"Authorization": [@"Bearer " stringByAppendingString:deviceToken] };
   request.timeoutInterval = 30;
   self.task = [GBHTTPSession() dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
     if (self.cancelled) return;
     if (error) { [self.client URLProtocol:self didFailWithError:error]; return; }
+    if (![response isKindOfClass:NSHTTPURLResponse.class]) {
+      [self.client URLProtocol:self didFailWithError:[NSError errorWithDomain:NSURLErrorDomain code:NSURLErrorBadServerResponse userInfo:nil]];
+      return;
+    }
     NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
     NSHTTPURLResponse *originalURLResponse = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:http.statusCode HTTPVersion:@"HTTP/1.1" headerFields:http.allHeaderFields];
     [self.client URLProtocol:self didReceiveResponse:originalURLResponse cacheStoragePolicy:NSURLCacheStorageNotAllowed];

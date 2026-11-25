@@ -7,11 +7,35 @@
 @end
 @implementation GBPrivacyProtocol
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
-  NSString *host = request.URL.host.lowercaseString;
-  for (NSString *domain in @[@"sentry.io", @"braze.com", @"appboy.com", @"appsflyer.com", @"appsflyersdk.com", @"statsig.com", @"statsigcdn.com", @"statsigapi.net"]) {
-    if ([host isEqual:domain] || [host hasSuffix:[@"." stringByAppendingString:domain]]) return YES;
+  static NSSet<NSString *> *exactDomains;
+  static NSArray<NSString *> *suffixDomains;
+  static NSSet<NSString *> *blockedPaths;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    NSArray<NSString *> *domains = @[
+      @"sentry.io", @"braze.com", @"appboy.com", @"appsflyer.com",
+      @"appsflyersdk.com", @"statsig.com", @"statsigcdn.com", @"statsigapi.net"
+    ];
+    exactDomains = [NSSet setWithArray:domains];
+    NSMutableArray<NSString *> *suffixes = [NSMutableArray arrayWithCapacity:domains.count];
+    for (NSString *domain in domains)
+      [suffixes addObject:[@"." stringByAppendingString:domain]];
+    suffixDomains = [suffixes copy];
+    blockedPaths = [NSSet setWithArray:@[
+      @"/aiserver.v1.AnalyticsService/TrackEvents",
+      @"/aiserver.v1.AnalyticsService/SubmitLogs"
+    ]];
+  });
+  NSString *rawHost = request.URL.host;
+  if (rawHost.length) {
+    NSString *host = rawHost.lowercaseString;
+    if ([exactDomains containsObject:host]) return YES;
+    for (NSString *suffix in suffixDomains) {
+      if ([host hasSuffix:suffix]) return YES;
+    }
   }
-  return [@[@"/aiserver.v1.AnalyticsService/TrackEvents", @"/aiserver.v1.AnalyticsService/SubmitLogs"] containsObject:request.URL.path];
+  NSString *path = request.URL.path;
+  return path.length && [blockedPaths containsObject:path];
 }
 + (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
 - (void)startLoading {
