@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-为 Grok Bot 1.2.3 Linux 桌面客户端（支持 `x64` 和 `arm64`）连接自己的 Host，生成便携目录、`.tar.gz` 压缩包和用户级安装脚本（无需 root 权限，跨发行版可用）。需要 Node.js 22.12+ 与支持 xz 的 `tar`（`xz-utils`）。
+为 Grok Bot 1.3.0 Linux 桌面客户端（支持 `x64` 和 `arm64`）连接自己的 Host，生成便携目录、`.tar.gz` 压缩包和用户级安装脚本（无需 root 权限，跨发行版可用）。需要 Node.js 22.12+ 与支持 xz 的 `tar`（`xz-utils`）。
 
 完整的部署步骤见[部署手册](../docs/AI-INSTALL.md#client-packages)，实现原理见[技术文档](../docs/ARCHITECTURE.md#linux-client)。
 
@@ -14,12 +14,12 @@
 node linux/patchers/desktop/patch.mjs
 ```
 
-- 省略 `--source` 时自动下载并校验官方 1.2.3 `.deb` 原包；省略 `--arch` 时按原包大小或本机 CPU 架构自动选择 `x64` / `arm64`（也可手动加 `--arch x64` 或 `--arch arm64`）。
-- 已有原版 `.deb` 或解包后的应用目录时，加 `--source /path/to/grok-bot_1.2.3_amd64.deb`。
+- 省略 `--source` 时自动下载并校验官方 1.3.0 `.deb` 原包；省略 `--arch` 时按原包大小或本机 CPU 架构自动选择 `x64` / `arm64`（也可手动加 `--arch x64` 或 `--arch arm64`）。
+- 已有原版 `.deb` 或解包后的应用目录时，加 `--source /path/to/grok-bot_1.3.0_amd64.deb`。
 - 默认输出到 `linux/output/`：
   - `grokbot-local/`：便携目录，直接运行 `./grokbot-local` 启动；
-  - `GrokBotLocal-1.2.3-<arch>-linux.tar.gz`：便于拷到目标 Linux 电脑的便携压缩包（不需要时加 `--no-archive`）；
-  - `GrokBotLocal-1.2.3-<arch>.patch.json`：构建校验清单。
+  - `GrokBotLocal-1.3.0-<arch>-linux.tar.gz`：便于拷到目标 Linux 电脑的便携压缩包（不需要时加 `--no-archive`）；
+  - `GrokBotLocal-1.3.0-<arch>.patch.json`：构建校验清单。
 - `--verify-only` 只在临时目录校验原包并回放补丁，不写出客户端，在 Windows 上也能运行。可接受的原包和官方最新版本见[首页版本表](../README.md#client-versions)。
 
 ## 安装与运行
@@ -44,7 +44,7 @@ sh grokbot-local/install.sh
   如需临时跳过沙箱启动，可运行 `GROKBOT_NO_SANDBOX=1 grokbot-local`。
 - **凭据存储**：优先使用系统密钥环（GNOME Keyring / KWallet）；无密钥环守护进程时沿用官方 Linux 客户端行为回退到 Electron `basic_text`（凭据文件仍以 `0600` 权限保存在 `0700` 目录）。
 - **本机能力与限制**：支持 Tailcat 内置组网、Bot 在本机执行命令与文件操作（需审批）、委派本机 Codex CLI 与桌面通知；和 Windows 一样不支持本机鼠标键盘图形界面控制。与官方客户端配置目录和协议完全隔离，可共存。本机命令和 Codex 需要 1.10.0 及以后的 Host。
-- **实测情况**：在 WSL2 的 Ubuntu 22.04 x64（WSLg）上实测了生成、启动、配对、对话、需审批的本机命令、重启后恢复和安装卸载脚本。原生 GNOME / KDE 桌面、Wayland、Tailcat、托盘、ARM64 和 Ubuntu 24.04 的 AppArmor 脚本还没有实测，遇到问题请提 Issue。
+- **实测情况**：1.3.0 x64 在 Ubuntu 24.04 的容器里（虚拟显示）实测了生成、配对、对话、附件、Host 和客户端重启后恢复、设置页、资料库、连接应用和需审批的本机命令；上一版 1.2.3 在 WSL2 的 Ubuntu 22.04 x64（WSLg）上实测过安装卸载脚本。原生 GNOME / KDE 桌面、Wayland、Tailcat、托盘、语音、ARM64 和 Ubuntu 24.04 的 AppArmor 脚本还没有实测，遇到问题请提 Issue。首次启动时会从 Google 下载英文拼写字典（约 450 KB），这是唯一不经 Host 的连接。仍需 1.2.3 时，用 Releases 中 **v1.15.0** 的 Linux 发布包生成。
 
 ## 维护与测试
 

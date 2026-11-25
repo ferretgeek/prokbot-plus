@@ -1,18 +1,18 @@
 {
-  "version": "1.2.3",
+  "version": "1.3.0",
   "architecture": "x64",
   "archive": {
-    "url": "https://downloads.cursor.com/grokbot/stable/win32-x64/1.2.3/Grok_Bot_1.2.3_Setup.exe",
-    "bytes": 127618944,
-    "sha256": "85b9e8d10b9ede921b315bb5a1b52db7e0f3438d162aacedfc388c778217765b"
+    "url": "https://downloads.cursor.com/grokbot/stable/win32-x64/1.3.0/Grok_Bot_1.3.0_Setup.exe",
+    "bytes": 128235976,
+    "sha256": "0a141fff67a43684e3a70469eb6d5b0455c40241eae34858d065061e7011f1b7"
   },
   "payload": {
     "name": "app-64.7z",
-    "bytes": 126693944,
-    "sha256": "84d20f0f2b5a1eacc523015ed723f315c76395646d9d6c28295c8704b809c5df"
+    "bytes": 127310975,
+    "sha256": "f56d738f0b5cd119827fdde706568f64a0bf3f021d2c81cf625960a96327cc72"
   },
-  "exeSha256": "5138d36bb1b6f9f716422aef42b62d33daba566cfea1ecdad87ca22464a9ae0a",
-  "asarSha256": "b1354ec5ae877e94115a643edd4b2e7487929f0a1dfb398411ab314b488ee0d2",
-  "asarHeaderSha256": "cfd92fb7d75ddc50c5214fcca3a561cd9b2d0a26dee763e5585182ee6ac63e80",
-  "preloadSha256": "69558bc987aae4dd9567770229bfbec01fcbeb4f0065731ac7f6ec60f4ebcda2"
+  "exeSha256": "65ea9f0a12526de97b3c111fbfb9778433c1b260d438872dc78315370f30cd54",
+  "asarSha256": "21f191ffb4858d9f4d8a57d56a3ce424b03a19b7d7b901530a50a92628ddd315",
+  "asarHeaderSha256": "6db588436982502a5ac83ac5c291b5fbca850f28a0117a2d28db9cda06b61bb0",
+  "preloadSha256": "e85046e06d5dc2834bd478af3f0b2e54d983c0ca847bd6e1636491a6252647d9"
 }

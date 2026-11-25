@@ -226,6 +226,16 @@ export async function createLocalServices(profile, window, { command, request, a
     getCloudAgentPublishProposals: () => ({ kind: 'off' }),
     listPublicBotMarketplace: () => ({ featuredListings: [], listings: [], hasMore: false }),
     listGrokBotTeamAgents: () => [],
+    // 1.3.0 reads. Each answer is what the official client returns when the cloud
+    // service has nothing for the account: an empty Bot page, no Bot skills, no team
+    // preview, an unranked team list and no plugin server links.
+    getBotPage: () => ({}),
+    getGrokBotAgentBotSkills: () => [],
+    getGrokBotAgentPreview: () => ({ people: [], stats: null, popularWithRoles: [] }),
+    browseGrokBotTeamAgents: () => ({ kind: 'unranked' }),
+    getPluginMcpServerLinks: () => null,
+    // The official handler opens an internal developer window and does nothing in release builds.
+    openBotDictationSettings: () => null,
     listCursorTeamGroups: () => [],
     getLocalToolActionGrant: () => ({ granted: false }),
     attachProdBoxStatus: () => ({ enabled: false }),

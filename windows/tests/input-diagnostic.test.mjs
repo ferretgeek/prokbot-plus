@@ -74,9 +74,9 @@ test('an explicit installer, payload or install directory selects its release on
   await assert.rejects(windowsReleaseFor(undefined, []), /No Windows releases/);
 });
 
-test('this repository builds Windows 1.2.3 (recommended) and 1.1.0/0.71.2 (fallback) with distinct pins', async () => {
+test('this repository builds Windows 1.3.0 (recommended) and 1.2.3/1.1.0/0.71.2 (fallback) with distinct pins', async () => {
   const releases = await windowsReleases();
-  assert.deepEqual(releases.map(({ supported }) => supported.version), ['1.2.3', '1.1.0', '0.71.2']);
+  assert.deepEqual(releases.map(({ supported }) => supported.version), ['1.3.0', '1.2.3', '1.1.0', '0.71.2']);
   const digests = releases.flatMap(({ supported }) => [supported.archive.sha256, supported.payload.sha256, supported.asarSha256]);
   assert.equal(new Set(digests).size, digests.length);
   for (const { directory, supported } of releases) {
@@ -84,11 +84,12 @@ test('this repository builds Windows 1.2.3 (recommended) and 1.1.0/0.71.2 (fallb
     assert.ok(supported.archive.url.endsWith(`/win32-x64/${supported.version}/Grok_Bot_${supported.version}_Setup.exe`), supported.version);
     for (const name of ['recipes/manifest.json', 'notification-policy.json']) await fs.access(path.join(directory, name));
   }
+  assert.equal((await selectWindowsRelease({ version: '1.2.3' })).supported.version, '1.2.3');
   assert.equal((await selectWindowsRelease({ version: '1.1.0' })).supported.version, '1.1.0');
   assert.equal((await selectWindowsRelease({ version: '0.71.2' })).supported.version, '0.71.2');
-  assert.equal((await selectWindowsRelease({})).supported.version, '1.2.3');
-  await assert.rejects(selectWindowsRelease({ version: '0.70.0' }), /不支持 Grok Bot 0\.70\.0。可用版本：1\.2\.3、1\.1\.0、0\.71\.2。/);
-  await assert.rejects(selectWindowsRelease({ version: '1.2.3', accepted: ['1.1.0', '0.71.2'] }), /可用版本：1\.1\.0、0\.71\.2。/);
+  assert.equal((await selectWindowsRelease({})).supported.version, '1.3.0');
+  await assert.rejects(selectWindowsRelease({ version: '0.70.0' }), /不支持 Grok Bot 0\.70\.0。可用版本：1\.3\.0、1\.2\.3、1\.1\.0、0\.71\.2。/);
+  await assert.rejects(selectWindowsRelease({ version: '1.3.0', accepted: ['1.1.0', '0.71.2'] }), /可用版本：1\.1\.0、0\.71\.2。/);
   await assert.rejects(fs.access(new URL('windows/patchers/desktop/known-unsupported.json', repo)), { code: 'ENOENT' });
 });
 
@@ -99,18 +100,18 @@ test('an unknown explicit installer is explained in both languages without any f
   t.after(() => { for (const read of reads) read.mock.restore(); syncBuiltinESMExports(); });
 
   const cause = new Error(MISMATCH);
-  await assert.rejects(withInstallerDiagnostic(Promise.reject(cause), 'C:\\Downloads\\Setup.EXE', supported, ['1.2.3', '1.1.0', '0.71.2']), error => {
+  await assert.rejects(withInstallerDiagnostic(Promise.reject(cause), 'C:\\Downloads\\Setup.EXE', supported, ['1.3.0', '1.2.3', '1.1.0', '0.71.2']), error => {
     assert.equal(error.cause, cause);
     assert.match(error.message, /未进入配对/);
-    assert.ok(error.message.includes('官方 Grok Bot 1.2.3（推荐）或 1.1.0、0.71.2 Windows x64 安装包'));
+    assert.ok(error.message.includes('官方 Grok Bot 1.3.0（推荐）或 1.2.3、1.1.0、0.71.2 Windows x64 安装包'));
     assert.match(error.message, /The version and origin of this file are unverified\. Pairing did not run\./);
-    assert.ok(error.message.includes('Grok Bot 1.2.3 (recommended) or 1.1.0, 0.71.2 Windows x64 installer'));
-    assert.ok(error.message.includes('Omit --source to fetch the exact supported Grok Bot 1.2.3 Windows x64 installer'));
+    assert.ok(error.message.includes('Grok Bot 1.3.0 (recommended) or 1.2.3, 1.1.0, 0.71.2 Windows x64 installer'));
+    assert.ok(error.message.includes('Omit --source to fetch the exact supported Grok Bot 1.3.0 Windows x64 installer'));
     assert.match(error.message, /No need to uninstall your existing app/);
     return true;
   });
   await assert.rejects(withInstallerDiagnostic(Promise.reject(cause), 'Setup.exe', supported), error =>
-    error.message.includes('1.2.3 (recommended) Windows x64') && !error.message.includes('0.71.2'));
+    error.message.includes('1.3.0 (recommended) Windows x64') && !error.message.includes('0.71.2'));
   // Success, other errors, and sources that are not an installer pass through unchanged.
   assert.equal(await withInstallerDiagnostic(Promise.resolve('payload'), 'Setup.exe', supported), 'payload');
   for (const [source, error] of [[null, cause], ['app-64.7z', cause], ['C:\\install', cause], ['Setup.exe', new Error('EACCES')],
@@ -122,8 +123,8 @@ test('an unknown explicit installer is explained in both languages without any f
 
 test('the Windows CLI explains an unknown installer and leaves the output untouched',
   { skip: process.platform !== 'win32' }, async t => {
-    const root = await disposable(t), output = path.join(root, 'output'), source = path.join(root, 'Grok_Bot_1.2.3_Setup.exe');
-    const keep = 'GrokBotLocal-1.2.3-x64.patch.json';
+    const root = await disposable(t), output = path.join(root, 'output'), source = path.join(root, 'Grok_Bot_1.3.0_Setup.exe');
+    const keep = 'GrokBotLocal-1.3.0-x64.patch.json';
     await fs.mkdir(output);
     await fs.writeFile(path.join(output, keep), 'previous build');
     await fs.writeFile(source, Buffer.alloc(4096, 'x'));
@@ -133,7 +134,7 @@ test('the Windows CLI explains an unknown installer and leaves the output untouc
       assert.equal(error.code, 1);
       assert.equal(error.stdout, '');
       assert.match(error.stderr, /origin of this file are unverified\. Pairing did not run\./);
-      assert.ok(error.stderr.includes('1.2.3 (recommended) or 1.1.0, 0.71.2'));
+      assert.ok(error.stderr.includes('1.3.0 (recommended) or 1.2.3, 1.1.0, 0.71.2'));
       return true;
     });
     assert.deepEqual(await fs.readdir(output), [keep]);

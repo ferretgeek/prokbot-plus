@@ -1,18 +1,18 @@
 {
-  "version": "1.2.3",
+  "version": "1.3.0",
   "architecture": "arm64",
   "archive": {
-    "url": "https://downloads.cursor.com/grokbot/stable/a5927fa2ba82336a29f9343babd28b4c903abbb2/linux/arm64/grok-bot_1.2.3_arm64.deb",
-    "bytes": 113334432,
-    "sha256": "e60b424d5c16d9d17246aa947cd4a288038eec274a749d72f97afcd711c4750e"
+    "url": "https://downloads.cursor.com/grokbot/stable/bfb372966cec77c6ec2750957965f2a2268da17d/linux/arm64/grok-bot_1.3.0_arm64.deb",
+    "bytes": 114013936,
+    "sha256": "f9168a4a6182201a24977c18f42751cd964f8daf300289333c37c4f0baf40ed3"
   },
   "payload": {
     "name": "data.tar.xz",
-    "bytes": 113326256,
-    "sha256": "8fbad2e396eb4f100e091703a42e0cdaf9a20671140d3f4b65e87616706d7f96"
+    "bytes": 114005764,
+    "sha256": "d41d266ed91f5c9fee207035a371eb42103f800dd9954d6dc07273d2c8e51a33"
   },
   "exeSha256": "96e7f6a29c1b950873ebc847a771208b6a24655ff68da04cfbdfab0d1c6e415e",
-  "asarSha256": "7aea1daa0934b27ab5e7ab3c7307d10d3c3a96d93162267f611f4c05d203e609",
-  "asarHeaderSha256": "b4a8d7406bb7a5f018f53d9034eb2b0c78e1f9533856153f4da1b43822009b2d",
-  "preloadSha256": "69558bc987aae4dd9567770229bfbec01fcbeb4f0065731ac7f6ec60f4ebcda2"
+  "asarSha256": "1ff460cb559ba047f715990e1d29073d806f965e11c681a699a680e6af816cb6",
+  "asarHeaderSha256": "9ef17f3fe3e8ec7454ce4757131df261012c7a3e1f35cbed259a1c90f0f4f01b",
+  "preloadSha256": "e85046e06d5dc2834bd478af3f0b2e54d983c0ca847bd6e1636491a6252647d9"
 }

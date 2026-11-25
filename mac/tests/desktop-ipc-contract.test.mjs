@@ -57,6 +57,19 @@ test('desktop IPC probes require a trusted window, a declaration and an installe
   assert.deepEqual(await call('getCloudAgentPublishProposals'), { kind: 'off' });
   assert.deepEqual(await call('getLocalToolActionGrant'), { granted: false });
   assert.deepEqual(await call('readScmConnections'), { github: false, gitlab: false, bitbucket: false, 'azure-devops': false });
+  // 1.3.0 main-edge reads answer with the official empty values.
+  assert.deepEqual(await call('getBotPage', { agentId: 'a' }), {});
+  assert.deepEqual(await call('getGrokBotAgentBotSkills', { agentId: 'a' }), []);
+  assert.deepEqual(await call('getGrokBotAgentPreview', { agentId: 'a', maxPeople: 3 }), { people: [], stats: null, popularWithRoles: [] });
+  assert.deepEqual(await call('browseGrokBotTeamAgents'), { kind: 'unranked' });
+  assert.equal(await call('getPluginMcpServerLinks', { pluginId: '1' }), null);
+  assert.deepEqual(await call('getMcpMarketplaceLinkNeeds'), { bitbucketServerHostIds: [] });
+  assert.equal(await call('openBotDictationSettings'), null);
+  for (const passive of ['reportComputerControl', 'reportInfoPaneToggled', 'reportTasksPanelOpened', 'reportTaskOpened'])
+    assert.equal(await call(passive, {}), null, passive);
+  // Cloud-only actions stay unimplemented so the renderer shows its own failure.
+  for (const cloud of ['openGrokBotAddToX', 'uploadPluginZip', 'startPluginMcpConnectorSignIn', 'setGrokBotAutomationPurchase'])
+    await assert.rejects(call(cloud, {}), /does not implement/, cloud);
 });
 
 test('desktop edges keep inline panel and Spotlight declarations out of the main edge in either minified style', () => {

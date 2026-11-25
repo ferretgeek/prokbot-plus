@@ -62,7 +62,7 @@ test('every extension source is carried verbatim by a recipe', async () => {
     }
   }
   const updateView = await readFile(new URL('update-view.js', extensions), 'utf8');
-  assert.match(updateView, /\(0,\s*x\.jsx\)\(h,\s*\{/, '1.2.3 update-view must render inside settings section h, not presentation hook g');
+  assert.match(updateView, /\(0,\s*x\.jsx\)\(h,\s*\{/, '1.3.0 update-view must render inside settings section h, not presentation hook g');
 });
 
 test('a replacement copies the original bytes it shares at either end', () => {

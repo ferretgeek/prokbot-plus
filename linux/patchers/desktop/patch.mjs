@@ -29,9 +29,9 @@ const EXE = 'grok-bot';
 const args = process.argv.slice(2);
 const arg = name => { const index = args.indexOf(name); return index >= 0 ? args[index + 1] : null; };
 if (args.includes('--help')) {
-  console.log(`node linux/patchers/desktop/patch.mjs [--arch <x64|arm64>] [--source <grok-bot_1.2.3_<amd64|arm64>.deb | 安装目录>]
+  console.log(`node linux/patchers/desktop/patch.mjs [--arch <x64|arm64>] [--source <grok-bot_1.3.0_<amd64|arm64>.deb | 安装目录>]
     [--output <目录>] [--no-archive] [--verify-only]
-省略 --source 时自动下载并校验 1.2.3 Linux 原版 .deb；省略 --arch 时按原版 .deb 大小或本机架构选择（x64 / arm64）。
+省略 --source 时自动下载并校验 1.3.0 Linux 原版 .deb；省略 --arch 时按原版 .deb 大小或本机架构选择（x64 / arm64）。
 默认输出到 linux/output/，包含便携目录（grokbot-local/）、便携压缩包（.tar.gz）及用户级安装脚本（install.sh）。`);
   process.exit(0);
 }

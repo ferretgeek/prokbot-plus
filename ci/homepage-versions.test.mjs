@@ -70,9 +70,9 @@ test('Android names its interface release and fallback; Mac and Linux note a new
   const data = await fixtureData();
   data.android = { ...data.android, desktopVersion: '1.1.0' }; data.androidFallback = ['0.71.2'];
   data.mac = { ...data.mac, version: '0.71.2' }; data.snap.mac = { ...data.snap.mac, version: '1.1.0' };
-  data.linux = { ...data.linux, version: '1.2.3', archive: { ...data.linux.archive, sha256: 'c'.repeat(64) } };
-  data.linuxArm64 = { ...data.linuxArm64, version: '1.2.3' };
-  data.snap.linux = { ...data.snap.linux, version: '1.3.0', observedArchiveSha256: 'd'.repeat(64) };
+  data.linux = { ...data.linux, version: '1.3.0', archive: { ...data.linux.archive, sha256: 'c'.repeat(64) } };
+  data.linuxArm64 = { ...data.linuxArm64, version: '1.3.0' };
+  data.snap.linux = { ...data.snap.linux, version: '1.4.0', observedArchiveSha256: 'd'.repeat(64) };
   const zh = render(fixture,'zh',data), en = render(fixture,'en',data);
   assert.ok(zh.includes('界面取自 Windows **1.1.0** 安装包（推荐；用不了再用 0.71.2）'));
   assert.ok(en.includes('interface taken from the Windows **1.1.0** installer (recommended; 0.71.2 if it does not work)'));
@@ -81,10 +81,24 @@ test('Android names its interface release and fallback; Mac and Linux note a new
     '(recommended; 0.71.2 if it does not work), built once and uploaded to your Host |'));
   assert.ok(zh.includes('| 0.71.2（尚未适配 1.1.0；未在 Mac 真机上测试） |'));
   assert.ok(en.includes('| 0.71.2 (not yet adapted to 1.1.0; not tested on a Mac) |'));
-  assert.ok(zh.includes('| Linux x64 / ARM64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/linux-x64/sand)（此补丁不支持） | 1.2.3（尚未适配 1.3.0；.deb 原包；已在 WSL2 的 Ubuntu 22.04 x64 上实测，原生桌面和 ARM64 未实测） |'));
-  assert.ok(en.includes('| Linux x64 / ARM64 | [1.3.0](https://api2.cursor.sh/updates/api/download/stable/linux-x64/sand) (not supported by this patch) | 1.2.3 (not yet adapted to 1.3.0; .deb archive; tested on Ubuntu 22.04 x64 under WSL2; native desktops and ARM64 untested) |'));
+  assert.ok(zh.includes('| Linux x64 / ARM64 | [1.4.0](https://api2.cursor.sh/updates/api/download/stable/linux-x64/sand)（此补丁不支持） | 1.3.0（尚未适配 1.4.0；.deb 原包；已在 Ubuntu 24.04 x64 的容器（虚拟显示）里实测，原生桌面和 ARM64 未实测） |'));
+  assert.ok(en.includes('| Linux x64 / ARM64 | [1.4.0](https://api2.cursor.sh/updates/api/download/stable/linux-x64/sand) (not supported by this patch) | 1.3.0 (not yet adapted to 1.4.0; .deb archive; tested on Ubuntu 24.04 x64 in a container with a virtual display; native desktops and ARM64 untested) |'));
   data.snap.mac.version = '0.71.2';
   assert.ok(render(fixture,'en',data).includes('| 0.71.2 (not tested on a Mac) |'));
+});
+
+test('a Linux or Intel Mac pin newer than the last real-machine test says it is untested', async () => {
+  const data = await fixtureData();
+  data.linux = { ...data.linux, version: '1.4.0' }; data.linuxArm64 = { ...data.linuxArm64, version: '1.4.0' };
+  data.macIntel = { ...data.macIntel, version: '1.3.0' };
+  data.snap.linux = { ...data.snap.linux, version: '1.4.0' }; data.snap.mac = { ...data.snap.mac, version: '1.3.0' };
+  const zh = render(fixture,'zh',data), en = render(fixture,'en',data);
+  assert.ok(zh.includes(' | 1.4.0（.deb 原包；1.4.0 尚未实测；1.3.0 曾在 Ubuntu 24.04 x64 的容器（虚拟显示）里实测，原生桌面和 ARM64 未实测） |'));
+  assert.ok(en.includes(' | 1.4.0 (.deb archive; 1.4.0 not yet tested; 1.3.0 was tested on Ubuntu 24.04 x64 in a container with a virtual display; native desktops and ARM64 untested) |'));
+  assert.ok(zh.includes(' | 1.3.0（1.3.0 未在 Mac 真机上测试；1.2.3 曾在 Intel Mac 上实测可用） |'));
+  assert.ok(en.includes(' | 1.3.0 (1.3.0 not tested on a Mac; 1.2.3 was tested working on an Intel Mac) |'));
+  data.macIntel.version = '1.2.3';
+  assert.ok(en.includes('Intel') && render(fixture,'en',data).includes(' | 1.2.3 (tested working on an Intel Mac with 1.2.3) |'));
 });
 
 test('iOS marks a newer observed App Store release unsupported but keeps the pinned build', async () => {

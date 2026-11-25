@@ -4,7 +4,9 @@ import { EventEmitter, getEventListeners, setMaxListeners } from 'node:events';
 import { createServer } from 'node:http';
 import { syncBuiltinESMExports } from 'node:module';
 import { setTimeout as delay } from 'node:timers/promises';
+import { createCodexBridge } from '../clients/desktop/codex-bridge.mjs';
 import { createGateway } from '../clients/desktop/gateway.mjs';
+import { startNativeProvider } from '../clients/desktop/native-provider.mjs';
 import { subscribe } from '../clients/desktop/streams.mjs';
 
 const turn = () => new Promise(resolve => setImmediate(resolve));
@@ -63,6 +65,23 @@ test('session teardown stops delivery of already buffered frames and ignores a l
   const run = subscribe(config, '/events', () => {}, stopped.signal, { onUnauthorized: () => unauthorized++ });
   stopped.abort(); late.resolve(new Response(null, { status: 401 })); await run;
   assert.equal(unauthorized, 0);
+});
+
+test('without Codex installed the computer provider still reconnects after the Host drops its stream', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const codex = await createCodexBridge({ profile: 'unused', config, root: 'unused', decideLocalUse: () => {},
+    findExecutable: async () => undefined });
+  assert.doesNotThrow(() => codex.stop(), 'setting local use to never stops Codex');
+  const attempts = [];
+  t.mock.method(globalThis, 'fetch', async url => { attempts.push(new URL(url).pathname); return new Response('', eventStream); });
+  // The same composition as local-exec: a disconnect stops Codex jobs.
+  const provider = startNativeProvider({ config, computer: { tools: codex.tools, call: codex.call,
+    disconnected: () => codex.stop(), close: () => codex.close() } });
+  t.after(() => { provider.close(); t.mock.timers.reset(); });
+  await turn();
+  assert.deepEqual(attempts, ['/desktop-capabilities/requests']);
+  t.mock.timers.tick(500); await turn();
+  assert.equal(attempts.length, 2, 'the capability stream is opened again after the first disconnect');
 });
 
 test('gateway reconnects real loopback SSE, ignores incomplete frames, resets an empty event ID and stops on 401', { timeout: 7000 }, async t => {

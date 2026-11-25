@@ -54,7 +54,25 @@ async function localChunk(file, offset, length) {
   return bytes;
 }
 
-export function createAttachmentHandlers({ command, chooseDestination, showDownloadError, withStaged = async () => null }) {
+// Host file names land in a folder the user picked; like the official 1.3.0 desktop, keep them
+// inside that folder and valid on Windows, macOS and Linux.
+const RESERVED_NAME = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
+export function downloadFileName(name) {
+  const base = String(name ?? '').split(/[/\\]/).pop();
+  const text = Array.from(base, c => { const code = c.codePointAt(0); return code < 32 || code === 127 || '<>:"/\\|?*'.includes(c) ? ' ' : c; })
+    .join('').replace(/\s+/g, ' ').trim().replace(/^\.+/, '').replace(/[. ]+$/, '');
+  if (!text) return 'download';
+  const dot = text.indexOf('.'), stem = dot === -1 ? text : text.slice(0, dot);
+  return RESERVED_NAME.test(stem.trimEnd()) ? `${stem}_${text.slice(stem.length)}` : text;
+}
+export function copyFileName(name, copy) {
+  if (copy <= 1) return name;
+  const extension = path.extname(name);
+  return `${extension ? name.slice(0, -extension.length) : name} (${copy})${extension}`;
+}
+const MAX_COPIES = 1000;
+
+export function createAttachmentHandlers({ command, chooseDestination, chooseFolder = async () => null, showDownloadError, withStaged = async () => null }) {
   const request = (method, args) => command(method, args, AbortSignal.timeout(30000));
   const scope = ({ path: source, agentId }) => {
     const value = remoteAttachmentPath(source);
@@ -70,9 +88,7 @@ export function createAttachmentHandlers({ command, chooseDestination, showDownl
       throw new Error(grokText('附件读取不完整，请重试。', 'Incomplete attachment. Try again.'));
     return bytes;
   }
-  async function saveDownload(size, name, read) {
-    const destination = await chooseDestination(path.basename(name));
-    if (!destination) return false;
+  async function writeDownload(destination, size, read) {
     const temporary = path.join(path.dirname(destination), `.grokbot-download-${randomUUID()}.tmp`);
     const file = await open(temporary, 'wx', 0o600);
     try {
@@ -86,8 +102,41 @@ export function createAttachmentHandlers({ command, chooseDestination, showDownl
         await file.sync();
       } finally { await file.close(); }
       await rename(temporary, destination);
-      return true;
     } finally { await rm(temporary, { force: true }).catch(() => {}); }
+  }
+  async function saveDownload(size, name, read) {
+    const destination = await chooseDestination(path.basename(name));
+    if (!destination) return false;
+    await writeDownload(destination, size, read);
+    return true;
+  }
+  // A folder download never replaces a file: the next free "name (2).ext" is reserved first.
+  async function saveIntoFolder(folder, name, size, read, taken) {
+    for (let copy = 1; copy <= MAX_COPIES; copy++) {
+      const candidate = copyFileName(name, copy);
+      if (taken.has(candidate.toLowerCase())) continue;
+      taken.add(candidate.toLowerCase());
+      const destination = path.join(folder, candidate);
+      try { await (await open(destination, 'wx', 0o600)).close(); }
+      catch (error) { if (error.code === 'EEXIST') continue; throw error; }
+      try { await writeDownload(destination, size, read); return; }
+      catch (error) { await rm(destination, { force: true }).catch(() => {}); throw error; }
+    }
+    throw new Error('No free file name');
+  }
+  // Checks one item before the folder is chosen and returns how to save it there.
+  async function folderDownload(input) {
+    const suggested = typeof input?.suggestedName === 'string' ? input.suggestedName : '';
+    if (await withStaged(input?.path, async () => true))
+      return (folder, taken) => withStaged(input.path, (file, size) => saveIntoFolder(folder,
+        downloadFileName(suggested || input.path), size, (offset, length) => localChunk(file, offset, length), taken));
+    const args = scope(input ?? {});
+    if (args === null) throw new Error('Invalid attachment path');
+    const info = await request('readAttachmentChunk', { ...args, offset: 0, length: 0 });
+    if (info === null) throw new Error('Attachment not found');
+    const size = totalSize(info);
+    return (folder, taken) => saveIntoFolder(folder, downloadFileName(suggested || info.resolvedName || args.path), size,
+      (offset, length) => readChunk(args, offset, length, size), taken);
   }
   return {
     async readAttachmentText(input) {
@@ -142,6 +191,31 @@ export function createAttachmentHandlers({ command, chooseDestination, showDownl
         await showDownloadError();
         return false;
       }
+    },
+    // 1.3.0 downloads several attachments of one message into a chosen folder. As in the
+    // official client, items that fail are reported once and the others are still saved.
+    async downloadAttachments({ downloads } = {}) {
+      if (!Array.isArray(downloads) || downloads.length === 0) return false;
+      let failed = false;
+      const fail = error => { console.error('[attachment-download]', error.message); failed = true; };
+      const ready = [];
+      for (const input of downloads) {
+        try { ready.push(await folderDownload(input)); } catch (error) { fail(error); }
+      }
+      if (ready.length > 0) {
+        let folder, asked = true;
+        try { folder = await chooseFolder(); } catch (error) { asked = false; fail(error); }
+        if (asked && !folder) return false; // Cancelled: nothing to report.
+        if (folder) {
+          const taken = new Set();
+          for (const save of ready) {
+            try { await save(folder, taken); } catch (error) { fail(error); }
+          }
+        }
+      }
+      if (!failed) return true;
+      await showDownloadError();
+      return false;
     },
   };
 }
