@@ -355,6 +355,15 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
       official empty/offline values.
     - Contributed by @jun9100 (GitHub pull request #21).
 
+25. Desktop 1.3.0 Connected Apps local device-tool and Obsidian fallbacks.
+    - mac/clients/desktop/local-services.mjs (and android/client/services.js)
+      answers readDeviceToolPermission and requestDeviceToolPermission
+      ("unavailable") plus readObsidianVault, chooseObsidianVault and
+      clearObsidianVault (null) with the official unavailable/empty values.
+    - windows/tools/desktop-recipes/spec.mjs hides the unserved local Mac
+      device-tool section and local Obsidian vault entry in Connected Apps,
+      regenerating the connectedApps recipe across all five 1.3.0 targets.
+
 Upstream ProkBot changes incorporated
 -------------------------------------
 
