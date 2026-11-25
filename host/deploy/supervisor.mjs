@@ -55,7 +55,7 @@ const service = await createSelfHostServer({
 });
 const address = await service.start();
 console.log(
-  `[supervisor] administration listening on ${address.port}${service.auth.initialized ? "" : `; initialization key file: ${join(data, "setup-key")}`}`,
+  `[supervisor] administration listening on ${address.port}, web client on ${service.webServer.address().port}${service.auth.initialized ? "" : `; initialization key file: ${join(data, "setup-key")}`}`,
 );
 supervisor = new HostSupervisor({
   dataDir: data,

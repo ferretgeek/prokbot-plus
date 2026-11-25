@@ -152,8 +152,6 @@ test('the browser cookie is a device token only for web devices, with the header
   assert.equal(web.deviceToken(request(browser.token, { 'x-grokbot-web': '1' }), origin), browser.token);
   assert.throws(() => web.deviceToken(request(browser.token), origin), /请从网页版发起请求/);
   assert.throws(() => web.deviceToken(request(browser.token, { 'x-grokbot-web': '1', origin: 'https://evil.example' }), origin), /来源不匹配/);
-  assert.equal(web.deviceToken({ headers: { authorization: 'Bearer app', cookie: `grokbot_web=${browser.token}` } }, origin), null,
-    'apps keep using their bearer token');
   assert.equal(web.deviceToken({ headers: {} }, origin), null);
 
   assert.match(web.sessionCookie(browser.token, origin), /^grokbot_web=[^;]+; Path=\/; HttpOnly; SameSite=Strict; Max-Age=\d+; Secure$/);
@@ -163,6 +161,20 @@ test('the browser cookie is a device token only for web devices, with the header
   await web.setEnabled(false);
   assert.equal(web.browserDevice(request(browser.token)), null);
   assert.throws(() => web.deviceToken(request(browser.token, { 'x-grokbot-web': '1' }), origin), /网页版未启用/);
+});
+
+test('admin sign-in tickets work once and expire after two minutes', async t => {
+  const { web } = await fixture(t);
+  t.mock.timers.enable({ apis: ['Date'] });
+  const ticket = web.issueTicket('Admin browser');
+  assert.match(ticket, /^[A-Za-z0-9_-]{43}$/);
+  assert.equal(web.redeemTicket(ticket), 'Admin browser');
+  assert.throws(() => web.redeemTicket(ticket), /登录链接已失效/);
+  const late = web.issueTicket('Admin browser');
+  t.mock.timers.tick(2 * 60_000);
+  assert.throws(() => web.redeemTicket(late), /登录链接已失效/);
+  assert.throws(() => web.redeemTicket('not a ticket'), /登录链接已失效/);
+  assert.throws(() => web.issueTicket(' '), /设备名称/);
 });
 
 test('the noVNC page gains the computer-view bridge from the installed bundle', async t => {
@@ -179,7 +191,7 @@ test('the noVNC page gains the computer-view bridge from the installed bundle', 
 
 // The routes run the whole Host service, which needs its dependencies: npm ci --prefix host/server.
 const dependencies = existsSync(new URL('../server/node_modules/ws/package.json', import.meta.url));
-test('Host routes: sign-in, cookie API, sign-out, VNC bridge and admin upload', { skip: !dependencies && 'run npm ci --prefix host/server' }, async t => {
+test('Host routes: separate web listener, sign-in, cookie API, VNC bridge and admin tickets', { skip: !dependencies && 'run npm ci --prefix host/server' }, async t => {
   const { createSelfHostServer } = await import('../server/index.mjs');
   const dir = await mkdtemp(join(tmpdir(), 'grokbot-web-routes-'));
   const core = http.createServer((request, response) => {
@@ -189,37 +201,79 @@ test('Host routes: sign-in, cookie API, sign-out, VNC bridge and admin upload', 
   });
   await new Promise(resolve => core.listen(0, '127.0.0.1', resolve));
   const coreUrl = `http://127.0.0.1:${core.address().port}`;
+  await assert.rejects(createSelfHostServer({ dataDir: dir, publicUrl: 'https://bot.example', webPublicUrl: 'https://bot.example/' }),
+    /GROKBOT_WEB_PUBLIC_URL must differ/);
   const host = await createSelfHostServer({ dataDir: dir, hostUrl: coreUrl, vncUrl: coreUrl, forkVncUrl: coreUrl,
     internalToken: 'a'.repeat(40) });
-  await host.start(0, '127.0.0.1');
+  await host.start(0, '127.0.0.1', 0);
   t.after(async () => { await host.close(); await new Promise(resolve => core.close(resolve)); await rm(dir, { recursive: true, force: true }); });
-  const origin = `http://127.0.0.1:${host.server.address().port}`;
-  const call = (path, { cookie, headers, ...options } = {}) => fetch(origin + path, { redirect: 'manual', ...options,
+  const origin = `http://127.0.0.1:${host.server.address().port}`, webOrigin = `http://127.0.0.1:${host.webServer.address().port}`;
+  const client = base => (path, { cookie, headers, ...options } = {}) => fetch(base + path, { redirect: 'manual', ...options,
     headers: { ...(cookie ? { cookie } : {}), ...headers } });
+  const call = client(origin), web = client(webOrigin);
   const json = { 'content-type': 'application/json', 'x-grokbot-web': '1' };
+  const csrf = { 'content-type': 'application/json', 'x-grokbot-csrf': '1' };
 
-  assert.equal((await call('/web/api/session').then(r => r.json())).available, false);
-  assert.equal((await call('/web/renderer/index.html')).status, 404);
+  assert.equal((await web('/web/api/session').then(r => r.json())).available, false);
+  assert.equal((await web('/web/renderer/index.html')).status, 404);
   const password = 'demo-admin-password', adminToken = await host.auth.setup(host.auth.setupKey, password);
   const admin = `grokbot_admin=${adminToken}`;
   assert.equal((await call('/admin/api/web-client', { method: 'PUT', body: bundle(), headers: { 'content-type': 'application/zip', 'x-grokbot-csrf': '1' } })).status, 401);
   const uploaded = await call('/admin/api/web-client', { method: 'PUT', body: bundle(), cookie: admin,
     headers: { 'content-type': 'application/zip', 'x-grokbot-csrf': '1' } });
   assert.equal(uploaded.status, 200);
-  assert.equal((await uploaded.json()).available, true);
-  assert.equal((await call('/admin/api/status', { cookie: admin }).then(r => r.json())).webClient.rendererVersion, '1.1.0');
+  assert.deepEqual(await uploaded.json().then(value => [value.available, value.url]), [true, `${webOrigin}/web/`]);
+  const status = (await call('/admin/api/status', { cookie: admin }).then(r => r.json())).webClient;
+  assert.deepEqual([status.rendererVersion, status.url], ['1.1.0', `${webOrigin}/web/`]);
+
+  // The main listener serves nothing of the web client; old links lead to its own listener.
+  assert.equal((await call('/web/?agent=demo')).headers.get('location'), `${webOrigin}/web/?agent=demo`);
+  assert.equal((await call('/web/login')).headers.get('location'), `${webOrigin}/web/login`);
+  for (const path of ['/web/api/session', '/web/renderer/index.html', '/web/renderer/assets/index-demo.js', '/web/manifest.webmanifest', '/local-client/icon.png'])
+    assert.equal((await call(path)).status, 404, path);
+  for (const path of ['/web/api/pair', '/web/api/ticket', '/web/api/logout'])
+    assert.equal((await call(path, { method: 'POST', headers: json, body: '{}' })).status, 404, path);
+
+  // The web listener serves nothing of the administration, whatever cookie comes with the request.
+  for (const path of ['/admin/api/session', '/admin/api/status', '/admin/api/model', '/connectors/result', '/healthz', '/app.js', '/model.js'])
+    assert.equal((await web(path, { cookie: admin })).status, 404, path);
+  for (const path of ['/admin/api/model', '/admin/api/pairing-keys', '/admin/api/web-client/open', '/admin/api/login'])
+    assert.equal((await web(path, { method: path.endsWith('model') ? 'PUT' : 'POST', cookie: admin, headers: { ...csrf, origin: webOrigin },
+      body: JSON.stringify({ baseUrl: 'https://collector.example', password }) })).status, 404, path);
+  for (const path of ['/connect/pair', '/federation/v1/pair', '/internal/notifications', '/local-exec/responses'])
+    assert.equal((await web(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 404, path);
+  assert.equal((await web('/admin')).headers.get('location'), `${origin}/admin`);
+  assert.equal((await web('/')).headers.get('location'), '/web/');
+
+  // A page on the web client's origin cannot use the administrator's cookie on the main listener:
+  // writes fail the origin and CSRF checks, and no response carries CORS headers, so reads stay unreadable.
+  const write = headers => call('/admin/api/model', { method: 'PUT', cookie: admin, headers: { ...headers, origin: webOrigin }, body: '{}' });
+  assert.equal((await write(csrf)).status, 403);
+  assert.equal((await write({ 'content-type': 'text/plain' })).status, 403);
+  const preflight = await call('/admin/api/model', { method: 'OPTIONS', headers: { origin: webOrigin,
+    'access-control-request-method': 'PUT', 'access-control-request-headers': 'content-type,x-grokbot-csrf' } });
+  assert.equal(preflight.status, 403);
+  const read = await call('/admin/api/model', { cookie: admin, headers: { origin: webOrigin } });
+  for (const response of [preflight, read])
+    assert.deepEqual([...response.headers.keys()].filter(name => name.startsWith('access-control-')), []);
 
   // Signed out: the sign-in page is public, the interface is not.
-  assert.equal((await call('/web/?agent=demo')).headers.get('location'), '/web/login?agent=demo');
-  assert.equal((await call('/web/renderer/index.html')).headers.get('location'), '/web/login');
-  assert.equal((await call('/web/renderer/assets/index-demo.js')).status, 401);
-  assert.equal((await call('/web/login')).status, 200);
+  assert.equal((await web('/web/?agent=demo')).headers.get('location'), '/web/login?agent=demo');
+  assert.equal((await web('/web/renderer/index.html')).headers.get('location'), '/web/login');
+  assert.equal((await web('/web/renderer/assets/index-demo.js')).status, 401);
+  const login = await web('/web/login');
+  assert.equal(login.status, 200);
+  assert.match(login.headers.get('content-security-policy'), /frame-ancestors 'none'/);
+  assert.equal(login.headers.get('x-content-type-options'), 'nosniff');
+  for (const asset of (await login.text()).matchAll(/(?:href|src)="(\/[\w.-]+)"/g))
+    assert.equal((await web(asset[1])).status, 200, asset[1]);
+  assert.equal((await web('/i18n.js')).status, 200, 'imported by the sign-in script');
 
   const { pairingKey } = await host.auth.createPairing();
-  const pair = body => call('/web/api/pair', { method: 'POST', headers: json, body: JSON.stringify(body) });
-  assert.equal((await call('/web/api/pair', { method: 'POST', headers: { 'content-type': 'application/json' },
+  const pair = body => web('/web/api/pair', { method: 'POST', headers: json, body: JSON.stringify(body) });
+  assert.equal((await web('/web/api/pair', { method: 'POST', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ pairingKey, deviceName: 'Web client · Demo' }) })).status, 403);
-  assert.equal((await call('/web/api/pair', { method: 'POST', headers: { ...json, origin: 'https://evil.example' },
+  assert.equal((await web('/web/api/pair', { method: 'POST', headers: { ...json, origin },
     body: JSON.stringify({ pairingKey, deviceName: 'Web client · Demo' }) })).status, 403);
   assert.equal((await pair({ pairingKey: 'ZZZZ99', deviceName: 'Web client · Demo' })).status, 401);
   const signedIn = await pair({ pairingKey, deviceName: 'Web client · Demo' });
@@ -229,57 +283,76 @@ test('Host routes: sign-in, cookie API, sign-out, VNC bridge and admin upload', 
   const browser = setCookie.split(';')[0], deviceId = (await signedIn.json()).deviceId;
   assert.equal(host.auth.device(deviceId).platform, 'web');
 
-  assert.equal((await call('/web/', { cookie: browser })).headers.get('location'), '/web/renderer/index.html');
-  const asset = await call('/web/renderer/assets/index-demo.js', { cookie: browser });
+  assert.equal((await web('/web/', { cookie: browser })).headers.get('location'), '/web/renderer/index.html');
+  const page = await web('/web/renderer/index.html', { cookie: browser });
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
+  assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+  const asset = await web('/web/renderer/assets/index-demo.js', { cookie: browser });
   assert.equal(asset.status, 200);
   assert.equal(asset.headers.get('cross-origin-resource-policy'), 'same-origin');
-  assert.equal((await call('/local-client/icon.png', { cookie: browser })).status, 200);
-  assert.equal((await call('/web/manifest.webmanifest')).status, 200);
+  assert.equal((await web('/local-client/icon.png', { cookie: browser })).status, 200);
+  assert.equal((await web('/web/manifest.webmanifest')).status, 200);
 
-  // The device API takes the cookie only with the header and without a foreign origin.
-  const agents = headers => call('/api/listAgents', { method: 'POST', cookie: browser, headers, body: '{}' });
+  // The device API takes the cookie only on the web listener, with the header and the web client's origin.
+  const agents = (headers, to = web, cookie = browser) => to('/api/listAgents', { method: 'POST', cookie, headers, body: '{}' });
   assert.deepEqual(await (await agents(json)).json(), [{ id: 'demo', name: 'Demo Bot' }]);
   assert.equal((await agents({ 'content-type': 'application/json' })).status, 403);
-  assert.equal((await agents({ ...json, origin: 'https://evil.example' })).status, 403);
-  assert.equal((await agents({ ...json, origin })).status, 200);
+  assert.equal((await agents({ ...json, origin })).status, 403);
+  assert.equal((await agents({ ...json, origin: webOrigin })).status, 200);
+  assert.equal((await agents(json, call)).status, 401, 'the main listener ignores the web client cookie');
   const desktopKey = (await host.auth.createPairing()).pairingKey;
   const desktop = await host.auth.pair({ pairingKey: desktopKey, deviceName: 'Demo Mac', platform: 'desktop' });
-  assert.equal((await call('/api/listAgents', { method: 'POST', cookie: `grokbot_web=${desktop.token}`, headers: json, body: '{}' })).status, 401);
-  assert.equal((await call('/api/listAgents', { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${desktop.token}` }, body: '{}' })).status, 200);
+  const bearer = token => ({ 'content-type': 'application/json', authorization: `Bearer ${token}` });
+  assert.equal((await agents(json, web, `grokbot_web=${desktop.token}`)).status, 401);
+  assert.equal((await agents(bearer(desktop.token), call, null)).status, 200);
+  assert.equal((await agents(bearer(desktop.token), web, null)).status, 401, 'apps use the main listener');
+  assert.equal((await agents(bearer(browser.split('=')[1]), call, null)).status, 401, 'a web client token is no app token');
 
-  // The computer view: the noVNC page gains the bridge, served with the page's ticket.
+  // The computer view: the noVNC page gains the bridge, served with the page's ticket, on the web listener only.
   const ticket = host.tickets.issue(deviceId, 'desktop');
-  const page = await call(`/vnc/desktop/vnc.html?ticket=${ticket}`);
-  assert.match(await page.text(), /<head><script src="\/vnc\/desktop\/__grokbot-vnc-bridge\.js"><\/script>/);
-  const vncCookie = page.headers.get('set-cookie').split(';')[0];
-  const bridge = await call('/vnc/desktop/__grokbot-vnc-bridge.js', { cookie: vncCookie });
+  assert.equal((await call(`/vnc/desktop/vnc.html?ticket=${ticket}`)).status, 401);
+  const vnc = await web(`/vnc/desktop/vnc.html?ticket=${ticket}`);
+  assert.match(await vnc.text(), /<head><script src="\/vnc\/desktop\/__grokbot-vnc-bridge\.js"><\/script>/);
+  const vncCookie = vnc.headers.get('set-cookie').split(';')[0];
+  const bridge = await web('/vnc/desktop/__grokbot-vnc-bridge.js', { cookie: vncCookie });
   assert.equal(bridge.status, 200);
-  assert.match(await bridge.text(), new RegExp(`^window\\.__grokbotAppOrigin = "${origin.replace(/\./g, '\\.')}";`));
-  assert.equal((await call('/vnc/desktop/__grokbot-vnc-bridge.js')).status, 401);
+  assert.match(await bridge.text(), new RegExp(`^window\\.__grokbotAppOrigin = "${webOrigin.replace(/\./g, '\\.')}";`));
+  assert.equal((await web('/vnc/desktop/__grokbot-vnc-bridge.js')).status, 401);
   const desktopTicket = host.tickets.issue(desktop.deviceId, 'desktop');
+  assert.equal((await web(`/vnc/desktop/vnc.html?ticket=${desktopTicket}`)).status, 401);
   assert.doesNotMatch(await (await call(`/vnc/desktop/vnc.html?ticket=${desktopTicket}`)).text(), /__grokbot-vnc/,
     'apps keep the unmodified noVNC page');
 
-  // Admin "open in this browser" signs a browser in without a pairing code, once.
-  const opened = await call('/admin/api/web-client/open', { method: 'POST', cookie: admin,
-    headers: { 'content-type': 'application/json', 'x-grokbot-csrf': '1' }, body: JSON.stringify({ deviceName: 'Admin browser' }) });
+  // "Open in this browser": the admin page gets a one-time ticket for the web client's sign-in page, never a cookie.
+  const open = () => call('/admin/api/web-client/open', { method: 'POST', cookie: admin, headers: csrf, body: JSON.stringify({ deviceName: 'Admin browser' }) });
+  const opened = await open();
   assert.equal(opened.status, 201);
-  const adminBrowser = opened.headers.get('set-cookie').split(';')[0];
-  const again = await call('/admin/api/web-client/open', { method: 'POST', cookie: `${admin}; ${adminBrowser}`,
-    headers: { 'content-type': 'application/json', 'x-grokbot-csrf': '1' }, body: JSON.stringify({ deviceName: 'Admin browser' }) });
-  assert.equal(again.status, 200);
+  assert.equal(opened.headers.get('set-cookie'), null);
+  const [signInPage, fragment] = (await opened.json()).url.split('#');
+  assert.equal(signInPage, `${webOrigin}/web/login`);
+  const redeem = (value, cookie) => web('/web/api/ticket', { method: 'POST', cookie, headers: json, body: JSON.stringify({ ticket: value }) });
+  const adminTicket = new URLSearchParams(fragment).get('ticket');
+  assert.equal((await web('/web/api/ticket', { method: 'POST', headers: { ...json, origin }, body: JSON.stringify({ ticket: adminTicket }) })).status, 403);
+  const exchanged = await redeem(adminTicket);
+  assert.equal(exchanged.status, 201);
+  const adminBrowser = exchanged.headers.get('set-cookie').split(';')[0];
+  assert.equal((await redeem(adminTicket)).status, 401, 'a ticket works once');
+  const again = await redeem(new URLSearchParams((await (await open()).json()).url.split('#')[1]).get('ticket'), adminBrowser);
+  assert.equal(again.status, 200, 'a signed-in browser keeps its device');
   assert.equal(host.auth.devices().filter(item => item.platform === 'web' && !item.revokedAt).length, 2);
 
   // Signing out revokes this browser's device.
-  assert.equal((await call('/web/api/logout', { method: 'POST', cookie: browser, headers: json, body: '{}' })).status, 200);
+  assert.equal((await web('/web/api/logout', { method: 'POST', cookie: browser, headers: json, body: '{}' })).status, 200);
   assert.equal(host.auth.device(deviceId), undefined);
   assert.equal((await agents(json)).status, 401);
 
   // Turned off: no sign-in, no interface and no cookie API.
   await host.webClient.setEnabled(false);
-  assert.equal((await call('/web/renderer/index.html', { cookie: adminBrowser })).headers.get('location'), '/web/login');
+  assert.equal((await web('/web/renderer/index.html', { cookie: adminBrowser })).headers.get('location'), '/web/login');
   assert.equal((await pair({ pairingKey: (await host.auth.createPairing()).pairingKey, deviceName: 'Web client · Demo' })).status, 404);
-  assert.equal((await call('/api/listAgents', { method: 'POST', cookie: adminBrowser, headers: json, body: '{}' })).status, 403);
+  assert.equal((await agents(json, web, adminBrowser)).status, 403);
+  assert.equal((await open()).status, 409);
 });
 
 test('an invalid upload is refused before anything is written', async t => {

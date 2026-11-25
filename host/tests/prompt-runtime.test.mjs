@@ -21,10 +21,11 @@ test('parent prompts preserve proactive memory retrieval and reject stale access
   const render = globalThis.__grokbotPromptPolicy.snapshot();
   const parent = render('parent', 'Original parent prompt');
   assert.match(parent, /^Original parent prompt\n\nMemory access is configured for this turn:/);
-  assert.match(parent, /agent memory is mounted at \/data\/runtime\/host-data\/agents/);
+  assert.match(parent, /agent memory is mounted read-only at \/data\/runtime\/host-data\/agents/);
   assert.match(parent, /shared user memory at \/data\/runtime\/host-data\/user-memory/);
   assert.match(parent, /Use memory proactively whenever it can affect the answer, without waiting for the user to ask/);
   assert.match(parent, /when you need older or omitted facts, inspect the corresponding files with Read or Shell/);
+  assert.match(parent, /These mounts are read-only: do not try to create, edit or delete files under them/);
   assert.match(parent, /Do not repeat an earlier turn's "not mounted" or "not readable" result/);
   assert.match(parent, /A missing monthly log means that no file has been recorded for that month yet/);
   assert.doesNotMatch(parent, /When asked to read, search, audit, clean, or summarize memory/);

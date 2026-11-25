@@ -1,5 +1,6 @@
 // Sign-in page of the web client (/web/login). A browser signs in with a pairing code from the
 // admin page and receives an HttpOnly cookie; the interface itself is served only after that.
+// "Open in this browser" on the admin page passes a one-time ticket in the fragment instead.
 import { t, localize } from './i18n.js';
 import { $ } from './ui.js';
 import { createFace, lookAt, resetLook, blink } from './face.js';
@@ -78,7 +79,14 @@ $('#web-open').href = next();
 
 const insecure = location.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 $('#web-insecure').hidden = !insecure;
-try {
+const ticket = new URLSearchParams(location.hash.slice(1)).get('ticket');
+if (ticket) history.replaceState(history.state, '', location.pathname + location.search);
+async function redeem() {
+  try { await call('/web/api/ticket', { ticket }); location.replace(next()); return true; }
+  catch (error) { note(error.message); return false; }
+}
+async function start() {
+  if (ticket && await redeem()) return;
   const session = await call('/web/api/session');
   if (!session.available) {
     $('#web-lead').hidden = true;
@@ -93,6 +101,9 @@ try {
     if (new URLSearchParams(location.search).has('expired')) say(t('登录已失效，请输入新的配对码。'));
     code.focus();
   }
+}
+try {
+  await start();
 } catch (error) {
   note(t('无法连接 Host：{0}', error.message));
 }

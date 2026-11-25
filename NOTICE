@@ -84,9 +84,17 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
    - host/server/web-client.mjs (new) and changes to index.mjs, auth.mjs,
      proxy.mjs and push-service.mjs: bundle verification, atomic install,
      serving only to signed-in browsers, the web device platform, cookie
-     sign-in bound to the Host origin and a request header, admin routes, and
-     the computer view bridge injected into noVNC pages. host/server/public/:
-     sign-in page (web-login.*) and the admin Web client page (web-client.js).
+     sign-in bound to the web client origin and a request header, admin
+     routes, and the computer view bridge injected into noVNC pages.
+     host/server/public/: sign-in page (web-login.*) and the admin Web client
+     page (web-client.js).
+   - Since 1.15.0 the web client has its own Host listener, port and origin
+     (host/server/web-routes.mjs, from upstream; see "Upstream ProkBot changes
+     incorporated" below), so code in the bundle cannot use the administrator's
+     session; 1.5.0 to 1.14.0 served it on the admin origin. ProkBot Plus adds
+     the deploy.py options --web-port and --web-public-url, the web client
+     address for instances from earlier releases, port conflict checks before
+     update and recover, and browser tests of the new origin.
    - android/client/: a Safari ResizeObserver shim (compat.js) and deep links
      that wait for the Bot list (bridge.js), shared with Android.
 
@@ -160,19 +168,23 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
     files were removed (host/source-files.json, an unreferenced plugin
     example, an outdated Android browser test and old screenshots).
 
-13. Host memory visibility in the execution desktop. host/release/compose.yaml
-    mounts the five protected data trees agents, user-memory, workflows,
-    plugins and managed-skills only below the protected
-    /data/runtime/host-data root; agent-transcripts and other Host-only data
-    stay out of Box. host/release/data_init.py changes ownership and mode only
-    on directories it creates. host/release/backup.py validates exact mounts.
+13. Host memory visibility in the execution desktop. The five protected data
+    trees agents, user-memory, workflows, plugins and managed-skills are
+    mounted only below the protected /data/runtime/host-data root;
+    agent-transcripts and other Host-only data stay out of Box.
+    host/release/data_init.py changes ownership and mode only on directories
+    it creates. host/release/backup.py validates exact mounts.
     host/runtime/prompt-runtime.mjs preserves proactive memory retrieval, adds
-    its live-access reminder only for the local Box topology and falls back to
-    the original prompt when the extra text exceeds the size limit. Same-machine
-    deployment refuses Docker Engine below 26.0, API 1.45 or Compose 2.26.0
-    before writing or starting a subpath-mount configuration; distribution
-    version suffixes are accepted and --host-only is not gated. Contributed by
-    @jun9100 (GitHub pull request #5). Clients are unchanged.
+    its live-access reminder only when the mounts are present and falls back
+    to the original prompt when the extra text exceeds the size limit.
+    Distribution version suffixes are accepted and --host-only is not gated.
+    Contributed by @jun9100 (GitHub pull request #5). Clients are unchanged.
+    Since 1.15.0 the mounts are read-only and live in a separate
+    host/release/compose.memory.yaml, which deploy.py adds only with Docker
+    Engine 26.0+, API 1.45+ and Compose 2.26.0+ and otherwise skips; from
+    upstream, see below. 1.7.0 to 1.14.0 mounted them writable in
+    compose.yaml. ProkBot Plus lets the checks before an update and backups
+    accept those writable mounts so that update can replace them.
 
 14. Per-Bot voices. host/server/voice-selection.mjs (new), voice-config.mjs,
     voice-synthesis.mjs, voice-session.mjs, voice.mjs and the admin voice page
@@ -329,6 +341,32 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
     - ci/release-packages.py requires the 1.2.3 fallback files;
       ci/homepage-versions.mjs marks pins newer than the last real-machine
       test as untested.
+
+Upstream ProkBot changes incorporated
+-------------------------------------
+
+ProkBot Plus 1.15.0 incorporates these changes from upstream ProkBot release
+v2026.11.25 (https://gitee.com/ahaduoduoduo/ProkBot), by the upstream ProkBot
+contributors (ahaduoduoduo), under the same license. They were adapted to
+ProkBot Plus; the adaptations are listed in items 4 and 13 above.
+
+  bd82070  fix(host): keep later fallbacks reachable after a quota failure
+           (host/runtime/model-session.mjs, host/tests/model-fallback.test.mjs)
+  bc99c75  fix(host): mount Host memory read-only, and only through an
+           opt-in overlay (host/release/compose.yaml, compose.memory.yaml,
+           host/deploy.py, host/release/backup.py,
+           host/runtime/prompt-runtime.mjs and tests)
+  7d7f51a  docs: memory reading needs deploy.py and Docker Engine 26+
+           (rewritten for the ProkBot Plus documents)
+  c3d8e85  fix(host): serve the web client on its own port and origin
+           (host/server/index.mjs, web-routes.mjs, web-client.mjs, auth.mjs,
+           security.mjs, public/, host/deploy/supervisor.mjs,
+           host/release/Dockerfile.host, compose.yaml, compose.host.yaml and
+           tests)
+  f81f35e  fix(admin): say the web client bundle comes from ProkBot Plus
+           (only the part that stops naming a fixed bundle file)
+  a2fdb31  only the Host part: start(0) takes an ephemeral web client port;
+           its desktop client part is not included yet
 
 Third-party components
 ----------------------

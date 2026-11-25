@@ -44,7 +44,7 @@ sh grokbot-local/install.sh
   如需临时跳过沙箱启动，可运行 `GROKBOT_NO_SANDBOX=1 grokbot-local`。
 - **凭据存储**：优先使用系统密钥环（GNOME Keyring / KWallet）；无密钥环守护进程时沿用官方 Linux 客户端行为回退到 Electron `basic_text`（凭据文件仍以 `0600` 权限保存在 `0700` 目录）。
 - **本机能力与限制**：支持 Tailcat 内置组网、Bot 在本机执行命令与文件操作（需审批）、委派本机 Codex CLI 与桌面通知；和 Windows 一样不支持本机鼠标键盘图形界面控制。与官方客户端配置目录和协议完全隔离，可共存。本机命令和 Codex 需要 1.10.0 及以后的 Host。
-- **实测情况**：上一版 1.2.3 在 WSL2 的 Ubuntu 22.04 x64（WSLg）上实测了生成、启动、配对、对话、需审批的本机命令、重启后恢复和安装卸载脚本；1.3.0 只做了离线的补丁回放校验，还没有实测。原生 GNOME / KDE 桌面、Wayland、Tailcat、托盘、ARM64 和 Ubuntu 24.04 的 AppArmor 脚本也还没有实测，遇到问题请提 Issue。仍需 1.2.3 时，用 Releases 中 **v1.14.0** 的 Linux 发布包生成。
+- **实测情况**：上一版 1.2.3 在 WSL2 的 Ubuntu 22.04 x64（WSLg）上实测了生成、启动、配对、对话、需审批的本机命令、重启后恢复和安装卸载脚本；1.3.0 只做了离线的补丁回放校验，还没有实测。原生 GNOME / KDE 桌面、Wayland、Tailcat、托盘、ARM64 和 Ubuntu 24.04 的 AppArmor 脚本也还没有实测，遇到问题请提 Issue。仍需 1.2.3 时，用 Releases 中 **v1.15.0** 的 Linux 发布包生成。
 
 ## 维护与测试
 

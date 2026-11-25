@@ -3,6 +3,7 @@
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import ipaddress
 import json
 import os
@@ -10,15 +11,20 @@ from pathlib import Path
 import posixpath
 import re
 import shutil
+import socket
 import subprocess
 import sys
 from urllib.parse import urlsplit
 from uuid import uuid4
 
 RELEASE = Path(__file__).resolve().parent / 'release'
+MEMORY_COMPOSE = RELEASE / 'compose.memory.yaml'
 MIN_DOCKER_ENGINE = (26, 0, 0)
 MIN_DOCKER_API = (1, 45, 0)
 MIN_COMPOSE = (2, 26, 0)
+DEFAULT_PORT, DEFAULT_WEB_PORT = 18080, 18081
+# The Compose settings that decide the web client's address (compose.yaml, compose.host.yaml).
+WEB_SETTINGS = ('GROKBOT_PUBLIC_URL', 'GROKBOT_PUBLIC_PORT', 'GROKBOT_WEB_PUBLIC_URL', 'GROKBOT_WEB_PUBLIC_PORT')
 sys.path.insert(0, str(RELEASE))
 from platforms import BOX, check_box_execution, docker_platform
 import backup as volume_backup
@@ -38,18 +44,78 @@ def endpoint(value):
     return value.rstrip('/')
 
 
+def same_origin(first, second):
+    def key(value):
+        url = urlsplit(value)
+        return url.scheme, (url.hostname or '').lower(), url.port or {'http': 80, 'https': 443}[url.scheme]
+    return key(first) == key(second)
+
+
+def instance_env(home):
+    """The address settings Compose substitutes: the process environment first, then the instance .env.
+
+    For reporting and checks only; Compose itself reads the file when it starts services."""
+    values = {}
+    path = home / '.env'
+    if path.is_file():
+        for line in path.read_text(encoding='utf-8').splitlines():
+            key, sep, value = line.partition('=')
+            key, value = key.strip(), value.strip()
+            if sep and key in WEB_SETTINGS:
+                quoted = len(value) >= 2 and value[0] == value[-1] and value[0] in '"\''
+                values[key] = value[1:-1] if quoted else value
+    values.update({key: os.environ[key] for key in WEB_SETTINGS if key in os.environ})
+    return values
+
+
+def web_client_url(values):
+    """Where the web client is served: its own URL, or the main host name with the web client port.
+
+    The Host derives the same address (host/server/index.mjs, peerOrigin) when GROKBOT_WEB_PUBLIC_URL is empty."""
+    if values.get('GROKBOT_WEB_PUBLIC_URL'):
+        return endpoint(values['GROKBOT_WEB_PUBLIC_URL']) + '/web/'
+    main = urlsplit(values.get('GROKBOT_PUBLIC_URL') or f"http://127.0.0.1:{values.get('GROKBOT_PUBLIC_PORT') or DEFAULT_PORT}")
+    host = f'[{main.hostname}]' if ':' in (main.hostname or '') else main.hostname
+    return f"{main.scheme}://{host}:{values.get('GROKBOT_WEB_PUBLIC_PORT') or DEFAULT_WEB_PORT}/web/"
+
+
+def check_web_address(home):
+    """Refuse a web client address equal to the admin address before anything changes; the Host would not start."""
+    values = instance_env(home)
+    main, web = values.get('GROKBOT_PUBLIC_URL'), values.get('GROKBOT_WEB_PUBLIC_URL')
+    if main and web and {urlsplit(main).scheme, urlsplit(web).scheme} <= {'http', 'https'} and same_origin(main, web):
+        raise ValueError('GROKBOT_WEB_PUBLIC_URL must differ from GROKBOT_PUBLIC_URL: the web client needs its own '
+                         'address, such as its own subdomain behind the reverse proxy.')
+
+
+def web_notice(home):
+    values = instance_env(home)
+    https = urlsplit(values.get('GROKBOT_PUBLIC_URL') or 'http:').scheme == 'https'
+    proxy = '' if values.get('GROKBOT_WEB_PUBLIC_URL') or not https else (
+        ' Behind a reverse proxy, give the web client its own entry (a subdomain) and set GROKBOT_WEB_PUBLIC_URL'
+        ' in the instance .env.')
+    print(f'Web client: {web_client_url(values)} (its own port and address since ProkBot Plus 1.15.0; old /web/ links'
+          f' on the main address redirect there).{proxy}', file=sys.stderr, flush=True)
+
+
 def initialise(home, args):
     if not 1 <= args.port <= 65535:
         raise ValueError('Port must be 1..65535')
+    # Each instance gets its own pair by default: 18080 and 18081, 18082 and 18083, ...
+    args.web_port = args.port + 1 if args.web_port is None else args.web_port
+    if not 1 <= args.web_port <= 65535 or args.web_port == args.port:
+        raise ValueError('Web client port must be 1..65535 and differ from --port.')
     listen = str(ipaddress.ip_address(args.listen))
     if not args.public_url and listen != '127.0.0.1':
         raise ValueError('Set --public-url to the address clients will actually enter.')
     origin = endpoint(args.public_url or f'http://127.0.0.1:{args.port}')
+    web_origin = endpoint(args.web_public_url) if args.web_public_url else None
+    # The web client runs the official interface; it must never share the admin page's origin.
+    web = web_origin or web_client_url({'GROKBOT_PUBLIC_URL': origin, 'GROKBOT_WEB_PUBLIC_PORT': args.web_port})
+    if same_origin(web, origin):
+        raise ValueError('The web client address must differ from --public-url; set --web-public-url to its own host name.')
     if ':' in listen:
         listen = f'[{listen}]'
-    # Only the local Box uses subpath mounts; a Host-only instance keeps working on older Docker.
-    if not args.host_only:
-        check_runtime_versions()
     home.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
         fd = os.open(home / '.env', os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -57,15 +123,32 @@ def initialise(home, args):
         raise ValueError('Configuration already exists; init never overwrites it. Use status or update.') from None
     with os.fdopen(fd, 'w', encoding='utf-8', newline='\n') as config:
         config.write(f'GROKBOT_LISTEN_ADDRESS={listen}\nGROKBOT_PUBLIC_PORT={args.port}\nGROKBOT_PUBLIC_URL={origin}\n'
+                     f'GROKBOT_WEB_PUBLIC_PORT={args.web_port}\n'
+                     + (f'GROKBOT_WEB_PUBLIC_URL={web_origin}\n' if web_origin else '') +
                      f'PROKBOT_MODE={"remote" if args.host_only else "local"}\nPROKBOT_PROJECT={args.project}\n')
-    print(json.dumps({'configCreated': True, 'publicUrl': origin}))
+    print(json.dumps({'configCreated': True, 'publicUrl': origin, 'webClientUrl': web_client_url(instance_env(home))}))
 
 
-def compose(args, home):
+def compose(args, home, *, memory=False):
     if not (home / '.env').is_file():
         raise ValueError('No .env in the instance directory. Run init first or select --home.')
     name = 'compose.host.yaml' if args.host_only else 'compose.yaml'
-    return ['docker', 'compose', '--env-file', str(home / '.env'), '-p', args.project, '-f', str(RELEASE / name)]
+    overlay = ['-f', str(MEMORY_COMPOSE)] if memory else []
+    return ['docker', 'compose', '--env-file', str(home / '.env'), '-p', args.project, '-f', str(RELEASE / name), *overlay]
+
+
+def memory_overlay(dc):
+    return str(MEMORY_COMPOSE) in dc
+
+
+def memory_supported():
+    # Engines before 26 ignore subpath and would mount the whole host-data volume, keys included.
+    try:
+        check_runtime_versions()
+    except ValueError as error:
+        print(f'Bot memory reading on its desktop stays off: {error}', file=sys.stderr)
+        return False
+    return True
 
 
 def instance_settings(args, home):
@@ -161,13 +244,16 @@ def instance_images(dc, project, services, existing, pinned=None):
                     mount.get('target') != dest or mount.get('read_only') or (mount.get('volume') or {}).get('subpath')):
                 raise ValueError(f'Effective Compose mount {s}:{dest} does not select the root of the expected writable project volume.')
         if s == 'box':
-            for target, tree in volume_backup.BOX_DATA_TARGETS.items():
-                mount = mounts.get(target, {})
+            expected = volume_backup.BOX_DATA_TARGETS if memory_overlay(dc) else {}
+            if {t for t in volume_backup.BOX_DATA_TARGETS if t in mounts} != set(expected):
+                raise ValueError('Effective Compose Host-data mounts on box do not match the selected Compose files.')
+            for target, tree in expected.items():
+                mount = mounts[target]
                 subpath = (mount.get('volume') or {}).get('subpath')
                 if (mount.get('type') != 'volume' or mount.get('source') != 'host-data' or
-                        mount.get('target') != target or mount.get('read_only') or
+                        mount.get('target') != target or mount.get('read_only') is not True or
                         subpath != str(volume_backup.DATA_SOURCE_ROOT / tree)):
-                    raise ValueError(f'Effective Compose mount box:{target} does not select the approved Host-data tree.')
+                    raise ValueError(f'Effective Compose mount box:{target} is not a read-only mount of the approved Host-data tree.')
     images = {s: config['services'][s]['image'] for s in services}
     if pinned is not None and images != pinned:
         raise ValueError('Effective Compose configuration did not select the requested immutable images.')
@@ -186,7 +272,63 @@ def build(args, image):
     run(cmd)
 
 
-def inventory(project, services, *, new):
+def published_ports(dc, existing):
+    config = json.loads(run(dc + ['config', '--format', 'json'], env=volume_policy(existing), capture=True).stdout)
+    ports = {}
+    for name, service in config['services'].items():
+        for item in service.get('ports') or []:
+            if isinstance(item, dict) and item.get('published'):
+                port = str(item['published'])
+                # An instance from before 1.15.0 initialised with --port 18081 meets the default web client port.
+                if port in ports:
+                    raise ValueError(f'Port {port} is published twice by this instance. Set GROKBOT_WEB_PUBLIC_PORT in '
+                                     'its .env to a free port other than GROKBOT_PUBLIC_PORT.')
+                ports[port] = name, item.get('host_ip') or '0.0.0.0'
+    return ports
+
+
+def port_in_use(address, port):
+    """True when a program outside Docker already listens where Compose would publish the port."""
+    address = address.strip('[]')
+    try:
+        family = socket.AF_INET6 if ipaddress.ip_address(address).version == 6 else socket.AF_INET
+    except ValueError:
+        return False
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if os.name != 'nt':
+            # Connections still closing do not block the probe; a listening socket does.
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind((address, int(port)))
+        except OSError as error:
+            # Other failures (a privileged port, an address of another machine) are left to Compose.
+            return error.errno in (errno.EADDRINUSE, getattr(errno, 'WSAEADDRINUSE', errno.EADDRINUSE))
+    return False
+
+
+def check_free_ports(dc, project, existing):
+    """Refuse ports another container or program already uses, before building, stopping or restoring.
+
+    Two instances on one machine, such as a recovered copy next to the original, need their own main and
+    web client ports, and an update from before 1.15.0 adds the web client port; Compose would otherwise
+    fail only after the old services were stopped."""
+    own = set(volume_backup.project_ids(project))
+    for port, (service, address) in sorted(published_ports(dc, existing).items()):
+        users = run(['docker', 'ps', '-q', '--no-trunc', '--filter', f'publish={port}'], capture=True).stdout.split()
+        if any(cid not in own for cid in users):
+            raise ValueError(f'Port {port} of {service} is already published by another container. Give this instance '
+                             'its own ports: GROKBOT_PUBLIC_PORT and GROKBOT_WEB_PUBLIC_PORT in its .env '
+                             '(init --port and --web-port).')
+        # A port this instance publishes now is busy because of it; any other must be free.
+        if not users and port_in_use(address, port):
+            raise ValueError(f'Port {port} of {service} is already in use by another program on this machine. Free it, '
+                             'or give this instance other ports: GROKBOT_PUBLIC_PORT and GROKBOT_WEB_PUBLIC_PORT in '
+                             'its .env (init --port and --web-port).')
+
+
+def inventory(project, services, *, new, legacy_writable=False):
+    # legacy_writable: a box created by Plus 1.7.0-1.14.0 may still mount Host data writable. Only checks
+    # before services are replaced accept it; the checks after a start or recovery require read-only.
     volumes = volume_backup.project_volumes(project)
     expected = {f'{project}_{suffix}' for s in services for suffix in volume_backup.MOUNTS[s]}
     if new:
@@ -197,7 +339,8 @@ def inventory(project, services, *, new):
     if volumes != expected:
         raise ValueError('Volume set does not match this topology; check the original project, --home and --host-only.')
     volume_backup.verify_volumes(project, volumes)
-    containers = volume_backup.project_services(project, services, host_data=f'{project}_host-data' in volumes)
+    containers = volume_backup.project_services(project, services, host_data=f'{project}_host-data' in volumes,
+                                                legacy_writable=legacy_writable)
     volume_backup.verify_users(volumes, containers)
     return containers
 
@@ -279,7 +422,7 @@ def ensure_host_data(project, image):
 
 def up_and_wait(dc, project, services, images, *, existing):
     instance_images(dc, project, services, existing, pinned=images)
-    if 'box' in services:
+    if 'box' in services and memory_overlay(dc):
         ensure_host_data(project, images['host'])
     run(dc + ['up', '-d', '--pull', 'never', '--wait', '--wait-timeout', '180'], env=volume_policy(existing, images))
     current = inventory(project, services, new=False)
@@ -291,7 +434,8 @@ def up_and_wait(dc, project, services, images, *, existing):
 def stop_failed_start(dc, project, services, existing, notice, error):
     try:
         run(dc + ['stop'], env=volume_policy(existing))
-        current = volume_backup.project_services(project, services)
+        # After a failed update the old box, with writable mounts, may still be the one Compose stopped.
+        current = volume_backup.project_services(project, services, legacy_writable=True)
         if any(c['State']['Status'] not in ('exited', 'created') for c in current.values()):
             raise ValueError('some services remain active')
     except (OSError, ValueError, subprocess.SubprocessError) as stop_error:
@@ -374,7 +518,7 @@ def upgrade(args, home, dc, services, image, old, root, continuing):
         raise ValueError('Previous Host image identity is unavailable; refusing to switch.')
     with staged_host(args, services) as images:
         candidate_id = images['host']
-        current = inventory(args.project, services, new=False)
+        current = inventory(args.project, services, new=False, legacy_writable=True)
         if state(current) != state(old) or instance_images(dc, args.project, services, True)['host'] != image:
             raise ValueError('The instance changed during the build; no service was switched.')
         offline_only = volume_backup.check_lineage(root, args.project, continuing=continuing)
@@ -448,6 +592,8 @@ def recover(args, home, dc, services):
         raise ValueError('One of the exact recovery images is unavailable locally.')
     check_platform(images['host'])
     instance_images(dc, args.project, services, True, pinned=images)
+    check_free_ports(dc, args.project, True)
+    check_web_address(home)
     root = manifest.get('lineageRoot')
     with volume_backup.project_lock(origin), volume_backup.lineage_lock(root):
         volume_backup.check_lineage(root, args.project, original=origin)
@@ -460,6 +606,7 @@ def recover(args, home, dc, services):
         except (Exception, KeyboardInterrupt) as error:
             stop_failed_start(dc, args.project, services, True, 'Recovery start failed. Restored volumes retained; source unchanged.', error)
     print(json.dumps({'recoveredProject': args.project, 'sourceProject': origin, 'serviceImages': images, 'servicesStarted': True}))
+    web_notice(home)
 
 
 def operate(args, home, dc):
@@ -467,9 +614,15 @@ def operate(args, home, dc):
     if args.action == 'recover':
         return recover(args, home, dc, services)
     image = instance_images(dc, args.project, services, args.action != 'up')['host']
-    current = inventory(args.project, services, new=args.action == 'up')
+    current = inventory(args.project, services, new=args.action == 'up', legacy_writable=True)
+    if volume_backup.writable_box_data(current):
+        print('The Bot computer still mounts Host memory writable (ProkBot Plus 1.7.0-1.14.0). '
+              + ('This update replaces those mounts with read-only ones.' if args.action == 'update'
+                 else 'Run update to replace them with read-only mounts.'), file=sys.stderr, flush=True)
     if args.action == 'backup':
         return backup(args, home, current['host']['Image'] if 'host' in current else image)
+    check_free_ports(dc, args.project, args.action != 'up')
+    check_web_address(home)
     root = volume_backup.local_lineage(args.project) if args.action == 'update' else args.project
     # Builders also publish fixed shared base/desktop tags. One daemon-wide writer covers aliases and rollback.
     with volume_backup.lineage_lock(root), volume_backup.operation_lock('prokbot-image-publication-lock'):
@@ -500,6 +653,7 @@ def operate(args, home, dc):
                     finally:
                         revert_tag(previous, images['host'], image)
     run(dc + ['ps'])
+    web_notice(home)
 
 
 def main(argv=None):
@@ -511,6 +665,10 @@ def main(argv=None):
     init = sub.add_parser('init', help='Create .env once; never overwrite an existing deployment')
     init.add_argument('--listen', default='127.0.0.1'); init.add_argument('--port', type=int, default=18080)
     init.add_argument('--public-url', help='URL entered on clients; no subpath')
+    init.add_argument('--web-port', type=int,
+                      help=f'Port of the web client, which has its own address; default --port + 1 ({DEFAULT_WEB_PORT})')
+    init.add_argument('--web-public-url', help='Web client URL when it is not the --public-url host name with --web-port, '
+                      'e.g. its own HTTPS subdomain behind a reverse proxy; no subpath')
     recovery = sub.add_parser('recover', help='Restore and start a NEW project from verified volumes and recorded immutable images')
     recovery.add_argument('--directory', required=True, type=Path, help='Backup directory containing manifest.json')
     for cmd, help_text in [('doctor', 'Check Docker, Compose, architecture and desktop compatibility'),
@@ -532,7 +690,9 @@ def main(argv=None):
         report = {'ok': False, 'project': args.project, 'existingConfig': (home / '.env').is_file()}
         try:
             platform = docker_platform()
-            report.update(hostPlatform=platform, **({} if args.host_only else check_runtime_versions()),
+            memory = not args.host_only and memory_supported()
+            report.update(hostPlatform=platform, memoryMounts=memory,
+                          composeVersion=run(['docker', 'compose', 'version', '--short'], capture=True).stdout.strip(),
                           desktop='remote' if args.host_only else 'native' if platform == BOX['platform'] else 'emulated-amd64',
                           existingVolumes=sorted(volume_backup.project_volumes(args.project)), resources=daemon_resources())
             help_text = run(['docker', 'compose', 'up', '--help'], capture=True).stdout
@@ -540,7 +700,10 @@ def main(argv=None):
                 raise ValueError('This Compose version cannot wait for service health. Install a Compose v2 with up --wait-timeout.')
             report['hostDataVolumes'] = run(['docker', 'volume', 'ls', '-q', '--filter', 'label=com.docker.compose.volume=host-data'], capture=True).stdout.splitlines()
             if report['existingConfig']:
-                run(compose(args, home) + ['config', '--quiet'])
+                run(compose(args, home, memory=memory) + ['config', '--quiet'])
+                report['webClientUrl'] = web_client_url(instance_env(home))
+                check_free_ports(compose(args, home), args.project, bool(report['existingVolumes']))
+                check_web_address(home)
             if not args.host_only:
                 check_box_execution(platform)
             report['ok'] = True
@@ -550,9 +713,8 @@ def main(argv=None):
         if not report['ok']:
             raise SystemExit(1)
         return
-    if args.action in ('up', 'update', 'recover') and not args.host_only:
-        check_runtime_versions()
-    dc = compose(args, home)
+    # Only these actions create containers; the overlay is chosen afresh each time.
+    dc = compose(args, home, memory=args.action in ('up', 'update', 'recover') and not args.host_only and memory_supported())
     if args.action in ('status', 'logs', 'setup-key'):
         return run(dc + {'status': ['ps', '--all'], 'logs': ['logs', '--tail', '100', 'host'],
                          'setup-key': ['exec', '-T', 'host', 'cat', '/data/setup-key']}[args.action])

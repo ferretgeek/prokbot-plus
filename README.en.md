@@ -66,7 +66,7 @@ Models run through their APIs, so **the server needs no GPU**. It runs two conta
 | --- | --- | --- |
 | CPU / memory | 2 cores / 4 GB | 4 cores / 8 GB |
 | Free disk space | 30 GB | 50 GB |
-| System | 64-bit Linux, Docker 26+ and Compose 2.26+, Python 3.10+ | Ubuntu 24.04 (its own Docker packages are enough) |
+| System | 64-bit Linux, Docker with Compose v2, Python 3.10+ | Ubuntu 24.04 (its own Docker packages are enough); with Docker 26+ and Compose 2.26+ the Bot can read its memory on its own computer |
 
 - Fresh deployments on 2 cores / 4 GB and 4 cores / 8 GB both worked in testing; 2 cores / 2 GB did not. Sized for one person or a household; heavy simultaneous use by several people is untested.
 - Typical use: the Host takes about 0.7 GB of memory and the Bot's computer about 0.8 GB (peak 1.7 GB); the images take about 13 GB.
@@ -100,13 +100,13 @@ ProkBot Plus has its own version numbers; see the [latest release](https://githu
 | Linux | Linux x64 / ARM64 desktop | New in Plus. Portable folder, `.tar.gz` and per-user install script, no root needed. Supports Tailcat, local commands and Codex; no local mouse/keyboard GUI control. 1.2.3 was tested on Ubuntu 22.04 x64 under WSL2; 1.3.0, native Linux desktops and ARM64 are untested. |
 | Android | Android 9+, system WebView 89+ | Our own app, not the official Android app. Tested on Android 15 / 16 emulators, not on a real phone. |
 | Web client | Current Chrome, Edge, Firefox or Safari | Served by your Host and adapts to phones, tablets and computers; sign in with a pairing code. It works with the Bot's computer only, never your own device. |
-| Mac | Apple Silicon or Intel | Supports official 1.3.0 on both Apple Silicon and Intel Macs (1.3.0 not yet tested on a Mac; the previous 1.2.3 was live-tested on an Intel Mac; if you still need 1.2.3, use the ProkBot Plus v1.14.0 Mac package). |
+| Mac | Apple Silicon or Intel | Supports official 1.3.0 on both Apple Silicon and Intel Macs (1.3.0 not yet tested on a Mac; the previous 1.2.3 was live-tested on an Intel Mac; if you still need 1.2.3, use the ProkBot Plus v1.15.0 Mac package). |
 | iPhone / iPad | Your own decrypted IPA and signing certificate | Supports official 1.27.0 (build 29519, recommended), with 1.26.0 and 1.16.0 fallbacks. The contributor tested upgrading, pairing, chat and attachments with 1.27.0 on an iPad; iPhone has not been fully tested. |
 
 <a id="android-client"></a><a id="web-client"></a>
 **The Android app** does not modify the official Android app (it is tamper-protected). It puts the official desktop interface into a shell written by this project. You can watch the Bot's computer live and take control, and notifications work without Google push. You sign the APK with your own key.
 
-**The web client** is built on a computer and uploaded to your Host. Then open `<Host address>/web/` in a browser on any device and enter a pairing code; you can also add it to the home screen. Use HTTPS when you access it from outside. See the [web client guide](web/README.en.md).
+**The web client** is built on a computer and uploaded to your Host. Then open the web client address (its own Host port, 18081 by default, apart from the admin page) in a browser on any device and enter a pairing code; you can also add it to the home screen. Use HTTPS when you access it from outside, with an entry of its own for the web client. See the [web client guide](web/README.en.md).
 
 ## Install
 

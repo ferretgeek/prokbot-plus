@@ -66,7 +66,7 @@ Grok Bot 是 xAI 的 AI 助手应用。它的 Bot 除了聊天，还有自己的
 | --- | --- | --- |
 | CPU / 内存 | 2 核 / 4 GB | 4 核 / 8 GB |
 | 硬盘可用空间 | 30 GB | 50 GB |
-| 系统 | 64 位 Linux，Docker 26+ 和 Compose 2.26+，Python 3.10+ | Ubuntu 24.04（系统仓库的 Docker 就够） |
+| 系统 | 64 位 Linux，Docker 和 Compose v2，Python 3.10+ | Ubuntu 24.04（系统仓库的 Docker 就够）；Docker 26+ 和 Compose 2.26+ 时 Bot 能在自己的电脑上读记忆 |
 
 - 2 核 4 GB 和 4 核 8 GB 都从零部署实测可用；2 核 2 GB 实测不够。适合个人或家庭使用，多人同时高强度使用没测过。
 - 平时占用：Host 约 0.7 GB 内存，Bot 的电脑约 0.8 GB（最高 1.7 GB）；镜像约 13 GB。
@@ -100,13 +100,13 @@ ProkBot Plus 自己的版本号见[最新发布](https://github.com/ferretgeek/p
 | Linux | Linux x64 / ARM64 桌面 | 本项目新增。便携目录、`.tar.gz` 与用户级安装脚本，不需要 root 权限。支持 Tailcat、本机命令和 Codex，不支持鼠标键盘图形控制；1.2.3 在 WSL2 的 Ubuntu 22.04 x64 上实测过，1.3.0、原生 Linux 桌面和 ARM64 还没实测。 |
 | Android | Android 9+，系统 WebView 89+ | 本项目自开发的 App，不是官方 Android 版。在 Android 15 / 16 模拟器上测过，未经真机测试。 |
 | 网页版 | 新版 Chrome、Edge、Firefox、Safari | 由你的 Host 提供，手机、平板、电脑自动适配，用配对码登录。只操作 Bot 的电脑，不操作你本机。 |
-| Mac | Apple 芯片或 Intel 芯片 | 支持官方 1.3.0 的 Apple 芯片与 Intel 芯片（1.3.0 尚未在 Mac 真机上测试；上一版 1.2.3 已在 Intel Mac 真机实测可用，仍需 1.2.3 时用 ProkBot Plus v1.14.0 的 Mac 包）。 |
+| Mac | Apple 芯片或 Intel 芯片 | 支持官方 1.3.0 的 Apple 芯片与 Intel 芯片（1.3.0 尚未在 Mac 真机上测试；上一版 1.2.3 已在 Intel Mac 真机实测可用，仍需 1.2.3 时用 ProkBot Plus v1.15.0 的 Mac 包）。 |
 | iPhone / iPad | 自备已解密的 IPA 和签名证书 | 支持官方 1.27.0（构建 29519，推荐），可回退 1.26.0 和 1.16.0。贡献者在 iPad 上实测了 1.27.0 的升级、配对、对话和附件，iPhone 还没有完整测试。 |
 
 <a id="android-客户端"></a><a id="web-client"></a>
 **Android App** 不改官方 Android 版（它有防篡改保护），而是把官方桌面版的界面装进本项目写的外壳：能看 Bot 电脑的实时画面并接手操作，收通知不依赖 Google 推送。APK 用你自己的密钥签名。
 
-**网页版** 在电脑上生成界面包、上传到 Host 后，任何设备的浏览器打开 `Host 地址/web/` 输入配对码就能用，也能添加到主屏幕。从外网访问请用 HTTPS。详见[网页版说明](web/README.md)。
+**网页版** 在电脑上生成界面包、上传到 Host 后，任何设备的浏览器打开网页版地址（Host 的单独端口，默认 18081，和管理页分开）输入配对码就能用，也能添加到主屏幕。从外网访问请用 HTTPS，并给网页版单独一个入口。详见[网页版说明](web/README.md)。
 
 ## 安装
 

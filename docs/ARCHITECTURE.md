@@ -70,7 +70,7 @@ flowchart LR
 - **`host` 容器**：管理服务监听 8000，映射到宿主机 `${GROKBOT_LISTEN_ADDRESS:-127.0.0.1}:${GROKBOT_PUBLIC_PORT:-18080}`；原版 Host 只监听容器内的 `127.0.0.1:1340`。
 - **`box` 容器**：官方 Linux 桌面，VNC 端口只在容器网络内可见。
 
-同机 Box 只共享五棵受保护数据目录：`agents`、`user-memory`、`workflows`、`plugins`、`managed-skills`，并且只挂到 `/data/runtime/host-data/<目录>`，仍在原版 `RemoteBox` 的受保护根内；`agent-transcripts`、`connector-secrets`、`model.env`、`auth.json`、`projects` 和其他内部数据不会挂入 Box。`agents/<id>/` 里的 `store.db` 等数据库随 `agents` 一起挂入：和官方同机运行时一样，Bot 的 Shell 看得到它们，Read 工具会被原版的受保护路径检查拒绝。每个目录使用独立的 `volume subpath`，所以同机部署要求 Docker Engine 26.0+、API 1.45+ 和 Compose 2.26.0+，部署工具在写入或启动前检查；`--host-only` 不挂子路径，不检查。部署工具启动服务前用 Host 镜像运行一次 `data_init.py`，只创建缺失目录，并且只设置这些新建目录的属主和权限，不改已有顶层目录；部署、备份和恢复都会核对完整的挂载集合。`compose.yaml` 还会设置 `GROKBOT_HOST_MEMORY_MOUNTS=1`，提示运行时只在同机 Box 拓扑追加现场检查提示，让 Bot 在自己的电脑上读记忆；`--host-only` 和远程执行端不会收到该提示。
+同机 Box 只共享五棵受保护数据目录：`agents`、`user-memory`、`workflows`、`plugins`、`managed-skills`，并且只挂到 `/data/runtime/host-data/<目录>`，仍在原版 `RemoteBox` 的受保护根内；`agent-transcripts`、`connector-secrets`、`model.env`、`auth.json`、`projects` 和其他内部数据不会挂入 Box。`agents/<id>/` 里的 `store.db` 等数据库随 `agents` 一起挂入：和官方同机运行时一样，Bot 的 Shell 看得到它们，Read 工具会被原版的受保护路径检查拒绝。这些挂载**全部只读**，并且不在默认的 `compose.yaml` 里，而是放在单独的 `host/release/compose.memory.yaml`：Bot 只查阅记忆，记忆由 Host 自己的记忆扩展写入；可写挂载会让 Bot 改写任何 Bot 的记忆、自动任务（包括原版信任的 `"provenance": "user"`）和技能。每个目录使用独立的 `volume subpath`，而 Docker Engine 26 以下会忽略子路径、把整个 `host-data`（含 `model.env`、`auth.json`）挂进去，Compose 2.26 以下则无法启动，所以部署工具在 `up`、`update`、`recover` 时检查 Docker Engine 26.0+、API 1.45+ 和 Compose 2.26.0+：满足时先用 Host 镜像运行一次 `data_init.py`（只创建缺失目录，只设置这些新建目录的属主和权限，不改已有顶层目录），再加上这个文件启动；不满足时提示并跳过，部署照常进行。`doctor` 的 `memoryMounts` 表示能否开启；`--host-only` 不挂这些目录。部署、备份和恢复都会核对挂载集合：选了这个文件时五个挂载必须齐全且只读，没选时一个都不能有。1.7.0–1.14.0 建的 Box 以可写方式挂载，更新前的检查和备份接受这种旧挂载，`update` 重建 Box 后改为只读；启动后和恢复后的检查只接受只读。`compose.memory.yaml` 还设置 `GROKBOT_HOST_MEMORY_MOUNTS=1`，提示运行时只在这时追加现场检查提示，告诉 Bot 记忆在哪、挂载是只读的；`--host-only`、远程执行端和没有开启的同机部署不会收到该提示。
 
 | 数据 | 内容 |
 | --- | --- |
@@ -163,10 +163,10 @@ Bot 做有风险的操作前，原版会问官方分类服务。这里改用你�
 
 原版桌面客户端是 Electron 应用。这里保留原版界面，重写负责连接和系统功能的主进程（`mac/clients/desktop/`，Mac、Windows 与 Linux 共用），让它只连接你的 Host。平台差异集中在 `platform.mjs`。复杂编程交给本机的 Codex。
 
-- **Mac**：默认 ad-hoc 签名；要让 Agent 控制图形界面，需要用自己的证书签名（`--identity auto`），并授予辅助功能和屏幕录制权限。输出放在 `.noindex` 目录，避免 Spotlight 收录重复的 App。补丁按本机芯片选原版：Apple 芯片的固定输入在 `mac/patchers/desktop/`，Intel 的在 `mac/patchers/desktop/x64/`，`--arch` 可以指定。如需上一版 1.2.3，请使用 v1.14.0 的 Mac 发布包；回退 `0.71.2` 请使用 v1.7.0 的 Mac 发布包。重建 Mac Tailcat：`python host/network/build-tailcat.py --target darwin-arm64 --output mac/dist/network`（Apple 芯片）和 `python host/network/build-tailcat.py --target darwin-amd64 --output mac/dist/network/x64`（Intel）。
+- **Mac**：默认 ad-hoc 签名；要让 Agent 控制图形界面，需要用自己的证书签名（`--identity auto`），并授予辅助功能和屏幕录制权限。输出放在 `.noindex` 目录，避免 Spotlight 收录重复的 App。补丁按本机芯片选原版：Apple 芯片的固定输入在 `mac/patchers/desktop/`，Intel 的在 `mac/patchers/desktop/x64/`，`--arch` 可以指定。如需上一版 1.2.3，请使用 v1.15.0 的 Mac 发布包；回退 `0.71.2` 请使用 v1.7.0 的 Mac 发布包。重建 Mac Tailcat：`python host/network/build-tailcat.py --target darwin-arm64 --output mac/dist/network`（Apple 芯片）和 `python host/network/build-tailcat.py --target darwin-amd64 --output mac/dist/network/x64`（Intel）。
 - **Windows**：`windows/patchers/desktop/patch.mjs` 默认用 1.3.0 安装包，`--version 1.2.3`、`--version 1.1.0` 或 `--version 0.71.2` 改用回退版本，`--source` 可指定安装包、`app-64.7z` 或已安装目录（按大小和 SHA-256 识别版本）。从 NSIS 安装包取出 `app-64.7z`，用 Windows 自带的 `tar.exe`（Windows 10 用 7-Zip）解包，核对 `app.asar` 并回放 recipe；`--verify-only` 到此为止。生成时换入共用主进程，重打 ASAR，输出便携目录、便携 ZIP、安装包和 `*.patch.json`。改过的 `Grok Bot.exe` 不再带官方签名。
 - **Windows 运行时**：关窗后留在托盘；通知用带 AppUserModelID 的开始菜单快捷方式；本机命令用 PowerShell 并打开 UTF-8 输出（从 Git Bash 启动会改变 `cmd /c` 参数，请从开始菜单启动）；委派用本机 `codex.exe`，结束时 `taskkill /T`。Windows 没有 Mac 的鼠标键盘组件。
-- **Linux**：`linux/patchers/desktop/patch.mjs` 支持官方 1.3.0 `x64`（`linux/patchers/desktop/`）和 `arm64`（`linux/patchers/desktop/arm64/`）的 `.deb` 原包（`deb.mjs` 用纯 Node 解析 `ar` 归档并校验整包及 `data.tar.xz` 摘要，再调用 `tar` 解包），核对 `grok-bot` 与 `app.asar` 并回放 recipe；Linux Electron 不校验 ELF 内嵌 ASAR 摘要，保持原版 `grok-bot` 二进制不变。复用 `host/bin/` 下对应架构的 Linux Tailcat，输出便携目录（`grokbot-local/`）、`.tar.gz`（`--no-archive` 可跳过）、`*.patch.json` 及免 root 的 `install.sh` / `uninstall.sh` / `setup-apparmor.sh`。如需上一版 1.2.3，请使用 v1.14.0 的 Linux 发布包。
+- **Linux**：`linux/patchers/desktop/patch.mjs` 支持官方 1.3.0 `x64`（`linux/patchers/desktop/`）和 `arm64`（`linux/patchers/desktop/arm64/`）的 `.deb` 原包（`deb.mjs` 用纯 Node 解析 `ar` 归档并校验整包及 `data.tar.xz` 摘要，再调用 `tar` 解包），核对 `grok-bot` 与 `app.asar` 并回放 recipe；Linux Electron 不校验 ELF 内嵌 ASAR 摘要，保持原版 `grok-bot` 二进制不变。复用 `host/bin/` 下对应架构的 Linux Tailcat，输出便携目录（`grokbot-local/`）、`.tar.gz`（`--no-archive` 可跳过）、`*.patch.json` 及免 root 的 `install.sh` / `uninstall.sh` / `setup-apparmor.sh`。如需上一版 1.2.3，请使用 v1.15.0 的 Linux 发布包。
 - **Linux 运行时**：主窗口沿用官方无边框样式（`frame: false, titleBarStyle: 'default'`），由原版界面渲染最小化/最大化/关闭按钮并在 Wayland 下传递 `--sand-wayland-client`；配对窗口使用原生边框；托盘使用 `icon.png`（不可用时关窗直接退出，菜单保留 `Ctrl+Q`）；提示音依次回退 `pw-play` / `paplay` / `aplay`；凭据优先用系统密钥环，无守护进程时沿用官方行为启用 `basic_text`；本机机器 ID 使用 `linux-` 前缀，支持本机命令行与 Codex，不支持鼠标键盘图形控制。
 - **桌面 1.1.0 / 1.2.3 / 1.3.0 接口**：preload 按 `desktop-mount`、`main`、`spotlight` 三条边声明方法，`local-services.mjs` 按边注册处理器；全局搜索由 `gateway.mjs` 转为 Host 的 `searchAgents` / `searchMedia`；听写把 16 kHz PCM 攒成 WAV 交给 Host 的 `/local/audio/transcriptions`。1.3.0 的 preload 结构和协调器协议（v3）与 1.2.3 相同；`main` 边新增的方法里，`downloadAttachments` 把一条消息的多个附件存进用户选的文件夹（不覆盖已有文件，重名时用「名称 (2).扩展名」），`getBotPage`、`getGrokBotAgentBotSkills`、`getGrokBotAgentPreview`、`browseGrokBotTeamAgents`、`getPluginMcpServerLinks` 和 `getMcpMarketplaceLinkNeeds` 返回官方在云端没有数据时的空值；其余依赖云端账户的新操作仍未实现，由原版界面显示失败。
 - **recipe**：1.3.0 的五平台 recipe（Windows x64、macOS ARM64、macOS Intel x64、Linux x64、Linux ARM64）由 `windows/tools/desktop-recipes/build.mjs`（`--target windows|mac-arm64|mac-x64|linux-x64|linux-arm64`）统一生成。`spec.mjs` 的每处修改以原文件里只出现一次的文本为锚点，追加的本项目代码在 `extensions/`；`--check` 从官方安装包重新生成，比较解压后的内容（不同 zlib 压缩出的 gzip 字节不同），并核对每个 recipe 文件与清单里的 SHA-256 一致。`1.2.3/`（由提交 `41c836b` 的 `spec.mjs` 生成）、`1.1.0/`（由提交 `8c1fcd1` 的 `spec.mjs` 生成）和 `0.71.2/` 的 recipe 保留为 Windows 回退版本，其中 1.1.0 和 0.71.2 也供 Android / 网页版使用；`mac/patchers/desktop/native-helper.mjs` 针对 1.3.0 的 `CUGrokBotService` 通用二进制更新 Team ID。`mac/clients/desktop/*-settings-extension.js` 是 0.71.2 recipe 加进设置页的代码的源码。
@@ -211,12 +211,14 @@ Bot 做有风险的操作前，原版会问官方分类服务。这里改用你�
 
 **界面包**（`web/patchers/patch.mjs`）：和 Android 走同一条路生成界面；在界面入口的官方脚本前插入 `boot-data.js`、`compat.js`、`bridge.js`、`web-shell.js`、样式和 Web App 清单，CSP 的 `frame-src` 加 `'self'`、`connect-src` 加 `wss:`。输出 ZIP 的第一项 `web-bundle.json`（`grokbot-web-bundle/v1`）列出其余文件的大小和 SHA-256。界面包含有官方界面，只装在用户自己的 Host 上，不进仓库、不进 Release。`--upload` 用 `upload.mjs` 登录管理 API、上传、启用后退出登录。
 
-**Host 端**（`host/server/web-client.mjs`）：
+**Host 端**（`host/server/web-client.mjs`、`web-routes.mjs`）：
+
+- **独立的端口和网址**：界面包里是官方界面的代码，所以网页版不放在管理页的网址下。Host 另开一个监听端口（容器内 8001，Compose 默认映射到 18081，`GROKBOT_WEB_PUBLIC_PORT` 可改，`GROKBOT_WEB_PUBLIC_URL` 设定对外地址；两个地址相同时 Host 不启动）。这个端口只提供登录页、界面包、`/web/api/*` 和网页版用到的设备接口，没有管理、联邦、内部和连接器回调路由；主端口不再提供网页版，旧的 `/web` 链接跳转过去。即使同一个浏览器登录了管理页，界面包里的代码（或界面里的 XSS）也拿不到管理员的登录状态。Cookie 不区分端口，所以两边互不认对方的凭据：网页版端口只认网页版 Cookie，主端口的设备接口只认 bearer 令牌，电脑画面票据只在设备所在的端口有效。1.5.0–1.14.0 的网页版和管理页同一网址，这是 1.15.0 修复的安全问题。
 
 - **安装**：按清单核对路径、大小和摘要，限制文件数和大小，解到旁边的目录后整体换入，任何一步失败都不动原包。
-- **登录**：`/web/login` 是 Host 自己的页面（`public/web-login.*`）。`/web/api/pair` 用配对码创建 `platform: web` 的设备，令牌放进 `grokbot_web` Cookie（HttpOnly、SameSite=Strict，https 下加 Secure）。界面文件只提供给已登录的浏览器。
-- **设备接口**：带 Cookie 的请求还必须带 `x-grokbot-web: 1` 且 Origin 同源。其他网站发这个头要经 CORS 预检，Host 从不放行，这是 SameSite 之外的第二道防线。`web` 设备没有桌面执行权限；撤销设备时一并吊销电脑画面票据、推送登记和已打开的连接。
-- **电脑画面**：iframe 直接加载 Host 的 `/vnc/desktop/`、`/vnc/fork/`；Host 在 noVNC 页面插入取自界面包的桥接脚本。
+- **登录**：`/web/login` 是 Host 自己的页面（`public/web-login.*`）。`/web/api/pair` 用配对码创建 `platform: web` 的设备，令牌放进 `grokbot_web` Cookie（HttpOnly、SameSite=Strict，https 下加 Secure）。管理页的「在此浏览器打开」生成一次性、两分钟有效的票据，放在网址的 `#` 片段里交给登录页换取 Cookie，不在管理页网址下设置 Cookie。界面文件只提供给已登录的浏览器；界面 HTML 带 `frame-ancestors`、`object-src 'none'` 和 `base-uri 'self'`。
+- **设备接口**：带 Cookie 的请求还必须带 `x-grokbot-web: 1` 且 Origin 与网页版网址同源。其他网站发这个头要经 CORS 预检，Host 从不放行，这是 SameSite 之外的第二道防线。`web` 设备没有桌面执行权限；撤销设备时一并吊销电脑画面票据、推送登记和已打开的连接。
+- **电脑画面**：iframe 直接加载网页版端口上的 `/vnc/desktop/`、`/vnc/fork/`；Host 在 noVNC 页面插入取自界面包的桥接脚本。
 
 **浏览器层**（`web/client/`）：
 
@@ -307,7 +309,7 @@ node --test "web/tests/*.test.mjs"       # 网页版
 - Host 的网页版路由测试需要先执行 `npm ci --prefix host/server --omit=dev --ignore-scripts`，否则这一项跳过。
 - 在 Git Bash 里运行 Host 测试时，PATH 里的 `/usr/bin/tar` 会让两项部署用例失败，要把 `C:\Windows\System32` 放在前面，使用 Windows 自带的 `tar.exe`。
 - 依赖官方原包的用例默认跳过。把原包放在 Git 忽略的 `inputs/` 并设置环境变量后才会运行：`PROKBOT_ANDROID_TEST_SOURCE`、`PROKBOT_WEB_TEST_SOURCE`（1.1.0 安装包）、`PROKBOT_WEB_TEST_FALLBACK_SOURCE`（0.71.2 安装包）、`PROKBOT_TEST_HOST_ARCHIVE`（Host 原包，未设置时找 `inputs/host/sand-host-bundle-d0a4baa.tgz`）。
-- 网页版浏览器测试：`python web/tests/browser-flows.py <界面包>`，需要 Playwright（`pip install playwright`、`playwright install chromium firefox webkit`），在 8 种设备尺寸上跑登录、对话、看图、通知、返回和退出。改了 `android/client/` 或 `web/` 要用 1.1.0 和 0.71.2 两种界面包各跑一次。
+- 网页版浏览器测试：`python web/tests/browser-flows.py <界面包>`（另外检查管理页的打开票据、旧 `/web` 跳转，以及界面代码读写不了管理接口），需要 Playwright（`pip install playwright`、`playwright install chromium firefox webkit`），在 8 种设备尺寸上跑登录、对话、看图、通知、返回和退出。改了 `android/client/` 或 `web/` 要用 1.1.0 和 0.71.2 两种界面包各跑一次。
 - iOS 测试：
   - `python3 -B -m unittest discover -s ios/tools/hbc98/tests`（在仓库根目录运行，HBC 98 解析与补丁生成单测）；
   - `python3 ios/tests/ios-release.test.py`、`ios-signing.test.py`、`ios-pairing-credentials.test.py`、`ios-app-intents-source.test.py`、`ios-pages-rpc.test.py`（跨平台离线运行）；
