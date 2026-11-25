@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createAttachmentUploads } from '../clients/desktop/attachment-uploads.mjs';
-import { createAttachmentHandlers, createAttachmentMediaResolver } from '../clients/desktop/attachments.mjs';
+import { copyFileName, createAttachmentHandlers, createAttachmentMediaResolver, downloadFileName } from '../clients/desktop/attachments.mjs';
 import { setLocaleSource } from '../clients/desktop/i18n.mjs';
 
 setLocaleSource(() => 'en');
@@ -21,7 +21,7 @@ async function fixture(t, command = unexpected, onProgress) {
   const errors = [];
   const attachments = createAttachmentHandlers({ ...uploads, command,
     chooseDestination: async () => destination, showDownloadError: async () => errors.push('download') });
-  return { ...uploads.handlers, ...attachments, profile, staging, destination, errors };
+  return { ...uploads.handlers, ...attachments, withStaged: uploads.withStaged, command, profile, staging, destination, errors };
 }
 
 test('picked and pasted drafts preview and save locally through both native paths and file URLs', async t => {
@@ -169,6 +169,57 @@ test('discard cancels an in-flight commit before removing its file, including re
   assert.equal(aborted, true);
   await assert.rejects(f.commitStagedAttachments(args));
   assert.deepEqual(await readdir(f.staging), []);
+});
+
+test('several attachments download into one folder without replacing files, as in 1.3.0', async t => {
+  const files = { '/data/a/report.txt': Buffer.from('first report'), '/data/b/report.txt': Buffer.from('second report'),
+    '/data/c/CON.txt': Buffer.from('reserved name') };
+  const f = await fixture(t, async (method, { path: source, offset, length }) => {
+    assert.equal(method, 'readAttachmentChunk');
+    const bytes = files[source];
+    if (!bytes) return null;
+    return { totalSize: bytes.length, resolvedName: path.posix.basename(source), bytesBase64: bytes.subarray(offset, offset + length).toString('base64') };
+  });
+  const folder = path.join(f.profile, 'chosen'), errors = [];
+  await mkdir(folder);
+  await writeFile(path.join(folder, 'report.txt'), 'kept');
+  const staged = await f.stageAttachmentBytes({ filename: 'draft.txt', bytes: Buffer.from('local draft') });
+  let chosen = 0;
+  const download = (downloads, chooseFolder = async () => { chosen++; return folder; }) => createAttachmentHandlers({ command: f.command,
+    withStaged: f.withStaged, chooseFolder, showDownloadError: async () => errors.push('download') }).downloadAttachments({ downloads });
+
+  assert.equal(await download([]), false);
+  assert.equal(chosen, 0, 'nothing to save asks for no folder');
+  assert.equal(await download([{ path: 'file:///data/a/report.txt' }, { path: '/data/b/report.txt' },
+    { path: '/data/c/CON.txt' }, { path: staged.path, suggestedName: 'a:b?.txt' }]), true);
+  assert.equal(chosen, 1);
+  assert.deepEqual(errors, []);
+  assert.equal(await readFile(path.join(folder, 'report.txt'), 'utf8'), 'kept');
+  assert.equal(await readFile(path.join(folder, 'report (2).txt'), 'utf8'), 'first report');
+  assert.equal(await readFile(path.join(folder, 'report (3).txt'), 'utf8'), 'second report');
+  assert.equal(await readFile(path.join(folder, 'CON_.txt'), 'utf8'), 'reserved name');
+  assert.equal(await readFile(path.join(folder, 'a b .txt'), 'utf8'), 'local draft');
+
+  // A missing item is reported once; the others are still saved. Cancelling the folder reports nothing.
+  assert.equal(await download([{ path: '/data/missing.txt' }, { path: '/data/a/report.txt' }]), false);
+  assert.deepEqual(errors, ['download']);
+  assert.equal(await readFile(path.join(folder, 'report (4).txt'), 'utf8'), 'first report');
+  assert.equal(await download([{ path: '/data/a/report.txt' }], async () => null), false);
+  assert.deepEqual(errors, ['download']);
+  assert.equal((await readdir(folder)).some(name => name.endsWith('.tmp')), false);
+  await f.discardStagedAttachment({ path: staged.path });
+});
+
+test('folder download names stay inside the folder on every platform', () => {
+  assert.equal(downloadFileName('../../etc/passwd'), 'passwd');
+  assert.equal(downloadFileName('C:\\Users\\x\\notes.txt'), 'notes.txt');
+  assert.equal(downloadFileName(' ..hidden. '), 'hidden');
+  assert.equal(downloadFileName('a\u0000b|c.txt'), 'a b c.txt');
+  assert.equal(downloadFileName('lpt1'), 'lpt1_');
+  assert.equal(downloadFileName(''), 'download');
+  assert.equal(copyFileName('report.txt', 1), 'report.txt');
+  assert.equal(copyFileName('report.txt', 2), 'report (2).txt');
+  assert.equal(copyFileName('archive', 3), 'archive (3)');
 });
 
 test('a remote chunk failure preserves the destination and removes the partial download', async t => {

@@ -212,6 +212,11 @@ async function showWorkspace() {
         const result = await dialog.showSaveDialog(win, { defaultPath: path.join(app.getPath('downloads'), name) });
         return result.canceled ? null : result.filePath;
       },
+      chooseFolder: async () => {
+        const result = await dialog.showOpenDialog(win, { defaultPath: app.getPath('downloads'),
+          buttonLabel: localText('下载', 'Download'), properties: ['openDirectory', 'createDirectory'] });
+        return result.canceled ? null : result.filePaths[0] || null;
+      },
       showDownloadError: () => dialog.showMessageBox(win, { type: 'error',
         message: localText('无法下载文件，请重试。', 'Could not download this file. Try again.') }),
     }) },

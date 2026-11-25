@@ -26,6 +26,8 @@ export function createConnectorHandlers({ command, openExternal }) {
       ]),
     ),
     getMcpTeamPopularity: () => [],
+    // 1.3.0: no Bitbucket Data Center hosts to link; the official empty answer.
+    getMcpMarketplaceLinkNeeds: () => ({ bitbucketServerHostIds: [] }),
     authenticateMcpServer: async (args) => {
       const result = await command("authenticateMcpServer", args);
       if (result.status === "started") {
