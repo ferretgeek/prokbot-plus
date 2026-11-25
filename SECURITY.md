@@ -8,8 +8,8 @@ Please do not report security issues in public issues. Use **Security → Report
 
 ## 部署时的安全建议
 
-- **管理页不要直接暴露到公网。** 只在局域网用的话，把 `GROKBOT_LISTEN_ADDRESS` 设为服务器的局域网 IP 或 `127.0.0.1`。需要外网访问时，用内置的 Tailcat，或者放在 HTTPS 反向代理后面。
-- **Docker 发布的端口会绕过 ufw 等主机防火墙。** 不要依赖 ufw 挡住 18080 端口。
+- **管理页不要直接暴露到公网。** 只在局域网用的话，把 `GROKBOT_LISTEN_ADDRESS` 设为服务器的局域网 IP 或 `127.0.0.1`。需要外网访问时，用内置的 Tailcat，或者放在 HTTPS 反向代理后面。网页版用单独的端口和网址（默认 18081），反向代理要给它单独一个入口（建议子域名），不要放在管理页网址的路径下。
+- **Docker 发布的端口会绕过 ufw 等主机防火墙。** 不要依赖 ufw 挡住 18080、18081 端口。
 - **管理员密码用随机生成的长密码**（12–128 位）。不要和其他服务共用。
 - **API Key 只保存在 Host 的数据卷里**（`/data/model.env`）。不要写进 `.env` 以外的公开文件，也不要提交到任何仓库。
 - **不再使用的设备**在管理页「设备与通知」里撤销。
@@ -19,8 +19,8 @@ Please do not report security issues in public issues. Use **Security → Report
 
 ## Deployment advice
 
-- Do not expose the admin page directly to the internet. Use LAN-only binding, the built-in Tailcat network, or an HTTPS reverse proxy.
-- Ports published by Docker bypass host firewalls such as ufw.
+- Do not expose the admin page directly to the internet. Use LAN-only binding, the built-in Tailcat network, or an HTTPS reverse proxy. The web client has its own port and address (18081 by default); give it its own reverse proxy entry, preferably a subdomain, never a path under the admin address.
+- Ports published by Docker, such as 18080 and 18081, bypass host firewalls such as ufw.
 - Use a long random admin password, and revoke devices you no longer use.
 - Keep the Android signing key (`~/.grokbot-local/android-signing.json` by default) to yourself. Anyone who has it can build an APK that installs over your app.
 - Keep the local command permission on "Ask" unless you fully trust the model and the Bot.

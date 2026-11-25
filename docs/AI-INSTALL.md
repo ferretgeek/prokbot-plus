@@ -21,7 +21,7 @@
 
 开始前一次问清：新装还是升级？服务器及 SSH 访问方式？客户端从哪访问（本机、专网、HTTPS 域名）？使用哪种模型接口、模型 ID、哪些客户端？密码和 API Key 由用户在管理页输入，不要贴到聊天、工单或日志。已有服务、域名、反向代理和防火墙不默认改动。升级演练、恢复演练和容量测试只在获准的专用非生产实例上做，不使用生产服务、数据卷或凭据。
 
-服务器需 Python 3.10+、Docker Engine 26.0+（API 1.45+）、Docker Compose 2.26.0+，以及 Git 或解压好的 Host 包。这些最低版本是同机部署 `volume subpath` 安全挂载的门禁：旧版 Compose 可能忽略子路径并把整个 `host-data` 挂进执行桌面，所以 `doctor`、`init`、`up`、`update` 和 `recover` 会在写入或启动前拒绝旧版本；`--host-only` 不挂子路径，不受这条限制。同机部署最低 2 核、4 GB 内存、30 GB 可用磁盘，推荐 4 核、8 GB、50 GB；构建缓存和备份另占空间，依据见[首页的服务器要求](../README.md#server-requirements)。ARM 同机还需注册 x86-64 QEMU/binfmt，安装或变更前请机主确认。
+服务器需 Python 3.10+、Docker 和 Compose v2，以及 Git 或解压好的 Host 包。Docker Engine 26.0+（API 1.45+）且 Compose 2.26.0+ 时，同机部署的 `up`、`update`、`recover` 会顺带开启「Bot 读记忆」：把五个记忆目录以只读方式挂进执行桌面，Bot 能查阅、不能修改；版本不够时提示并跳过这一项，部署照常进行。`doctor` 输出的 `memoryMounts` 表示能否开启。旧版 Engine 会忽略子路径、把整个 `host-data`（含模型 Key）挂进执行桌面，所以版本不够时不要手动加 `host/release/compose.memory.yaml`；`--host-only` 不挂这些目录。同机部署最低 2 核、4 GB 内存、30 GB 可用磁盘，推荐 4 核、8 GB、50 GB；构建缓存和备份另占空间，依据见[首页的服务器要求](../README.md#server-requirements)。ARM 同机还需注册 x86-64 QEMU/binfmt，安装或变更前请机主确认。
 
 全新 Ubuntu 24.04 可从系统仓库安装 `docker.io docker-compose-v2 docker-buildx python3 git`，启用 Docker，让部署用户获得使用权限并重新登录。2026-11 实测它的更新源提供 Docker 29.1、Compose 2.40，满足要求；其他发行版的系统仓库可能较旧，改从 Docker 官方仓库安装 Engine、Buildx 和 Compose v2 插件。仅 ARM 同机模式还需 `qemu-user-static binfmt-support`，用 `sudo update-binfmts --enable qemu-x86_64` 启用解释器，再跑 `doctor`，它会核对版本。已有 Docker 的机器只补缺项；加入 `docker` 组相当于授予主机管理权限。
 
@@ -43,7 +43,7 @@ EOF
 
 已有代码不要重复 clone。服务器不能访问 GitHub 时，在本机用 `git archive --format=tar.gz -o prokbot-host-src.tar.gz HEAD host`，只上传这个归档，解到新的源码目录；不要打包工作目录或私密文件。构建仍需访问固定原版来源和依赖源。
 
-`doctor` 成功时输出 JSON：`ok: true`、Host 架构、桌面方式、资源和数据卷。`hostDataVolumes` 包括其他项目名下的 Host 卷。若发现已有实例，先确认原来的 `.env`、项目名和部署方式。仅在明确要升级服务端时才运行 `update`；只更新客户端请跳过服务器步骤。不要换项目名重装。探针失败不会下载大桌面。新装示例：
+`doctor` 成功时输出 JSON：`ok: true`、Host 架构、桌面方式、`memoryMounts`、资源和数据卷；已有 `.env` 时还有网页版地址 `webClientUrl`，并检查管理页和网页版端口没有被其他容器占用。`hostDataVolumes` 包括其他项目名下的 Host 卷。若发现已有实例，先确认原来的 `.env`、项目名和部署方式。仅在明确要升级服务端时才运行 `update`；只更新客户端请跳过服务器步骤。不要换项目名重装。探针失败不会下载大桌面。新装示例：
 
 ```sh
 cd "$HOME/grokbot/src"
@@ -52,10 +52,10 @@ python3 host/deploy.py up < /dev/null
 python3 host/deploy.py status < /dev/null
 ```
 
-`init` 只写一次 `~/grokbot/.env`。默认仅本机 `http://127.0.0.1:18080` 可访问。**远端手机不能用这个回环地址配对。** 在运行 `init` 前选择实际的连接方式：
+`init` 只写一次 `~/grokbot/.env`。默认仅本机 `http://127.0.0.1:18080` 可访问。网页版有自己的端口和网址，和管理页分开：端口默认是 `--port` 加 1（即 18081，`--web-port` 可改），`init` 输出的 `webClientUrl` 就是网页版地址。**远端手机不能用这个回环地址配对。** 在运行 `init` 前选择实际的连接方式：
 
-- 已有 HTTPS 反向代理：给 `init` 加 `--public-url https://bot.example.org`（换成自己的域名）。代理转给服务器回环端口并支持 WebSocket；无需把 18080 开到公网。
-- 专网 / 局域网：给 `init` 加 `--listen 服务器专网IP --public-url http://服务器专网IP:18080`。只绑定实际接口，只允许可信设备访问；不要在公网明文发送配对码或密码。
+- 已有 HTTPS 反向代理：给 `init` 加 `--public-url https://bot.example.org`（换成自己的域名）。代理转给服务器回环端口 18080 并支持 WebSocket；无需把 18080 开到公网。要用网页版，**必须给它单独一个入口**：建议用子域名（例如 `https://web.bot.example.org`）转给回环端口 18081，同样支持 WebSocket，并给 `init` 加 `--web-public-url https://web.bot.example.org`；不能用 `https://bot.example.org/web/` 这样的路径把网页版放在管理页网址下面。
+- 专网 / 局域网：给 `init` 加 `--listen 服务器专网IP --public-url http://服务器专网IP:18080`，网页版就在 `http://服务器专网IP:18081/web/`。只绑定实际接口，只允许可信设备访问；不要在公网明文发送配对码或密码。
 - 独立桌面：新装时用 `python3 host/deploy.py --host-only init`，之后工具会记住模式。自定义实例目录或项目名用 `--home`、`--project`，全局选项在命令前。旧的 `.env` 没有模式标记，独立部署每次都要传 `--host-only` 和原来的项目名。
 
 <a id="91-windows-1011-x64"></a><a id="92-macapple-silicon"></a><a id="94-android-手机"></a>
@@ -75,7 +75,7 @@ python3 host/deploy.py status < /dev/null
 | Linux 桌面（x64 或 ARM64） | Linux 包内 `linux/README.md`。使用官方 1.2.3 `.deb` 原包生成便携目录、`.tar.gz` 和用户级 `install.sh`（无需 root）；保留同包的 `mac/` 和 `host/bin/` 共用文件。Ubuntu 24.04+ 如遇 AppArmor 限制，可运行随包 `sudo …/setup-apparmor.sh`。 |
 | iPhone | iOS 包内 `ios/README.md` 的「签名」。自备 1.27.0 (29519，推荐)、1.26.0 (29388，回退) 或 1.16.0 (23152，回退) 的已解密 IPA；按 `extension-signing.json` 为主应用和三个扩展配置各自的签名。 |
 | Android 9+ | Android 包内 `android/README.md`。默认用官方 Windows 1.1.0 安装包（和 Windows 客户端同一个文件）的界面和项目外壳生成 APK，1.1.0 界面用不了时加 `--version 0.71.2`；不使用官方 Android APK；单独备份自己的签名密钥，升级须使用同一密钥。 |
-| 网页版（任何浏览器） | 网页版包内 `web/README.md`。在电脑上用官方 Windows 1.1.0 安装包（和 Windows、Android 同一个文件）生成界面包，加 `--upload <GROKBOT_PUBLIC_URL>` 直接装到 Host 并启用（管理员密码经 `GROKBOT_ADMIN_PASSWORD` 传入），或在管理页「网页版」上传；1.1.0 界面用不了时加 `--version 0.71.2`。之后在各设备的浏览器打开 `<GROKBOT_PUBLIC_URL>/web/`，输入配对码登录。保留同包的 `android/`、`windows/`、`mac/` 共用代码。界面包含有官方界面，只装在机主自己的 Host 上，不要转发或公开。 |
+| 网页版（任何浏览器） | 网页版包内 `web/README.md`。在电脑上用官方 Windows 1.1.0 安装包（和 Windows、Android 同一个文件）生成界面包，加 `--upload <GROKBOT_PUBLIC_URL>` 直接装到 Host 并启用（管理员密码经 `GROKBOT_ADMIN_PASSWORD` 传入），或在管理页「网页版」上传；1.1.0 界面用不了时加 `--version 0.71.2`。之后在各设备的浏览器打开网页版地址（`init`、`update` 输出的 `Web client`，默认是主机名加 18081 端口；经 HTTPS 反向代理时是 `GROKBOT_WEB_PUBLIC_URL`），输入配对码登录；旧的 `<GROKBOT_PUBLIC_URL>/web/` 会跳转过去。保留同包的 `android/`、`windows/`、`mac/` 共用代码。界面包含有官方界面，只装在机主自己的 Host 上，不要转发或公开。 |
 
 准备原包前看首页的[客户端版本表](../README.md#client-versions)。官方商店和更新通道可能先行发布新版；工具只接受右栏固定输入。Android 外壳有自己的应用版本，和界面版本、最低 Android 系统版本不是一回事。
 
@@ -94,6 +94,8 @@ AI 可以用 `python3 host/deploy.py admin help` 查看同一套管理操作。�
 | 备份 | `python3 host/deploy.py backup < /dev/null`；输出备份目录，只交给机主 |
 | 更新 | Git 安装先 `git pull --ff-only`；发布包解到新源码目录。获取成功后 `python3 host/deploy.py update < /dev/null` |
 | 恢复 | 按下面的[卷恢复清单](#volume-recovery)准备新项目，不覆盖原卷 |
+
+从 1.14.0 及更早的版本更新时注意两点：网页版改到自己的端口（`.env` 里没写 `GROKBOT_WEB_PUBLIC_PORT` 时是 18081，地址按 `GROKBOT_PUBLIC_URL` 的主机名推出），经 HTTPS 反向代理使用网页版的，更新前先给网页版配好单独入口，并在实例 `.env` 加上 `GROKBOT_WEB_PUBLIC_URL`；同一台机器上有多个实例时，各自的 `.env` 要写不同的 `GROKBOT_WEB_PUBLIC_PORT`，端口被占用时工具会在构建前拒绝。另外，1.7.0–1.14.0 的执行桌面以可写方式挂载记忆目录，`update` 会把它们换成只读。
 
 更新先构建候选镜像，再停止原项目、备份卷并切换。启动候选失败时，先检查是否已确认停机；不能把旧镜像直接接回可能已迁移的卷。不要删除卷或运行 `down -v`。
 
@@ -118,5 +120,6 @@ AI 可以用 `python3 host/deploy.py admin help` 查看同一套管理操作。�
 | 管理页通、聊天不通 | 看 `logs` 和管理页模型测试；独立部署检查执行节点连接。`healthy` 不是模型验收 |
 | 聊天通、桌面不通或很慢 | `status` 查 box；独立模式查第二台机器。ARM 模拟很慢时优先分开部署 |
 | 地址不一致 / 配对失败 | 对照 `.env` 和客户端地址；检查反向代理与 WebSocket；重发配对码。遇 429 等一分钟 |
+| 网页版打不开，或从 `/web/` 跳转后连不上 | 网页版用自己的端口（默认 18081）。检查防火墙和反向代理有没有给它入口，`.env` 的 `GROKBOT_WEB_PUBLIC_URL` 是否就是浏览器实际访问的地址；它不能和 `GROKBOT_PUBLIC_URL` 相同 |
 
 客户端特有问题见上表对应平台说明。报告错误时附系统架构、代码版本、步骤和脱敏日志，不附密码、配对码或备份。
