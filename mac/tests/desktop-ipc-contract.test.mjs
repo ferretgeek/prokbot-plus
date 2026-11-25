@@ -56,6 +56,11 @@ test('desktop IPC probes require a trusted window, a declaration and an installe
   assert.deepEqual(await call('listCloudAgentPublishedApps'), { kind: 'off' });
   assert.deepEqual(await call('getCloudAgentPublishProposals'), { kind: 'off' });
   assert.deepEqual(await call('getLocalToolActionGrant'), { granted: false });
+  assert.equal(await call('readDeviceToolPermission', { tool: 'notes' }), 'unavailable');
+  assert.equal(await call('requestDeviceToolPermission', { tool: 'notes' }), 'unavailable');
+  assert.equal(await call('readObsidianVault'), null);
+  assert.equal(await call('chooseObsidianVault'), null);
+  assert.equal(await call('clearObsidianVault'), null);
   assert.deepEqual(await call('readScmConnections'), { github: false, gitlab: false, bitbucket: false, 'azure-devops': false });
   // 1.3.0 main-edge reads answer with the official empty values.
   assert.deepEqual(await call('getBotPage', { agentId: 'a' }), {});

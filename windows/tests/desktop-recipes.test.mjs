@@ -63,6 +63,11 @@ test('every extension source is carried verbatim by a recipe', async () => {
   }
   const updateView = await readFile(new URL('update-view.js', extensions), 'utf8');
   assert.match(updateView, /\(0,\s*x\.jsx\)\(h,\s*\{/, '1.3.0 update-view must render inside settings section h, not presentation hook g');
+  const connectedAppsSpec = SPEC.find(entry => entry.path.includes('chunk-view-Ck6m2dRl.js'));
+  assert.ok(connectedAppsSpec?.edits.some(edit => edit.insertBefore?.includes('platform===`darwin`') && edit.text === 'return null;'),
+    '1.3.0 Connected Apps must hide the unimplemented This Mac device-tool section');
+  assert.ok(connectedAppsSpec?.edits.some(edit => edit.replace?.startsWith('var sa=[`messages`,`mail`') && edit.text === 'var sa=[]'),
+    '1.3.0 Connected Apps must omit unserved local device tools and local Obsidian vault entries');
 });
 
 test('a replacement copies the original bytes it shares at either end', () => {
