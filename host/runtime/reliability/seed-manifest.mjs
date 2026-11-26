@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { readFile, readdir, writeFile } from 'node:fs/promises';
-import { join, relative, resolve, dirname } from 'node:path';
+import { join, relative, resolve, dirname, sep } from 'node:path';
 
 const schema = 'grokbot-release-seed/v2';
 export const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -38,7 +38,8 @@ export async function createSeedManifest(seedDirectory, runtimeDirectory, status
   }
   const runtimeFiles = [], visited = new Set();
   while (roots.length) {
-    const file = roots.pop(), name = relative(runtimeDirectory, file);
+    // Manifest names use "/" so a manifest written on Windows matches the image.
+    const file = roots.pop(), name = relative(runtimeDirectory, file).split(sep).join('/');
     if (name.startsWith('../') || name === '..') throw new Error('Runtime dependency escapes runtime: ' + file);
     if (visited.has(file)) continue;
     visited.add(file);
