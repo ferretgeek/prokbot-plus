@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,7 @@ import { promisify } from 'node:util';
 import { enhancePromptToolsBindings } from '../runtime/recovered-prompt-tools.mjs';
 import {
   DEFAULT_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS,
+  SHELL_ENRICHMENT_FULL_HASH_MAX_BYTES,
   SHELL_ENRICHMENT_PREVIEW_MAX_CHARS,
   SHELL_ENRICHMENT_PREVIEW_MAX_LINES,
   buildExecutableProbeCommand,
@@ -21,8 +22,10 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test('parseInterpreterInvocation skips inline and version flags while resolving scripts after flags', () => {
-  // Flags/inline/stdin modes must never be mistaken for script filenames when workingDirectory is set.
+test('parseInterpreterInvocation skips inline/version flags while keeping unseen-file flags and redirects on stock path', () => {
+  assert.equal(SHELL_ENRICHMENT_FULL_HASH_MAX_BYTES, 256 * 1024 * 1024);
+
+  // Inline / version / heredoc flags with no unseen external file must resolve to no-script-file.
   for (const command of [
     'node -v',
     'node --version',
@@ -34,12 +37,8 @@ test('parseInterpreterInvocation skips inline and version flags while resolving 
     'python3 -c "print(1)"',
     'python3 -c"print(1)"',
     'python3 -uc "print(1)"',
-    'python3 -m json.tool',
-    'python3 -mhttp.server',
     'python3 - <<\'PY\'\nprint(1)\nPY',
     'bash -lc "ls -la"',
-    'bash -lc "npm test"',
-    'sh -c "pnpm build"',
     'sh -c "echo hi"',
     'zsh -s',
     'cd /workspace/work && HOME=/workspace/.toolhome python3 -c "print(1)"',
@@ -49,32 +48,50 @@ test('parseInterpreterInvocation skips inline and version flags while resolving 
     assert.equal(parsed?.kind, 'no-script-file', `Expected no-script-file for: ${command}`);
   }
 
-  // Real scripts after option flags still resolve to the actual script path.
+  // Real scripts after safe option flags resolve to the actual script path.
   assert.deepEqual(
-    parseInterpreterInvocation('python3 -u ./scripts/report.py --flag', '/workspace'),
-    { kind: 'script-after-flags', interpreter: 'python3', path: '/workspace/scripts/report.py' },
+    parseInterpreterInvocation('python3 -u ./scripts/report.py --flag', '/workspace')?.path,
+    '/workspace/scripts/report.py',
   );
   assert.deepEqual(
-    parseInterpreterInvocation('python3 -W ignore /workspace/tools/check.py', '/workspace'),
-    { kind: 'script-after-flags', interpreter: 'python3', path: '/workspace/tools/check.py' },
+    parseInterpreterInvocation('python3 -W ignore /workspace/tools/check.py', '/workspace')?.path,
+    '/workspace/tools/check.py',
   );
   assert.deepEqual(
-    parseInterpreterInvocation('python3 -Wonce -Xtracemalloc ./scripts/report.py', '/workspace'),
-    { kind: 'script-after-flags', interpreter: 'python3', path: '/workspace/scripts/report.py' },
+    parseInterpreterInvocation('python3 -Wonce -Xtracemalloc ./scripts/report.py', '/workspace')?.path,
+    '/workspace/scripts/report.py',
   );
   assert.deepEqual(
-    parseInterpreterInvocation('node --no-warnings --env-file .env scripts/run.mjs', '/workspace'),
-    { kind: 'script-after-flags', interpreter: 'node', path: '/workspace/scripts/run.mjs' },
-  );
-  assert.deepEqual(
-    parseInterpreterInvocation('bash -euo pipefail ./deploy.sh --dry-run', '/workspace'),
-    { kind: 'script-after-flags', interpreter: 'bash', path: '/workspace/deploy.sh' },
+    parseInterpreterInvocation('bash -euo pipefail ./deploy.sh --dry-run', '/workspace')?.path,
+    '/workspace/deploy.sh',
   );
 
-  // Direct script invocations without leading flags and package managers defer to stock logic.
-  assert.equal(parseInterpreterInvocation('python3 ./script.py', '/workspace'), null);
-  assert.equal(parseInterpreterInvocation('npm run build', '/workspace'), null);
-  assert.equal(parseInterpreterInvocation('HOME=/workspace/.toolhome /workspace/bin/demo-cli --status', '/workspace'), null);
+  // Invocations that load unseen external files (preload modules, env files, rcfiles, -m, `< file`)
+  // and direct script invocations or bare interpreters must defer to stock logic (null).
+  for (const command of [
+    'python3 ./script.py',
+    'npm run build',
+    'HOME=/workspace/.toolhome /workspace/bin/demo-cli --status',
+    'bash',
+    'node -r ./preload.js -e "console.log(1)"',
+    'node --require=./preload.js -e "console.log(1)"',
+    'node --import ./hook.mjs -e "console.log(1)"',
+    'node --loader ./loader.mjs -v',
+    'node --experimental-loader ./loader.mjs -v',
+    'node --no-warnings --env-file .env scripts/run.mjs',
+    'node --env-file=.env -e "console.log(process.env.X)"',
+    'node --env-file-if-exists .env -v',
+    'bash --rcfile ./custom.rc -c "echo hi"',
+    'bash --init-file=./custom.rc -c "echo hi"',
+    'sh -s < ./secret.sh',
+    'bash < ./secret.sh',
+    'python3 - < ./secret.py',
+    'python3 -m json.tool',
+    'python3 -mhttp.server',
+    'python3 -um http.server',
+  ]) {
+    assert.equal(parseInterpreterInvocation(command, '/workspace'), null, `Expected null for: ${command}`);
+  }
 });
 
 test('detectBinaryFormat and parseExecutableProbeOutput classify binaries and large text scripts cleanly', () => {
@@ -87,7 +104,7 @@ test('detectBinaryFormat and parseExecutableProbeOutput classify binaries and la
   const elfB64 = Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]).toString('base64');
   const digest = 'a'.repeat(64);
   const elfParsed = parseExecutableProbeOutput(
-    `stat=1:2:278438600:1700000000:1700000000:755\nsize=278438600\nscope=stat-head-tail-64k\nsha256=${digest}\nhead_b64=${elfB64}\n`,
+    `stat=1:2:278438600:1700000000:1700000000:755\nsize=278438600\nscope=full-sha256\nsha256=${digest}\nhead_b64=${elfB64}\n`,
     '/workspace/bin/demo-cli',
   );
   assert.deepEqual(elfParsed, {
@@ -96,9 +113,18 @@ test('detectBinaryFormat and parseExecutableProbeOutput classify binaries and la
     format: 'elf',
     size_bytes: 278438600,
     definition_hash: digest,
-    hash_scope: 'stat-head-tail-64k',
+    hash_scope: 'full-sha256',
     truncated: true,
   });
+
+  // Partial hash scopes are rejected cleanly.
+  assert.equal(
+    parseExecutableProbeOutput(
+      `stat=1:2:278438600:1700000000:1700000000:755\nsize=278438600\nscope=stat-head-tail-64k\nsha256=${digest}\nhead_b64=${elfB64}\n`,
+      '/workspace/bin/demo-cli',
+    ),
+    undefined,
+  );
 
   const manyLines = Array.from({ length: 260 }, (_, i) => `line_${i + 1}`).join('\n');
   const textParsed = parseExecutableProbeOutput(
@@ -113,16 +139,188 @@ test('detectBinaryFormat and parseExecutableProbeOutput classify binaries and la
   assert.ok(textParsed.definition.length <= SHELL_ENRICHMENT_PREVIEW_MAX_CHARS);
 });
 
-test('wrapSandShellAutoReviewTargetEnrichment binds large text scripts and compiled binaries on POSIX while failing closed on missing files', { skip: process.platform === 'win32' }, async t => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'shell-auto-review-bind-'));
+test('wrapSandShellAutoReviewTargetEnrichment preserves stock package-manager checks and binds targets cross-platform', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'shell-auto-review-cross-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
 
-  const bigScriptPath = path.join(dir, 'big_script.py');
+  const bigScriptPosix = '/workspace/big_script.py';
+  const bigScriptReal = path.join(dir, 'big_script.py');
   const bigScriptBody = Array.from({ length: 250 }, (_, i) => `print("step ${i + 1}")`).join('\n') + '\n';
-  await writeFile(bigScriptPath, bigScriptBody, 'utf8');
+  await writeFile(bigScriptReal, bigScriptBody, 'utf8');
+
+  const elfPosix = '/workspace/bin/demo-cli';
+  const elfReal = path.join(dir, 'demo-cli');
+  const elfBytes = Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]), Buffer.alloc(1024, 0x41)]);
+  await writeFile(elfReal, elfBytes);
+
+  const quotedPosix = "/workspace/it's a script.py";
+  const quotedReal = path.join(dir, "it's a script.py");
+  await writeFile(quotedReal, 'print("quoted")\n', 'utf8');
+
+  const fileMap = new Map([
+    [bigScriptPosix, bigScriptReal],
+    [elfPosix, elfReal],
+    [quotedPosix, quotedReal],
+    ['/workspace/small.py', null],
+  ]);
+
+  const probeCmd = buildExecutableProbeCommand(elfPosix);
+  assert.match(probeCmd, /^\/usr\/bin\/env -i PATH=\/usr\/bin:\/bin \/bin\/sh -c '/);
+
+  const shellExecutorResource = Symbol('shellExecutor');
+  const accessor = {
+    get(resource) {
+      assert.equal(resource, shellExecutorResource);
+      return {
+        async execute(_ctx, args) {
+          // Extract targetPath passed as final quoted `$1` argument to `/bin/sh -c ... _ <targetPath>`.
+          const match = / _ '((?:[^']|'\\'')*)'$/.exec(args.command);
+          assert.ok(match, `Unexpected probe command shape: ${args.command}`);
+          const targetPath = match[1].replaceAll("'\\''", "'");
+          const realPath = fileMap.get(targetPath);
+          if (!realPath) {
+            return { result: { case: 'failure', value: { aborted: false, exitCode: 2, stdout: '', stderr: '' } } };
+          }
+          const buf = await readFile(realPath);
+          const info = await stat(realPath);
+          const maxBytesMatch = /\[ "\$sz" -le (\d+) \]/.exec(args.command);
+          if (maxBytesMatch && info.size > Number(maxBytesMatch[1])) {
+            return { result: { case: 'failure', value: { aborted: false, exitCode: 5, stdout: '', stderr: '' } } };
+          }
+          const sha256 = createHash('sha256').update(buf).digest('hex');
+          const headB64 = buf.subarray(0, SHELL_ENRICHMENT_PREVIEW_MAX_CHARS).toString('base64');
+          const stdout = `stat=1:2:${info.size}:1700000000:1700000000:755\nsize=${info.size}\nscope=full-sha256\nsha256=${sha256}\nhead_b64=${headB64}\n`;
+          return { result: { case: 'success', value: { exitCode: 0, stdout, stderr: '' } } };
+        },
+      };
+    },
+  };
+
+  let stockCalls = [];
+  const wrapped = wrapSandShellAutoReviewTargetEnrichment(
+    async (_ctx, args) => {
+      stockCalls.push(args.command);
+      if (/\b(?:npm|pnpm|yarn)\b/.test(args.command)) {
+        return { kind: 'package_script_unresolved', invocation: args.command, approval_binding_unavailable: true };
+      }
+      if (args.command.includes('small.py')) {
+        return { kind: 'executable', path: '/workspace/small.py', definition: 'print(1)', definition_hash: 'b'.repeat(64), truncated: false };
+      }
+      const strippedCmd = args.command.replace(/^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+/, '');
+      const parts = strippedCmd.trim().split(/\s+/);
+      if (parts.length >= 2 && /^(python3|node|bash|sh|zsh)$/.test(parts[0])) {
+        const candidate = parts[1].replace(/^['"]|['"]$/g, '');
+        const resolved = candidate.startsWith('/') ? candidate : path.posix.resolve(args.workingDirectory ?? '/', candidate);
+        return {
+          kind: 'executable',
+          path: resolved,
+          approval_binding_unavailable: true,
+          approval_binding_nonce: 'nonce-1',
+        };
+      }
+      const absMatch = /(\/[^\s'"]+)/.exec(strippedCmd);
+      return {
+        kind: 'executable',
+        path: absMatch ? absMatch[1] : '/workspace/missing.sh',
+        approval_binding_unavailable: true,
+        approval_binding_nonce: 'nonce-2',
+      };
+    },
+    { shellExecutorResource, buildHostShellArgs: args => args },
+  );
+
+  // 1. Stock package-manager rejections MUST NOT be bypassed even when leading command is an interpreter flag.
+  for (const pkgCommand of [
+    'bash -lc "npm test"',
+    'sh -c "pnpm build"',
+    'node -v && npm run x',
+    'python3 -c 1; yarn build',
+  ]) {
+    const res = await wrapped({}, { resourceAccessor: accessor, command: pkgCommand, workingDirectory: '/workspace', toolCallId: 'pkg' });
+    assert.equal(res?.kind, 'package_script_unresolved', `Expected stock package_script_unresolved for: ${pkgCommand}`);
+    assert.equal(res?.approval_binding_unavailable, true);
+  }
+
+  // 2. Interpreter flags clear stock's bogus `<working_directory>/<flag>` executable result.
+  stockCalls = [];
+  assert.equal(await wrapped({}, { resourceAccessor: accessor, command: 'node -v', workingDirectory: '/workspace', toolCallId: 't1' }), undefined);
+  assert.equal(await wrapped({}, { resourceAccessor: accessor, command: 'python3 -c "print(1)"', workingDirectory: '/workspace', toolCallId: 't2' }), undefined);
+  assert.equal(stockCalls.length, 2);
+
+  // 3. Unseen-file flags / redirects keep stock's unavailable marker intact.
+  const preloadRes = await wrapped({}, { resourceAccessor: accessor, command: 'node -r ./preload.js -e "1"', workingDirectory: '/workspace', toolCallId: 't2b' });
+  assert.equal(preloadRes?.approval_binding_unavailable, true);
+  assert.equal(preloadRes?.path, '/workspace/-r');
+
+  // 4. Flag before script resolves script and reuses stock fast-path for small scripts.
+  const smallBound = await wrapped({}, { resourceAccessor: accessor, command: 'python3 -u ./small.py', workingDirectory: '/workspace', toolCallId: 't3' });
+  assert.equal(smallBound.kind, 'executable');
+  assert.equal(smallBound.truncated, false);
+  assert.equal(smallBound.approval_binding_unavailable, undefined);
+
+  // 5. Large text script (>200 lines) binds deterministically with full SHA-256 and preview, and detects tampering.
+  const bigBound1 = await wrapped({}, { resourceAccessor: accessor, command: `python3 ${bigScriptPosix}`, workingDirectory: '/workspace', toolCallId: 't4' });
+  assert.equal(bigBound1.kind, 'executable');
+  assert.equal(bigBound1.approval_binding_unavailable, undefined);
+  assert.equal(bigBound1.truncated, true);
+  assert.equal(bigBound1.definition_hash, createHash('sha256').update(bigScriptBody).digest('hex'));
+
+  await writeFile(bigScriptReal, bigScriptBody + 'print("tampered")\n', 'utf8');
+  const bigBoundTampered = await wrapped({}, { resourceAccessor: accessor, command: `python3 ${bigScriptPosix}`, workingDirectory: '/workspace', toolCallId: 't5' });
+  assert.notEqual(bigBoundTampered.definition_hash, bigBound1.definition_hash);
+
+  // 6. Compiled ELF binary binds deterministically as binary_executable.
+  const elfBound = await wrapped({}, {
+    resourceAccessor: accessor,
+    command: `HOME=/workspace/.toolhome ${elfPosix} --status --output-format text`,
+    workingDirectory: '/workspace',
+    toolCallId: 't6',
+  });
+  assert.equal(elfBound.kind, 'binary_executable');
+  assert.equal(elfBound.format, 'elf');
+  assert.equal(elfBound.size_bytes, elfBytes.length);
+  assert.equal(elfBound.definition_hash, createHash('sha256').update(elfBytes).digest('hex'));
+  assert.equal(elfBound.hash_scope, 'full-sha256');
+  assert.equal(elfBound.approval_binding_unavailable, undefined);
+
+  // 7. Files exceeding fullHashMaxBytes fail closed instead of falling back to partial stat hashing.
+  const wrappedTinyMax = wrapSandShellAutoReviewTargetEnrichment(
+    async () => ({ kind: 'executable', path: elfPosix, approval_binding_unavailable: true, approval_binding_nonce: 'n' }),
+    { shellExecutorResource, buildHostShellArgs: args => args, fullHashMaxBytes: 128 },
+  );
+  const oversized = await wrappedTinyMax({}, { resourceAccessor: accessor, command: `${elfPosix} --version`, workingDirectory: '/workspace', toolCallId: 't7' });
+  assert.equal(oversized.approval_binding_unavailable, true);
+
+  // 8. Script with single quote in filename after flags binds (and missing fails closed).
+  const quotedBound = await wrapped({}, {
+    resourceAccessor: accessor,
+    command: `python3 -u "it's a script.py"`,
+    workingDirectory: '/workspace',
+    toolCallId: 't8',
+  });
+  assert.equal(quotedBound.kind, 'executable');
+  assert.equal(quotedBound.path, quotedPosix);
+  assert.equal(quotedBound.approval_binding_unavailable, undefined);
+
+  const missingAfterFlag = await wrapped({}, {
+    resourceAccessor: accessor,
+    command: `python3 -u "no'such.py"`,
+    workingDirectory: '/workspace',
+    toolCallId: 't9',
+  });
+  assert.equal(missingAfterFlag.approval_binding_unavailable, true);
+
+  // 9. Reject paths containing NUL bytes and invalid fullHashMaxBytes.
+  assert.throws(() => buildExecutableProbeCommand('/tmp/bad\0path'), /Invalid executable path/);
+  assert.throws(() => buildExecutableProbeCommand('/tmp/ok', { fullHashMaxBytes: 0 }), /Invalid fullHashMaxBytes/);
+});
+
+test('POSIX probe command executes cleanly in isolated /usr/bin:/bin environment', { skip: process.platform === 'win32' }, async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'shell-auto-review-posix-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
 
   const elfPath = path.join(dir, 'demo-cli');
-  const elfBytes = Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]), Buffer.alloc(1024, 0x41)]);
+  const elfBytes = Buffer.concat([Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]), Buffer.alloc(512, 0x42)]);
   await writeFile(elfPath, elfBytes);
   await chmod(elfPath, 0o755);
 
@@ -132,14 +330,23 @@ test('wrapSandShellAutoReviewTargetEnrichment binds large text scripts and compi
   const subDirPath = path.join(dir, 'subdir');
   await mkdir(subDirPath);
 
+  // Put a poisoned `sha256sum` / `shasum` on caller PATH to prove the probe ignores it.
+  const evilBin = path.join(dir, 'evil-bin');
+  await mkdir(evilBin);
+  const decoyHasher = path.join(evilBin, 'sha256sum');
+  await writeFile(decoyHasher, '#!/bin/sh\necho "0000000000000000000000000000000000000000000000000000000000000000  -"\n');
+  await chmod(decoyHasher, 0o755);
+
   const shellExecutorResource = Symbol('shellExecutor');
   const accessor = {
-    get(resource) {
-      assert.equal(resource, shellExecutorResource);
+    get() {
       return {
         async execute(_ctx, args) {
           try {
-            const { stdout, stderr } = await execFileAsync('/bin/sh', ['-c', args.command], { cwd: args.workingDirectory });
+            const { stdout, stderr } = await execFileAsync('/bin/sh', ['-c', args.command], {
+              cwd: args.workingDirectory,
+              env: { ...process.env, PATH: `${evilBin}:${process.env.PATH ?? ''}` },
+            });
             return { result: { case: 'success', value: { exitCode: 0, stdout, stderr } } };
           } catch (error) {
             return {
@@ -159,127 +366,35 @@ test('wrapSandShellAutoReviewTargetEnrichment binds large text scripts and compi
     },
   };
 
-  let stockCalls = [];
   const wrapped = wrapSandShellAutoReviewTargetEnrichment(
     async (_ctx, args) => {
-      stockCalls.push(args.command);
-      if (args.command.includes('small.py')) {
-        return { kind: 'executable', path: path.join(dir, 'small.py'), definition: 'print(1)', definition_hash: 'b'.repeat(64), truncated: false };
-      }
-      if (args.command.includes('npm run')) {
-        return { kind: 'package_script_unresolved', invocation: args.command, approval_binding_unavailable: true };
-      }
-      const strippedCmd = args.command.replace(/^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)+/, '');
-      const match = /(\/[^\s'"]+)/.exec(strippedCmd);
-      return {
-        kind: 'executable',
-        path: match ? match[1] : path.join(dir, 'missing.sh'),
-        approval_binding_unavailable: true,
-        approval_binding_nonce: 'nonce-1',
-      };
+      const m = /(\/[^\s'"]+)/.exec(args.command);
+      return { kind: 'executable', path: m ? m[1] : path.join(dir, 'missing.sh'), approval_binding_unavailable: true, approval_binding_nonce: 'n' };
     },
-    {
-      shellExecutorResource,
-      buildHostShellArgs: args => args,
-    },
+    { shellExecutorResource, buildHostShellArgs: args => args },
   );
 
-  // 1. Interpreter flags return undefined without hitting stock enrichment at all
-  stockCalls = [];
-  assert.equal(await wrapped({}, { resourceAccessor: accessor, command: 'node -v', workingDirectory: dir, toolCallId: 't1' }), undefined);
-  assert.equal(await wrapped({}, { resourceAccessor: accessor, command: 'python3 -c "print(1)"', workingDirectory: dir, toolCallId: 't2' }), undefined);
-  assert.equal(stockCalls.length, 0);
-
-  // 2. Flag before script resolves script and reuses stock fast-path for small scripts
-  const smallBound = await wrapped({}, { resourceAccessor: accessor, command: 'python3 -u ./small.py', workingDirectory: dir, toolCallId: 't3' });
-  assert.equal(smallBound.kind, 'executable');
-  assert.equal(smallBound.truncated, false);
-  assert.equal(smallBound.approval_binding_unavailable, undefined);
-
-  // 3. Large text script (>200 lines) binds deterministically with full SHA-256 and preview
-  const bigBound1 = await wrapped({}, { resourceAccessor: accessor, command: `python3 ${bigScriptPath}`, workingDirectory: dir, toolCallId: 't4' });
-  const bigBound2 = await wrapped({}, { resourceAccessor: accessor, command: `python3 ${bigScriptPath}`, workingDirectory: dir, toolCallId: 't5' });
-  assert.equal(bigBound1.kind, 'executable');
-  assert.equal(bigBound1.approval_binding_unavailable, undefined);
-  assert.equal(bigBound1.truncated, true);
-  assert.equal(bigBound1.definition_hash, createHash('sha256').update(bigScriptBody).digest('hex'));
-  assert.deepEqual(bigBound1, bigBound2);
-
-  // 4. Compiled ELF binary (and symlink to it) binds deterministically as binary_executable
-  const elfBound = await wrapped({}, {
-    resourceAccessor: accessor,
-    command: `HOME=/workspace/.toolhome ${linkPath} --status --output-format text`,
-    workingDirectory: dir,
-    toolCallId: 't6',
-  });
+  const elfBound = await wrapped({}, { resourceAccessor: accessor, command: `${linkPath} --status`, workingDirectory: dir, toolCallId: 'p1' });
   assert.equal(elfBound.kind, 'binary_executable');
-  assert.equal(elfBound.format, 'elf');
-  assert.equal(elfBound.size_bytes, elfBytes.length);
   assert.equal(elfBound.definition_hash, createHash('sha256').update(elfBytes).digest('hex'));
-  assert.equal(elfBound.hash_scope, 'full-sha256');
-  assert.equal(elfBound.approval_binding_unavailable, undefined);
 
-  // 5. File mutation between review and execution changes definition_hash (TOCTOU protection)
-  await writeFile(bigScriptPath, bigScriptBody + 'print("tampered")\n', 'utf8');
-  const bigBoundAfterTamper = await wrapped({}, { resourceAccessor: accessor, command: `python3 ${bigScriptPath}`, workingDirectory: dir, toolCallId: 't7' });
-  assert.notEqual(bigBoundAfterTamper.definition_hash, bigBound1.definition_hash);
-
-  // 6. Missing file, directory, and unresolved package scripts still fail closed
-  const missing = await wrapped({}, { resourceAccessor: accessor, command: `${path.join(dir, 'nope.sh')}`, workingDirectory: dir, toolCallId: 't8' });
-  assert.equal(missing.approval_binding_unavailable, true);
-  const dirAttempt = await wrapped({}, { resourceAccessor: accessor, command: `${subDirPath}`, workingDirectory: dir, toolCallId: 't9' });
+  const dirAttempt = await wrapped({}, { resourceAccessor: accessor, command: subDirPath, workingDirectory: dir, toolCallId: 'p2' });
   assert.equal(dirAttempt.approval_binding_unavailable, true);
-  const pkgUnresolved = await wrapped({}, { resourceAccessor: accessor, command: 'npm run build', workingDirectory: dir, toolCallId: 't10' });
-  assert.equal(pkgUnresolved.approval_binding_unavailable, true);
-
-  // 7. Huge binary (>fullHashMaxBytes) binds deterministically via stat-head-tail-64k
-  const wrappedBounded = wrapSandShellAutoReviewTargetEnrichment(
-    async () => ({ kind: 'executable', path: elfPath, approval_binding_unavailable: true, approval_binding_nonce: 'n' }),
-    {
-      shellExecutorResource,
-      buildHostShellArgs: args => args,
-      fullHashMaxBytes: 128,
-      boundedChunkBytes: 64,
-    },
-  );
-  const bounded1 = await wrappedBounded({}, { resourceAccessor: accessor, command: `${elfPath} --version`, workingDirectory: dir, toolCallId: 't11' });
-  const bounded2 = await wrappedBounded({}, { resourceAccessor: accessor, command: `${elfPath} --version`, workingDirectory: dir, toolCallId: 't12' });
-  assert.equal(bounded1.kind, 'binary_executable');
-  assert.equal(bounded1.format, 'elf');
-  assert.equal(bounded1.hash_scope, 'stat-head-tail-64k');
-  assert.equal(bounded1.size_bytes, elfBytes.length);
-  assert.deepEqual(bounded1, bounded2);
-
-  // 8. Script with single quote in filename after flags still binds (and fails closed if missing)
-  const quotedPath = path.join(dir, "it's a script.py");
-  await writeFile(quotedPath, 'print("quoted")\n', 'utf8');
-  const quotedBound = await wrapped({}, {
-    resourceAccessor: accessor,
-    command: `python3 -u "it's a script.py"`,
-    workingDirectory: dir,
-    toolCallId: 't13',
-  });
-  assert.equal(quotedBound.kind, 'executable');
-  assert.equal(quotedBound.path, quotedPath);
-  assert.equal(quotedBound.approval_binding_unavailable, undefined);
-
-  const missingAfterFlag = await wrapped({}, {
-    resourceAccessor: accessor,
-    command: `python3 -u "no'such.py"`,
-    workingDirectory: dir,
-    toolCallId: 't14',
-  });
-  assert.equal(missingAfterFlag.approval_binding_unavailable, true);
-
-  // 9. Reject paths containing NUL bytes
-  assert.throws(() => buildExecutableProbeCommand('/tmp/bad\0path'), /Invalid executable path/);
 });
 
-test('enhancePromptToolsBindings wraps enrichment and raises classifier max attempts with env override', () => {
-  assert.equal(readAutoReviewClassifierMaxAttempts({}), DEFAULT_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS);
-  assert.equal(readAutoReviewClassifierMaxAttempts({ GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS: '3' }), 3);
-  assert.equal(readAutoReviewClassifierMaxAttempts({ GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS: '0' }), 2);
-  assert.equal(readAutoReviewClassifierMaxAttempts({ GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS: '99' }), 2);
+test('enhancePromptToolsBindings wraps enrichment and validates GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS', () => {
+  const warnings = [];
+  assert.equal(readAutoReviewClassifierMaxAttempts({}, DEFAULT_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS, { log: m => warnings.push(m) }), 2);
+  assert.equal(readAutoReviewClassifierMaxAttempts({ GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS: '3' }, 2, { log: m => warnings.push(m) }), 3);
+  assert.equal(warnings.length, 0);
+
+  for (const invalid of ['0', '99', '0x2', '2.0', 'abc']) {
+    assert.equal(
+      readAutoReviewClassifierMaxAttempts({ GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS: invalid }, 2, { log: m => warnings.push(m) }),
+      2,
+    );
+  }
+  assert.equal(warnings.length, 5);
 
   const originalFn = async () => undefined;
   const enhanced = enhancePromptToolsBindings(

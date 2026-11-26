@@ -367,13 +367,15 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
 
 26. Shell auto-review executable binding fix and classifier retry (new).
     - host/runtime/shell-auto-review-enrichment.mjs (new),
-      host/runtime/recovered-prompt-tools.mjs, and
-      host/tests/shell-auto-review-enrichment.test.mjs: prevent stock Shell
-      auto-review target enrichment from misparsing interpreter flags (such as
-      node -v, python3 -c, bash -lc) as script paths, bind large (>200-line /
-      >8 KB) text scripts and compiled binaries (ELF/Mach-O/PE) deterministically
-      by cryptographic digest while failing closed on missing or unreadable
-      paths, and raise SAND_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS from 1 to 2.
+      host/runtime/recovered-prompt-tools.mjs, host/runtime/host-auto-review.mjs,
+      and host/tests/shell-auto-review-enrichment.test.mjs: prevent stock Shell
+      auto-review target enrichment from misparsing safe interpreter flags as
+      script paths while preserving stock package-manager and unseen-file checks,
+      bind large (>200-line / >8 KB) text scripts and compiled binaries
+      (ELF/Mach-O/PE) up to 256 MiB by full-file SHA-256 while having the
+      local classifier block uninspectable targets for explicit user approval,
+      and raise SAND_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS from 1 to 2.
+    - Contributed by @jun9100 (GitHub pull request #25).
 
 Upstream ProkBot changes incorporated
 -------------------------------------

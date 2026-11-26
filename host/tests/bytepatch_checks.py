@@ -114,6 +114,30 @@ class PinnedPatchTests(unittest.TestCase):
                               if b'agentId: host.getConversationId()' in line)
                 self.assertEqual(found, positions)
 
+    def test_prompt_tools_recovery_plan_keeps_auto_review_bindings(self):
+        source = pinned_host_archive()
+        if source is None:
+            self.skipTest('set PROKBOT_TEST_HOST_ARCHIVE to run the pinned Host recipe check')
+        recipes = Path(__file__).resolve().parents[1] / 'recipes' / 'host'
+        for prefix in ('recovered-core__stable', 'release-reliability'):
+            with self.subTest(prefix=prefix):
+                provenance = json.loads(bytepatch.apply(
+                    source, bytepatch.load(recipes / f'{prefix}__prompt-tools-provenance.json.gbp.gz')
+                ).decode('utf-8'))
+                turn_toolset_meta = next(
+                    item for item in provenance.get('modules', [])
+                    if item.get('name') == 'prompt-tools-turn-toolset.mjs'
+                )
+                deps = set(turn_toolset_meta.get('dependencies', []))
+                self.assertIn('buildSandShellAutoReviewTargetEnrichment', deps)
+                self.assertIn('SAND_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS', deps)
+
+                turn_toolset_code = bytepatch.apply(
+                    source, bytepatch.load(recipes / f'{prefix}__prompt-tools-turn-toolset.mjs.gbp.gz')
+                ).decode('utf-8')
+                self.assertIn('buildSandShellAutoReviewTargetEnrichment', turn_toolset_code)
+                self.assertIn('SAND_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS', turn_toolset_code)
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -4,25 +4,28 @@ import path from 'node:path';
 
 export const SHELL_ENRICHMENT_PREVIEW_MAX_CHARS = 8_000;
 export const SHELL_ENRICHMENT_PREVIEW_MAX_LINES = 200;
-export const SHELL_ENRICHMENT_FULL_HASH_MAX_BYTES = 16 * 1024 * 1024;
-export const SHELL_ENRICHMENT_BOUNDED_CHUNK_BYTES = 65_536;
+export const SHELL_ENRICHMENT_FULL_HASH_MAX_BYTES = 256 * 1024 * 1024;
 export const DEFAULT_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS = 2;
 
 const INTERPRETER_PATTERN = /^(python(?:3(?:\.\d+)?)?|node|bash|sh|zsh)(?=\s|$)/;
 
-const PYTHON_INLINE_FLAGS = new Set(['-c', '-m', '-V', '--version', '-h', '--help', '-']);
+const PYTHON_INLINE_FLAGS = new Set(['-c', '-V', '--version', '-h', '--help']);
 const PYTHON_VALUE_FLAGS = new Set(['-W', '-X', '--check-hash-based-pycs']);
 
-const NODE_INLINE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-v', '--version', '-h', '--help', '-']);
-const NODE_VALUE_FLAGS = new Set([
+const NODE_INLINE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-v', '--version', '-h', '--help']);
+const NODE_UNSEEN_FILE_FLAGS = new Set([
   '-r', '--require', '--import', '--loader', '--experimental-loader',
-  '-C', '--conditions', '--env-file', '--env-file-if-exists',
+  '--env-file', '--env-file-if-exists',
+]);
+const NODE_VALUE_FLAGS = new Set([
+  '-C', '--conditions',
   '--max-old-space-size', '--test-name-pattern', '--input-type',
   '--diagnostic-dir', '--redirect-warnings', '--title',
 ]);
 
-const SHELL_INLINE_FLAGS = new Set(['-c', '-s', '--version', '--help', '-']);
-const SHELL_VALUE_FLAGS = new Set(['-o', '+o', '--rcfile', '--init-file']);
+const SHELL_INLINE_FLAGS = new Set(['-c', '--version', '--help']);
+const SHELL_UNSEEN_FILE_FLAGS = new Set(['--rcfile', '--init-file']);
+const SHELL_VALUE_FLAGS = new Set(['-o', '+o']);
 
 export function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -65,29 +68,47 @@ export function stripShellPrefixes(command, workingDirectory) {
   return { command: candidateCommand, workingDirectory: candidateWorkingDirectory };
 }
 
-/** Tokenize the first simple command segment (stopping at unquoted separators/redirections). */
+/**
+ * Tokenize the first simple command segment (stopping at unquoted separators/redirections)
+ * and detect whether stdin is redirected from an external file (`< file`, excluding `<<`/`<<<`).
+ */
 function tokenizeFirstSegment(command) {
   const tokens = [];
+  const rawTokens = [];
   let current = '';
+  let rawCurrent = '';
   let quote = null;
   let escaping = false;
   let hasToken = false;
+  let hasFileInputRedirect = false;
+
+  const flushToken = () => {
+    if (!hasToken) return;
+    tokens.push(current);
+    rawTokens.push(rawCurrent);
+    current = '';
+    rawCurrent = '';
+    hasToken = false;
+  };
 
   for (let index = 0; index < command.length; index += 1) {
     const ch = command[index];
     if (escaping) {
       current += ch;
+      rawCurrent += ch;
       hasToken = true;
       escaping = false;
       continue;
     }
     if (quote === "'") {
+      rawCurrent += ch;
       if (ch === "'") quote = null;
       else current += ch;
       hasToken = true;
       continue;
     }
     if (quote === '"') {
+      rawCurrent += ch;
       if (ch === '"') quote = null;
       else if (ch === '\\' && index + 1 < command.length) {
         escaping = true;
@@ -96,38 +117,51 @@ function tokenizeFirstSegment(command) {
       continue;
     }
     if (ch === '\\') {
+      rawCurrent += ch;
       escaping = true;
       hasToken = true;
       continue;
     }
     if (ch === "'" || ch === '"') {
+      rawCurrent += ch;
       quote = ch;
       hasToken = true;
       continue;
     }
-    if (ch === ';' || ch === '&' || ch === '|' || ch === '\n' || ch === '<' || ch === '>') {
+    if (ch === '<') {
+      if (command[index + 1] !== '<') {
+        hasFileInputRedirect = true;
+      }
+      break;
+    }
+    if (ch === ';' || ch === '&' || ch === '|' || ch === '\n' || ch === '>') {
       break;
     }
     if (/\s/.test(ch)) {
-      if (hasToken) {
-        tokens.push(current);
-        current = '';
-        hasToken = false;
-      }
+      flushToken();
       continue;
     }
     current += ch;
+    rawCurrent += ch;
     hasToken = true;
   }
-  if (hasToken) tokens.push(current);
-  return tokens;
+  flushToken();
+  return { tokens, rawTokens, hasFileInputRedirect };
+}
+
+function hasFlagWithEquals(token, flagSet) {
+  const eq = token.indexOf('=');
+  return eq > 0 && flagSet.has(token.slice(0, eq));
 }
 
 /**
- * Inspect interpreter invocations (python/node/bash/sh/zsh) so option flags such as
- * `-v`, `-V`, `-c`, `-e`, `-m`, `-lc`, or `-` (stdin) are never misparsed as script
- * paths on disk, while real script arguments after flags (e.g. `python3 -u foo.py`)
- * still resolve to the target script path.
+ * Inspect interpreter invocations (python/node/bash/sh/zsh) so inline/version flags such as
+ * `-v`, `-V`, `-c`, `-e`, `-lc`, or inline `-` (heredoc/stdin without `< file`) are not
+ * misparsed as script paths on disk, while real script arguments after safe flags (e.g.
+ * `python3 -u foo.py`) resolve to the target script path. Flags or redirections that load
+ * unseen external files (`-r`, `--require`, `--import`, `--loader`, `--experimental-loader`,
+ * `--env-file`, `--rcfile`, `--init-file`, `python3 -m`, `sh -s < file`, `bash < file`)
+ * return `null` so the stock enrichment decision is preserved unchanged.
  */
 export function parseInterpreterInvocation(command, workingDirectory) {
   const stripped = stripShellPrefixes(command, workingDirectory);
@@ -136,10 +170,11 @@ export function parseInterpreterInvocation(command, workingDirectory) {
   if (!match) return null;
 
   const interpreter = match[1];
-  const tokens = tokenizeFirstSegment(stripped.command);
-  if (tokens.length < 2) return { kind: 'no-script-file', interpreter };
+  const { tokens, rawTokens, hasFileInputRedirect } = tokenizeFirstSegment(stripped.command);
+  if (tokens.length < 2) return null;
 
   const firstArg = tokens[1];
+  const rawFirstArg = rawTokens[1];
   const firstArgIsFlag = firstArg === '-' || firstArg.startsWith('-') ||
     ((interpreter === 'bash' || interpreter === 'sh' || interpreter === 'zsh') && firstArg.startsWith('+'));
   if (!firstArgIsFlag) {
@@ -151,6 +186,13 @@ export function parseInterpreterInvocation(command, workingDirectory) {
   const isNode = interpreter === 'node';
   const isShell = interpreter === 'bash' || interpreter === 'sh' || interpreter === 'zsh';
 
+  const resultMeta = {
+    interpreter,
+    firstArg,
+    rawFirstArg,
+    workingDirectory: stripped.workingDirectory,
+  };
+
   let index = 1;
   while (index < tokens.length) {
     const token = tokens[index];
@@ -159,22 +201,29 @@ export function parseInterpreterInvocation(command, workingDirectory) {
       break;
     }
     if (token === '-') {
-      return { kind: 'no-script-file', interpreter };
+      return hasFileInputRedirect ? null : { kind: 'no-script-file', ...resultMeta };
     }
     if (isPython) {
-      if (PYTHON_INLINE_FLAGS.has(token) || token.startsWith('-c') || token.startsWith('-m')) {
-        return { kind: 'no-script-file', interpreter };
-      }
       if (token.startsWith('-W') || token.startsWith('-X')) {
         index += token.length === 2 ? 2 : 1;
         continue;
       }
-      if (PYTHON_VALUE_FLAGS.has(token)) {
-        index += 2;
+      if (PYTHON_VALUE_FLAGS.has(token) || hasFlagWithEquals(token, PYTHON_VALUE_FLAGS)) {
+        index += PYTHON_VALUE_FLAGS.has(token) ? 2 : 1;
         continue;
       }
-      if (/^-[A-Za-z]+$/.test(token) && /[cmVh]/.test(token.slice(1))) {
-        return { kind: 'no-script-file', interpreter };
+      if (
+        token === '-m' ||
+        token.startsWith('-m') ||
+        (/^-[A-Za-z]+$/.test(token) && token.slice(1).includes('m'))
+      ) {
+        return null;
+      }
+      if (PYTHON_INLINE_FLAGS.has(token) || token.startsWith('-c')) {
+        return { kind: 'no-script-file', ...resultMeta };
+      }
+      if (/^-[A-Za-z]+$/.test(token) && /[cVh]/.test(token.slice(1))) {
+        return { kind: 'no-script-file', ...resultMeta };
       }
       if (token.startsWith('-')) {
         index += 1;
@@ -183,8 +232,11 @@ export function parseInterpreterInvocation(command, workingDirectory) {
       break;
     }
     if (isNode) {
+      if (NODE_UNSEEN_FILE_FLAGS.has(token) || hasFlagWithEquals(token, NODE_UNSEEN_FILE_FLAGS)) {
+        return null;
+      }
       if (NODE_INLINE_FLAGS.has(token) || token.startsWith('--eval=') || token.startsWith('--print=')) {
-        return { kind: 'no-script-file', interpreter };
+        return { kind: 'no-script-file', ...resultMeta };
       }
       if (NODE_VALUE_FLAGS.has(token)) {
         index += 2;
@@ -197,9 +249,17 @@ export function parseInterpreterInvocation(command, workingDirectory) {
       break;
     }
     if (isShell) {
-      if (SHELL_INLINE_FLAGS.has(token)) return { kind: 'no-script-file', interpreter };
-      if (/^-[A-Za-z]+$/.test(token) && /[cs]/.test(token.slice(1))) {
-        return { kind: 'no-script-file', interpreter };
+      if (SHELL_UNSEEN_FILE_FLAGS.has(token) || hasFlagWithEquals(token, SHELL_UNSEEN_FILE_FLAGS)) {
+        return null;
+      }
+      if (SHELL_INLINE_FLAGS.has(token)) {
+        return { kind: 'no-script-file', ...resultMeta };
+      }
+      if (token === '-s' || (/^-[A-Za-z]+$/.test(token) && token.slice(1).includes('s'))) {
+        return hasFileInputRedirect ? null : { kind: 'no-script-file', ...resultMeta };
+      }
+      if (/^-[A-Za-z]+$/.test(token) && token.slice(1).includes('c')) {
+        return { kind: 'no-script-file', ...resultMeta };
       }
       if (SHELL_VALUE_FLAGS.has(token) || /^[-+][A-Za-z]*o$/.test(token)) {
         index += 2;
@@ -214,21 +274,36 @@ export function parseInterpreterInvocation(command, workingDirectory) {
     break;
   }
 
-  if (index >= tokens.length || tokens[index] === '-') {
-    return { kind: 'no-script-file', interpreter };
+  if (index >= tokens.length) {
+    return hasFileInputRedirect ? null : { kind: 'no-script-file', ...resultMeta };
+  }
+  if (tokens[index] === '-') {
+    return hasFileInputRedirect ? null : { kind: 'no-script-file', ...resultMeta };
   }
   const scriptToken = tokens[index];
   if (path.posix.isAbsolute(scriptToken)) {
-    return { kind: 'script-after-flags', interpreter, path: scriptToken };
+    return { kind: 'script-after-flags', ...resultMeta, path: scriptToken };
   }
   if (stripped.workingDirectory === undefined) {
-    return { kind: 'no-script-file', interpreter };
+    return null;
   }
   return {
     kind: 'script-after-flags',
-    interpreter,
+    ...resultMeta,
     path: path.posix.resolve(stripped.workingDirectory, scriptToken),
   };
+}
+
+function isInterpreterFirstFlagPath(stockPath, workingDirectory, firstArg, rawFirstArg) {
+  if (typeof stockPath !== 'string' || typeof workingDirectory !== 'string') return false;
+  const resolvedStock = path.posix.resolve(stockPath);
+  if (typeof firstArg === 'string' && resolvedStock === path.posix.resolve(workingDirectory, firstArg)) {
+    return true;
+  }
+  if (typeof rawFirstArg === 'string' && resolvedStock === path.posix.resolve(workingDirectory, rawFirstArg)) {
+    return true;
+  }
+  return false;
 }
 
 export function detectBinaryFormat(sample) {
@@ -256,31 +331,28 @@ export function detectBinaryFormat(sample) {
 
 export function buildExecutableProbeCommand(
   targetPath,
-  {
-    fullHashMaxBytes = SHELL_ENRICHMENT_FULL_HASH_MAX_BYTES,
-    boundedChunkBytes = SHELL_ENRICHMENT_BOUNDED_CHUNK_BYTES,
-  } = {},
+  { fullHashMaxBytes = SHELL_ENRICHMENT_FULL_HASH_MAX_BYTES } = {},
 ) {
   if (typeof targetPath !== 'string' || targetPath.length === 0 || targetPath.includes('\0')) {
     throw new Error('Invalid executable path for auto-review binding');
   }
-  const quoted = shellSingleQuote(targetPath);
-  return (
-    `p=${quoted}; ` +
-    `[ -f "$p" ] && [ -r "$p" ] || exit 2; ` +
-    `st="$(stat -L -c '%d:%i:%s:%Y:%Z:%a' "$p" 2>/dev/null || stat -L -f '%d:%i:%z:%m:%c:%Lp' "$p" 2>/dev/null)" || exit 3; ` +
-    `sz="$(printf '%s' "$st" | cut -d: -f3)"; ` +
-    `case "$sz" in ''|*[!0-9]*) exit 3 ;; esac; ` +
-    `hasher() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk '{print $1}'; ` +
-    `elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | awk '{print $1}'; ` +
-    `else openssl dgst -sha256 -r | awk '{print $1}'; fi; }; ` +
-    `if [ "$sz" -le ${fullHashMaxBytes} ]; then ` +
-    `scope="full-sha256"; h="$(hasher < "$p")" || exit 4; ` +
-    `else scope="stat-head-tail-64k"; ` +
-    `h="$({ printf '%s\\n' "$st"; head -c ${boundedChunkBytes} "$p"; tail -c ${boundedChunkBytes} "$p"; } | hasher)" || exit 4; fi; ` +
+  if (!Number.isSafeInteger(fullHashMaxBytes) || fullHashMaxBytes <= 0) {
+    throw new Error('Invalid fullHashMaxBytes for auto-review binding');
+  }
+  const innerScript =
+    'p="$1"; ' +
+    '[ -f "$p" ] && [ -r "$p" ] || exit 2; ' +
+    'st="$(stat -L -c \'%d:%i:%s:%Y:%Z:%a\' "$p" 2>/dev/null || stat -L -f \'%d:%i:%z:%m:%c:%Lp\' "$p" 2>/dev/null)" || exit 3; ' +
+    'sz="$(printf \'%s\' "$st" | cut -d: -f3)"; ' +
+    'case "$sz" in \'\'|*[!0-9]*) exit 3 ;; esac; ' +
+    `[ "$sz" -le ${fullHashMaxBytes} ] || exit 5; ` +
+    'hasher() { if command -v sha256sum >/dev/null 2>&1; then sha256sum | awk \'{print $1}\'; ' +
+    'elif command -v shasum >/dev/null 2>&1; then shasum -a 256 | awk \'{print $1}\'; ' +
+    'else openssl dgst -sha256 -r | awk \'{print $1}\'; fi; }; ' +
+    'h="$(hasher < "$p")" || exit 4; ' +
     `b64="$(head -c ${SHELL_ENRICHMENT_PREVIEW_MAX_CHARS} "$p" | base64 | tr -d '\\r\\n')"; ` +
-    `printf 'stat=%s\\nsize=%s\\nscope=%s\\nsha256=%s\\nhead_b64=%s\\n' "$st" "$sz" "$scope" "$h" "$b64"`
-  );
+    'printf \'stat=%s\\nsize=%s\\nscope=full-sha256\\nsha256=%s\\nhead_b64=%s\\n\' "$st" "$sz" "$h" "$b64"';
+  return `/usr/bin/env -i PATH=/usr/bin:/bin /bin/sh -c ${shellSingleQuote(innerScript)} _ ${shellSingleQuote(targetPath)}`;
 }
 
 export function parseExecutableProbeOutput(stdout, targetPath) {
@@ -296,7 +368,7 @@ export function parseExecutableProbeOutput(stdout, targetPath) {
   const headB64 = fields.get('head_b64') ?? '';
   if (!sizeRaw || !/^\d+$/.test(sizeRaw)) return undefined;
   if (!sha256 || !/^[0-9a-f]{64}$/i.test(sha256)) return undefined;
-  if (scope !== 'full-sha256' && scope !== 'stat-head-tail-64k') return undefined;
+  if (scope !== 'full-sha256') return undefined;
 
   const sizeBytes = Number.parseInt(sizeRaw, 10);
   const sample = headB64 ? Buffer.from(headB64, 'base64') : Buffer.alloc(0);
@@ -325,7 +397,6 @@ export function parseExecutableProbeOutput(stdout, targetPath) {
     path: targetPath,
     definition: preview,
     definition_hash: sha256.toLowerCase(),
-    ...(scope !== 'full-sha256' ? { hash_scope: scope } : {}),
     truncated,
   };
 }
@@ -350,7 +421,6 @@ async function probeExecutableBinding(ctx, { resourceAccessor, targetPath, worki
   try {
     const command = buildExecutableProbeCommand(targetPath, {
       fullHashMaxBytes: deps.fullHashMaxBytes ?? SHELL_ENRICHMENT_FULL_HASH_MAX_BYTES,
-      boundedChunkBytes: deps.boundedChunkBytes ?? SHELL_ENRICHMENT_BOUNDED_CHUNK_BYTES,
     });
     const result = await shellExecutor.execute(
       ctx,
@@ -369,61 +439,86 @@ async function probeExecutableBinding(ctx, { resourceAccessor, targetPath, worki
   }
 }
 
-export function readAutoReviewClassifierMaxAttempts(env = process.env, fallback = DEFAULT_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS) {
+export function readAutoReviewClassifierMaxAttempts(
+  env = process.env,
+  fallback = DEFAULT_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS,
+  { log = message => console.warn(message) } = {},
+) {
   const raw = env?.GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS;
-  if (typeof raw !== 'string' || raw.trim() === '') return fallback;
-  const parsed = Number(raw.trim());
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 5) return fallback;
+  if (raw === undefined || (typeof raw === 'string' && raw.trim() === '')) return fallback;
+  if (typeof raw !== 'string' || !/^\d+$/.test(raw.trim())) {
+    log(`[auto-review] ignoring invalid GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS=${JSON.stringify(raw)}; using ${fallback}`);
+    return fallback;
+  }
+  const parsed = Number.parseInt(raw.trim(), 10);
+  if (parsed < 1 || parsed > 5) {
+    log(`[auto-review] ignoring out-of-range GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS=${raw.trim()} (expected 1-5); using ${fallback}`);
+    return fallback;
+  }
   return parsed;
 }
 
 /**
  * Wrap the stock Shell auto-review target enrichment so:
- * 1. Interpreter flags (`node -v`, `python3 -c`, `bash -lc`, `python3 -`, etc.) are not
- *    misparsed as script file paths when `working_directory` is set;
- * 2. Scripts invoked after flags (`python3 -u script.py`) still resolve and bind the script;
- * 3. Large text scripts (>200 lines / >8 KiB) and compiled binaries (ELF/Mach-O/PE) bind
- *    deterministically by file hash instead of tripping a hard `approval_binding_unavailable` veto;
- * 4. Missing, unreadable, or non-regular paths still fail closed with the stock unavailable marker.
+ * 1. Stock enrichment runs first; only when stock returns `kind: "executable"` with
+ *    `approval_binding_unavailable` and `path` matching `working_directory + <firstFlag>`
+ *    do we clear inline/version flags (`node -v`, `python3 -c`, `bash -lc`) or re-bind
+ *    scripts after safe flags (`python3 -u script.py`);
+ * 2. Large text scripts (>200 lines / >8 KiB) and compiled binaries (ELF/Mach-O/PE) up to
+ *    256 MiB bind deterministically by full-file SHA-256 so user approvals remain TOCTOU-bound
+ *    (while the local classifier blocks them for user confirmation rather than auto-allowing);
+ * 3. Files exceeding 256 MiB and missing/unreadable/non-regular paths keep the stock
+ *    `approval_binding_unavailable` result (fail closed).
  */
 export function wrapSandShellAutoReviewTargetEnrichment(originalEnrich, deps = {}) {
   if (typeof originalEnrich !== 'function') return originalEnrich;
   return async function enhancedSandShellAutoReviewTargetEnrichment(ctx, args) {
-    const interpreterTarget = parseInterpreterInvocation(args?.command, args?.workingDirectory);
-    if (interpreterTarget?.kind === 'no-script-file') {
-      return undefined;
-    }
-
-    if (interpreterTarget?.kind === 'script-after-flags') {
-      const targetPath = interpreterTarget.path;
-      if (!targetPath.includes("'")) {
-        const stockAfterFlags = await originalEnrich(ctx, {
-          ...args,
-          command: `${interpreterTarget.interpreter} '${targetPath}'`,
-        });
-        if (stockAfterFlags && stockAfterFlags.approval_binding_unavailable !== true) {
-          return stockAfterFlags;
-        }
-      }
-      const boundAfterFlags = await probeExecutableBinding(
-        ctx,
-        {
-          resourceAccessor: args?.resourceAccessor,
-          targetPath,
-          workingDirectory: args?.workingDirectory,
-          toolCallId: args?.toolCallId,
-        },
-        deps,
-      );
-      return boundAfterFlags ?? {
-        kind: 'executable',
-        path: targetPath,
-        approval_binding_unavailable: true,
-        approval_binding_nonce: randomUUID(),
-      };
-    }
-
     const stock = await originalEnrich(ctx, args);
+    const interpreterTarget = parseInterpreterInvocation(args?.command, args?.workingDirectory);
+    if (
+      interpreterTarget &&
+      stock?.kind === 'executable' &&
+      stock.approval_binding_unavailable === true &&
+      isInterpreterFirstFlagPath(
+        stock.path,
+        interpreterTarget.workingDirectory,
+        interpreterTarget.firstArg,
+        interpreterTarget.rawFirstArg,
+      )
+    ) {
+      if (interpreterTarget.kind === 'no-script-file') {
+        return undefined;
+      }
+      if (interpreterTarget.kind === 'script-after-flags') {
+        const targetPath = interpreterTarget.path;
+        if (!targetPath.includes("'")) {
+          const stockAfterFlags = await originalEnrich(ctx, {
+            ...args,
+            command: `${interpreterTarget.interpreter} '${targetPath}'`,
+          });
+          if (stockAfterFlags && stockAfterFlags.approval_binding_unavailable !== true) {
+            return stockAfterFlags;
+          }
+        }
+        const boundAfterFlags = await probeExecutableBinding(
+          ctx,
+          {
+            resourceAccessor: args?.resourceAccessor,
+            targetPath,
+            workingDirectory: args?.workingDirectory,
+            toolCallId: args?.toolCallId,
+          },
+          deps,
+        );
+        return boundAfterFlags ?? {
+          kind: 'executable',
+          path: targetPath,
+          approval_binding_unavailable: true,
+          approval_binding_nonce: randomUUID(),
+        };
+      }
+    }
+
     if (
       !stock ||
       stock.approval_binding_unavailable !== true ||
