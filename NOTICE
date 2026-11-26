@@ -450,7 +450,7 @@ ProkBot Plus; the adaptations are listed in items 4 and 13 above.
   a2fdb31  only the Host part: start(0) takes an ephemeral web client port;
            its desktop client part is not included yet
 
-ProkBot Plus (unreleased) incorporates these changes from upstream ProkBot
+ProkBot Plus 1.18.0 incorporates these changes from upstream ProkBot
 release v2026.11.26, by the same contributors and under the same license;
 the adaptations are listed in item 28 above.
 
