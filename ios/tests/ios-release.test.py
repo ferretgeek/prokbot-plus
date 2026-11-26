@@ -52,7 +52,11 @@ class ReleaseOutput(unittest.TestCase):
         self.assertEqual(list(self.root.iterdir()), [self.source])
 
     def test_accepts_pinned_fallback_release_and_enforces_per_release_extensions(self):
-        for rel_dir, expected_pair in (('1.26.0', ('1.26.0', '29388')), ('1.16.0', ('1.16.0', '23152'))):
+        for rel_dir, expected_pair in (
+            ('1.27.0', ('1.27.0', '29519')),
+            ('1.26.0', ('1.26.0', '29388')),
+            ('1.16.0', ('1.16.0', '23152')),
+        ):
             fallback_manifest = MANIFEST.parent / rel_dir / 'manifest.json'
             self.assertTrue(fallback_manifest.is_file(), f'{rel_dir} fallback manifest must remain pinned')
             fallback = json.loads(fallback_manifest.read_text(encoding='utf-8'))
@@ -63,12 +67,18 @@ class ReleaseOutput(unittest.TestCase):
             self.refused('Unsupported app version')
         sys.path.insert(0, str(PATCHER.parents[1] / 'patchers' / 'ios'))
         import extensions  # noqa: E402
+        self.assertIn(('1.28.0', '29649'), extensions.EXTENSIONS_BY_RELEASE)
         self.assertIn(('1.27.0', '29519'), extensions.EXTENSIONS_BY_RELEASE)
         self.assertIn(('1.26.0', '29388'), extensions.EXTENSIONS_BY_RELEASE)
         self.assertIn(('1.16.0', '23152'), extensions.EXTENSIONS_BY_RELEASE)
+        self.assertEqual(extensions.WIDGETS_SCHEME_COUNTS_BY_RELEASE[('1.28.0', '29649')], 2)
         self.assertEqual(extensions.WIDGETS_SCHEME_COUNTS_BY_RELEASE[('1.27.0', '29519')], 2)
         self.assertEqual(extensions.WIDGETS_SCHEME_COUNTS_BY_RELEASE[('1.26.0', '29388')], 1)
         self.assertEqual(extensions.WIDGETS_SCHEME_COUNTS_BY_RELEASE[('1.16.0', '23152')], 1)
+        self.assertNotEqual(
+            extensions.EXTENSIONS_BY_RELEASE[('1.28.0', '29649')]['Widgets.appex'][1],
+            extensions.EXTENSIONS_BY_RELEASE[('1.27.0', '29519')]['Widgets.appex'][1],
+        )
         self.assertNotEqual(
             extensions.EXTENSIONS_BY_RELEASE[('1.27.0', '29519')]['Widgets.appex'][1],
             extensions.EXTENSIONS_BY_RELEASE[('1.26.0', '29388')]['Widgets.appex'][1],

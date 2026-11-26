@@ -26,7 +26,7 @@ ProkBot Plus 是 ProkBot（https://gitee.com/ahaduoduoduo/ProkBot ，基于提�
 | `mac/` | `clients/desktop/` 是桌面客户端主进程，**Mac、Windows 和 Linux 共用**，Android 也复制其中三个文件；其中的 `*-settings-extension.js` 没有被代码引用，但它们是 0.71.2 recipe 加进原版设置页的代码的源码，不要当成无用文件删除。`patchers/desktop/` 是 Mac 1.3.0 补丁和原版下载器（含 vendored `node_modules`），`x64/` 是 Intel 版的固定输入和 recipe |
 | `windows/` | Windows 补丁（推荐官方 1.3.0，可回退 1.2.3、1.1.0、0.71.2）、安装器源码（Go）、预编译的 Tailcat 和安装器 stub、`tests/`。`tools/desktop-recipes/` 按 `spec.mjs` 的锚点修改生成 1.3.0 五平台 recipe（`--target windows\|mac-arm64\|mac-x64\|linux-x64\|linux-arm64`），`extensions/` 是 recipe 追加进原版模块的代码的源码；`patchers/desktop/1.2.3/`（由提交 `41c836b` 的 `spec.mjs` 生成）、`1.1.0/`（由提交 `8c1fcd1` 的 `spec.mjs` 生成）与 `0.71.2/` 是回退版本的输入和 recipe，其中 1.1.0 和 0.71.2 同时供 Android 和网页版使用 |
 | `linux/` | Linux 桌面客户端补丁（官方 1.3.0 `x64` / `arm64` `.deb` 原包）：`patchers/desktop/`（含 `arm64/` 输入和 recipe、`deb.mjs`、`launcher.mjs`、`tar.mjs`、`patch.mjs`）、`tests/`，复用 `host/bin/` 的 Linux Tailcat 和 `mac/clients/desktop/` 共用主进程 |
-| `ios/` | iOS 注入库源码、字节码补丁数据、IPA 补丁工具 |
+| `ios/` | iOS 注入库源码（`clients/ios/`）、HBC 98 解析与补丁重建工具（`tools/hbc98/`、`tools/build_ios_128_recipe.py`、`tools/build_ios_127_recipe.py`、`tools/build_ios_126_recipe.py`）、字节码补丁数据（1.28.0 主清单及 1.27.0 / 1.26.0 / 1.16.0 回退）、IPA 补丁工具 |
 | `android/` | `shell/` 是 Android 外壳（Kotlin），`dist/` 是它的预编译 APK；`client/` 是 WebView 里代替 Electron 的桥接；`patchers/` 是生成和签名 APK 的工具；`tests/`。解压官方安装包的代码与 Windows 共用（`windows/patchers/desktop/original.mjs`） |
 | `web/` | 网页版：`client/` 是浏览器层（代替 Android 外壳的原生接口，其余桥接与 `android/client/` 共用），`patchers/` 生成界面包并上传到 Host，`tests/`（含 Playwright 浏览器测试和演示用 Host）。Host 端在 `host/server/web-client.mjs`，登录页在 `host/server/public/web-login.*` |
 | `docs/` | 部署手册、技术文档、README 截图 |

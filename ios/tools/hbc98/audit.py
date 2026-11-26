@@ -48,6 +48,46 @@ _FUNCTION_INDEX_OPERANDS = {
     'CreateAsyncClosureLongIndex': (2,),
 }
 
+# In Hermes FunctionHeaderFlag, bits [0..1] encode ProhibitInvoke:
+# 0 = ProhibitCall (ES6 class constructor; throws TypeError if called without new),
+# 1 = ProhibitConstruct, 2 = ProhibitNone. Callable closure opcodes must never
+# target a function header whose ProhibitInvoke bits are 0 (ProhibitCall).
+_CALLABLE_CLOSURE_OPCODES = frozenset(
+    {
+        'CreateClosure',
+        'CreateClosureLongIndex',
+        'CreateGenerator',
+        'CreateGeneratorLongIndex',
+        'CreateGeneratorClosure',
+        'CreateGeneratorClosureLongIndex',
+        'CreateAsyncClosure',
+        'CreateAsyncClosureLongIndex',
+    }
+)
+
+# Hermes StackFrameLayout::CallerExtraRegistersAtEnd reserves 7 frame header
+# registers plus ``argCount`` outgoing argument registers at the top of the
+# caller's register frame. Call source operands (callee, newTarget, arguments)
+# must stay strictly below ``frame_size - (7 + argCount)`` or the VM overwrites
+# them while writing the outgoing call frame (before invoking the callee).
+CALLER_EXTRA_REGISTERS_AT_END = 7
+
+_FIXED_CALL_ARG_COUNTS = {
+    'Call1': 1,
+    'Call2': 2,
+    'Call3': 3,
+    'Call4': 4,
+}
+_VAR_CALL_ARG_OPERANDS = {
+    'Call': 2,
+    'Construct': 2,
+    'CallWithNewTarget': 3,
+}
+_BUILTIN_CALL_ARG_OPERANDS = {
+    'CallBuiltin': 2,
+    'CallBuiltinLong': 2,
+}
+
 
 def _signed(value: int, bits: int) -> int:
     sign = 1 << (bits - 1)
@@ -170,6 +210,20 @@ def audit_hbc(file: HBCFile) -> HBCAudit:
         instruction_count += len(group.instructions)
 
         by_offset = {instruction.offset: instruction for instruction in group.instructions}
+        group_frames: list[tuple[int, int, int]] = []
+        for fn_index in group.function_indexes:
+            if fn_index < len(file.function_headers):
+                fn_header = file.function_headers[fn_index]
+                if not (fn_header.overflowed and fn_header.effective is None):
+                    if fn_header.effective is not None:
+                        fn_frame_size = fn_header.effective.frame_size
+                        fn_bytecode_size = fn_header.effective.bytecode_size
+                    else:
+                        fn_frame_size = fn_header.frame_size
+                        fn_bytecode_size = fn_header.bytecode_size
+                    if fn_bytecode_size > 0:
+                        group_frames.append((fn_index, fn_frame_size, fn_bytecode_size))
+
         for instruction in group.instructions:
             operand_types = file.opcodes.operands(instruction.name)
             for operand_type, value in zip(operand_types, instruction.operands):
@@ -199,6 +253,44 @@ def audit_hbc(file: HBCFile) -> HBCAudit:
                         bodyEnd=end,
                     )
 
+            arg_count: int | None = None
+            src_regs: tuple[int, ...] = ()
+            if instruction.name in _FIXED_CALL_ARG_COUNTS:
+                arg_count = _FIXED_CALL_ARG_COUNTS[instruction.name]
+                src_regs = instruction.operands[1:]
+            elif instruction.name in _VAR_CALL_ARG_OPERANDS:
+                arg_pos = _VAR_CALL_ARG_OPERANDS[instruction.name]
+                arg_count = instruction.operands[arg_pos]
+                src_regs = instruction.operands[1:arg_pos]
+            elif instruction.name in _BUILTIN_CALL_ARG_OPERANDS:
+                arg_pos = _BUILTIN_CALL_ARG_OPERANDS[instruction.name]
+                arg_count = instruction.operands[arg_pos]
+                src_regs = ()
+            elif instruction.name == 'CallRequire':
+                arg_count = 1
+                src_regs = (instruction.operands[1],)
+
+            if arg_count is not None and group_frames:
+                required_margin = CALLER_EXTRA_REGISTERS_AT_END + arg_count
+                max_src = max(src_regs) if src_regs else -1
+                rel_offset = instruction.offset - group.offset
+                for fn_index, fn_frame_size, fn_bytecode_size in group_frames:
+                    if rel_offset >= fn_bytecode_size:
+                        continue
+                    limit = fn_frame_size - required_margin
+                    if limit < 0 or max_src >= limit:
+                        add_issue(
+                            'call-frame-overlap',
+                            group.offset,
+                            function=fn_index,
+                            instructionOffset=instruction.offset,
+                            opcode=instruction.name,
+                            frameSize=fn_frame_size,
+                            argCount=arg_count,
+                            maxSourceRegister=max_src,
+                            limit=limit,
+                        )
+
             for operand in _STRING_INDEX_OPERANDS.get(instruction.name, ()):
                 string_reference_count += 1
                 value = instruction.operands[operand]
@@ -226,6 +318,26 @@ def audit_hbc(file: HBCFile) -> HBCAudit:
                         value=value,
                         limit=file.header.function_count,
                     )
+                elif (
+                    instruction.name in _CALLABLE_CLOSURE_OPCODES
+                    and value < len(file.function_headers)
+                ):
+                    target_header = file.function_headers[value]
+                    if not (target_header.overflowed and target_header.effective is None):
+                        target_flags = (
+                            target_header.effective.flags
+                            if target_header.effective is not None
+                            else target_header.flags
+                        )
+                        if (target_flags & 0x03) == 0:
+                            add_issue(
+                                'closure-prohibit-call',
+                                group.offset,
+                                instructionOffset=instruction.offset,
+                                opcode=instruction.name,
+                                targetFunction=value,
+                                targetFlags=target_flags,
+                            )
 
         for table in group.switch_tables:
             instruction = by_offset.get(table.instruction_offset)

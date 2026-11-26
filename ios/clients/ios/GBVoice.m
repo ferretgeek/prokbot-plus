@@ -11,11 +11,24 @@
 @property(atomic,assign) BOOL cancelled;
 @end
 @implementation GBVoiceProtocol
++ (BOOL)isVoiceStatusRequest:(NSURLRequest *)request {
+  return [request.HTTPMethod isEqual:@"GET"] &&
+    [request.URL.host.lowercaseString isEqual:@"local.voice"] &&
+    [request.URL.path isEqual:@"/local/voice/status"];
+}
 + (BOOL)canInitWithRequest:(NSURLRequest *)request {
+  if ([self isVoiceStatusRequest:request]) return YES;
   return [request.HTTPMethod isEqual:@"POST"] &&
     [request.URL.path isEqual:@"/aiserver.v1.GrokBotService/MintSandVoiceCallSecret"];
 }
 + (NSURLRequest *)canonicalRequestForRequest:(NSURLRequest *)request { return request; }
+- (void)finishJSON:(NSData *)body status:(NSInteger)status {
+  NSHTTPURLResponse *original = [[NSHTTPURLResponse alloc] initWithURL:self.request.URL statusCode:status
+    HTTPVersion:@"HTTP/1.1" headerFields:@{@"Content-Type":@"application/json", @"Cache-Control":@"no-store"}];
+  [self.client URLProtocol:self didReceiveResponse:original cacheStoragePolicy:NSURLCacheStorageNotAllowed];
+  if (body.length) [self.client URLProtocol:self didLoadData:body];
+  [self.client URLProtocolDidFinishLoading:self];
+}
 - (void)fail:(NSString *)message code:(NSInteger)code {
   [self.client URLProtocol:self didFailWithError:[NSError errorWithDomain:@"GrokBotVoice" code:code
     userInfo:@{NSLocalizedDescriptionKey:message}]];
@@ -23,6 +36,42 @@
 - (void)startLoading {
   GBConnection *connection = GBConnection.shared;
   NSString *serverURL = connection.serverURL, *token = connection.deviceToken;
+  if ([GBVoiceProtocol isVoiceStatusRequest:self.request]) {
+    NSData *disabledBody = [@"{\"enabled\":false}" dataUsingEncoding:NSUTF8StringEncoding];
+    NSURL *statusURL = (serverURL.length && token.length)
+      ? [NSURL URLWithString:[serverURL stringByAppendingString:@"/local/voice/status"]]
+      : nil;
+    if (!statusURL) {
+      [self finishJSON:disabledBody status:200];
+      return;
+    }
+    NSMutableURLRequest *statusReq = [NSMutableURLRequest requestWithURL:statusURL];
+    statusReq.HTTPMethod = @"GET";
+    statusReq.timeoutInterval = 15;
+    statusReq.allHTTPHeaderFields = @{
+      @"Accept":@"application/json",
+      @"Authorization":[@"Bearer " stringByAppendingString:token]
+    };
+    self.task = [GBHTTPSession() dataTaskWithRequest:statusReq completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+      if (self.cancelled) return;
+      // Conservatively fall back to disabled on both Host errors and explicit
+      // enabled:false so the call button stays hidden unless Host confirms ready.
+      BOOL enabled = NO;
+      if (!error && [response isKindOfClass:NSHTTPURLResponse.class]) {
+        NSHTTPURLResponse *http = (NSHTTPURLResponse *)response;
+        if (http.statusCode >= 200 && http.statusCode < 300 && data.length && data.length <= 4096) {
+          id parsed = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+          if ([parsed isKindOfClass:NSDictionary.class] && [parsed[@"enabled"] isKindOfClass:NSNumber.class])
+            enabled = [parsed[@"enabled"] boolValue];
+        }
+      }
+      GBDiagnosticsEvent(@"voice.status.response", @{@"enabled":@(enabled)});
+      NSData *reply = [(enabled ? @"{\"enabled\":true}" : @"{\"enabled\":false}") dataUsingEncoding:NSUTF8StringEncoding];
+      [self finishJSON:reply status:200];
+    }];
+    [self.task resume];
+    return;
+  }
   if (!serverURL.length || !token.length) {
     [self fail:GBL(@"请先连接 Host。", @"Connect to Host first.") code:401]; return;
   }

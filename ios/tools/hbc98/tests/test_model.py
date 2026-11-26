@@ -443,6 +443,265 @@ class HBC98ModelTests(unittest.TestCase):
             any(issue['kind'] == 'metadata-mismatch' for issue in audit.issues)
         )
 
+    def test_unified_audit_reports_prohibit_call_closure_target(self) -> None:
+        file = HBCFile.parse(_small_fixture(b'\x00'))
+        caller_body = (
+            _instruction('LoadConstUndefined', 0)
+            + _instruction('CreateClosure', 1, 0, 1)
+            + _instruction('Ret', 1)
+        )
+        callee_body = _instruction('LoadConstUndefined', 0) + _instruction('Ret', 0)
+        caller_meta = replace(_small_metadata(), frame_size=2, flags=0x06)
+        prohibit_call_meta = replace(_small_metadata(), frame_size=1, flags=0x00)
+        bad_target = HBCFile.parse(
+            file.write(
+                replacements={0: FunctionEdit(body=caller_body, metadata=caller_meta)},
+                additions=(NewFunction(body=callee_body, metadata=prohibit_call_meta),),
+            )
+        )
+        bad_audit = audit_hbc(bad_target)
+        self.assertFalse(bad_audit.ok)
+        self.assertTrue(
+            any(issue['kind'] == 'closure-prohibit-call' for issue in bad_audit.issues)
+        )
+
+        callable_meta = replace(prohibit_call_meta, flags=0x05)
+        good_target = HBCFile.parse(
+            file.write(
+                replacements={0: FunctionEdit(body=caller_body, metadata=caller_meta)},
+                additions=(NewFunction(body=callee_body, metadata=callable_meta),),
+            )
+        )
+        good_audit = audit_hbc(good_target)
+        self.assertFalse(
+            any(issue['kind'] == 'closure-prohibit-call' for issue in good_audit.issues)
+        )
+
+    def test_unified_audit_allows_create_base_class_on_prohibit_call_constructor(self) -> None:
+        file = HBCFile.parse(_small_fixture(b'\x00'))
+        caller_body = (
+            _instruction('LoadConstUndefined', 0)
+            + _instruction('CreateBaseClass', 1, 2, 0, 1)
+            + _instruction('Ret', 1)
+        )
+        callee_body = _instruction('LoadConstUndefined', 0) + _instruction('Ret', 0)
+        caller_meta = replace(_small_metadata(), frame_size=3, flags=0x06)
+        prohibit_call_meta = replace(_small_metadata(), frame_size=1, flags=0x00)
+        target = HBCFile.parse(
+            file.write(
+                replacements={0: FunctionEdit(body=caller_body, metadata=caller_meta)},
+                additions=(NewFunction(body=callee_body, metadata=prohibit_call_meta),),
+            )
+        )
+        audit = audit_hbc(target)
+        self.assertFalse(
+            any(issue['kind'] == 'closure-prohibit-call' for issue in audit.issues)
+        )
+        self.assertEqual(
+            {issue['kind'] for issue in audit.issues},
+            {'function-name-index'},
+        )
+
+    def test_unified_audit_skips_missing_overflow_info_and_short_header_table(self) -> None:
+        file = HBCFile.parse(_small_fixture(b'\x00'))
+        caller_body = (
+            _instruction('LoadConstUndefined', 0)
+            + _instruction('CreateClosure', 1, 0, 1)
+            + _instruction('Ret', 1)
+        )
+        callee_body = _instruction('LoadConstUndefined', 0) + _instruction('Ret', 0)
+        caller_meta = replace(_small_metadata(), frame_size=2, flags=0x06)
+        callable_meta = replace(_small_metadata(), frame_size=1, flags=0x05)
+        base_target = HBCFile.parse(
+            file.write(
+                replacements={0: FunctionEdit(body=caller_body, metadata=caller_meta)},
+                additions=(NewFunction(body=callee_body, metadata=callable_meta),),
+            )
+        )
+
+        # Missing overflow FunctionInfo leaves flags=OVERFLOWED (0x20), whose low bits are 0.
+        # audit_hbc must not false-positive closure-prohibit-call on it.
+        missing_info_header = replace(
+            base_target.function_headers[1],
+            flags=OVERFLOWED,
+            full_header=None,
+            full_header_offset=base_target.body_start,
+        )
+        missing_info_file = replace(
+            base_target,
+            function_headers=(base_target.function_headers[0], missing_info_header),
+        )
+        missing_info_audit = audit_hbc(missing_info_file)
+        self.assertFalse(
+            any(issue['kind'] == 'closure-prohibit-call' for issue in missing_info_audit.issues)
+        )
+        self.assertTrue(
+            any(issue['kind'] == 'function-info-missing' for issue in missing_info_audit.issues)
+        )
+
+        # Declared function_count > len(function_headers) must not raise IndexError.
+        caller_to_missing = HBCFile.parse(
+            file.write(
+                replacements={
+                    0: FunctionEdit(
+                        body=(
+                            _instruction('LoadConstUndefined', 0)
+                            + _instruction('CreateClosure', 1, 0, 2)
+                            + _instruction('Ret', 1)
+                        ),
+                        metadata=caller_meta,
+                    )
+                },
+                additions=(NewFunction(body=callee_body, metadata=callable_meta),),
+            )
+        )
+        short_headers_file = replace(
+            caller_to_missing,
+            header=replace(caller_to_missing.header, function_count=3),
+        )
+        short_audit = audit_hbc(short_headers_file)
+        self.assertTrue(any(issue['kind'] == 'function-count' for issue in short_audit.issues))
+        self.assertFalse(
+            any(issue['kind'] == 'closure-prohibit-call' for issue in short_audit.issues)
+        )
+
+    def test_unified_audit_reports_call_frame_overlap(self) -> None:
+        file = HBCFile.parse(_small_fixture(b'\x00'))
+
+        # Repro of fn#13806 crash: Call1(5, 6, 5) in frame_size=14 leaves limit=6,
+        # so callee register r6 overlaps ThisArg (frame_size - 8 == 6).
+        bad_call1_body = (
+            _instruction('LoadConstUndefined', 5)
+            + _instruction('Call1', 5, 6, 5)
+            + _instruction('Ret', 5)
+        )
+        meta14 = replace(_small_metadata(), frame_size=14, flags=0x06)
+        bad_call1 = HBCFile.parse(
+            file.write(replacements={0: FunctionEdit(body=bad_call1_body, metadata=meta14)})
+        )
+        bad_audit = audit_hbc(bad_call1)
+        overlap_issues = [
+            issue for issue in bad_audit.issues if issue['kind'] == 'call-frame-overlap'
+        ]
+        self.assertEqual(len(overlap_issues), 1)
+        self.assertEqual(overlap_issues[0]['opcode'], 'Call1')
+        self.assertEqual(overlap_issues[0]['limit'], 6)
+        self.assertEqual(overlap_issues[0]['maxSourceRegister'], 6)
+
+        # Sources strictly below limit (r3, r4 < 6) pass even when dst (r6) == limit.
+        good_call1_body = (
+            _instruction('LoadConstUndefined', 3)
+            + _instruction('Call1', 6, 4, 3)
+            + _instruction('Ret', 6)
+        )
+        good_call1 = HBCFile.parse(
+            file.write(replacements={0: FunctionEdit(body=good_call1_body, metadata=meta14)})
+        )
+        self.assertFalse(
+            any(issue['kind'] == 'call-frame-overlap' for issue in audit_hbc(good_call1).issues)
+        )
+
+        # Call3(5, 7, 4, 6, 0) fails in frame_size=16 (limit=6) and passes in frame_size=24 (limit=14).
+        call3_body = (
+            _instruction('Call3', 5, 7, 4, 6, 0)
+            + _instruction('Ret', 5)
+        )
+        bad_call3 = HBCFile.parse(
+            file.write(
+                replacements={
+                    0: FunctionEdit(
+                        body=call3_body,
+                        metadata=replace(_small_metadata(), frame_size=16, flags=0x05),
+                    )
+                }
+            )
+        )
+        self.assertTrue(
+            any(issue['kind'] == 'call-frame-overlap' for issue in audit_hbc(bad_call3).issues)
+        )
+        good_call3 = HBCFile.parse(
+            file.write(
+                replacements={
+                    0: FunctionEdit(
+                        body=call3_body,
+                        metadata=replace(_small_metadata(), frame_size=24, flags=0x05),
+                    )
+                }
+            )
+        )
+        self.assertFalse(
+            any(issue['kind'] == 'call-frame-overlap' for issue in audit_hbc(good_call3).issues)
+        )
+
+        # Vararg Call(dst, callee, argCount): frame_size=23, argCount=5 => limit=11.
+        good_varcall = HBCFile.parse(
+            file.write(
+                replacements={
+                    0: FunctionEdit(
+                        body=_instruction('Call', 14, 10, 5) + _instruction('Ret', 14),
+                        metadata=replace(_small_metadata(), frame_size=23, flags=0x06),
+                    )
+                }
+            )
+        )
+        self.assertFalse(
+            any(issue['kind'] == 'call-frame-overlap' for issue in audit_hbc(good_varcall).issues)
+        )
+        bad_varcall = HBCFile.parse(
+            file.write(
+                replacements={
+                    0: FunctionEdit(
+                        body=_instruction('Call', 14, 11, 5) + _instruction('Ret', 14),
+                        metadata=replace(_small_metadata(), frame_size=23, flags=0x06),
+                    )
+                }
+            )
+        )
+        self.assertTrue(
+            any(issue['kind'] == 'call-frame-overlap' for issue in audit_hbc(bad_varcall).issues)
+        )
+
+        # Missing overflow FunctionInfo must not false-positive call-frame-overlap.
+        missing_info_header = replace(
+            good_call1.function_headers[0],
+            flags=OVERFLOWED,
+            full_header=None,
+            full_header_offset=good_call1.body_start,
+        )
+        missing_info_file = replace(good_call1, function_headers=(missing_info_header,))
+        self.assertFalse(
+            any(
+                issue['kind'] == 'call-frame-overlap'
+                for issue in audit_hbc(missing_info_file).issues
+            )
+        )
+
+        # A zero-byte aliased function sharing a BodyGroup offset (like stock Hermes
+        # empty headers) must not false-positive against instructions of the non-empty
+        # sibling function at the same offset.
+        zero_alias_header = replace(
+            good_call1.function_headers[0],
+            index=1,
+            bytecode_size=0,
+            frame_size=0,
+            flags=0x02,
+            full_header=None,
+            full_header_offset=None,
+        )
+        aliased_group = replace(good_call1.body_groups[0], function_indexes=(0, 1))
+        aliased_file = replace(
+            good_call1,
+            header=replace(good_call1.header, function_count=2),
+            function_headers=(good_call1.function_headers[0], zero_alias_header),
+            body_groups=(aliased_group,),
+        )
+        self.assertFalse(
+            any(
+                issue['kind'] == 'call-frame-overlap'
+                for issue in audit_hbc(aliased_file).issues
+            )
+        )
+
     def test_metadata_audit_reports_decode_error(self) -> None:
         file = HBCFile.parse(_small_fixture(b'\xff'), strict=True, allow_legacy=True)
         issues = hbc_metadata_issues(file)

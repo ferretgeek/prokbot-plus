@@ -18,17 +18,26 @@ from ios.tools.build_ios_127_recipe import (
     NATIVE_PLUGIN_ENTRIES_OFFSET as NATIVE_PLUGIN_ENTRIES_OFFSET_127,
     assert_native_plugin_entries_hidden as assert_native_plugin_entries_hidden_127,
 )
+from ios.tools.build_ios_128_recipe import (
+    EXPECTED_GATEWAY_128_SHA256,
+    NATIVE_PLUGIN_ENTRIES_FUNCTION as NATIVE_PLUGIN_ENTRIES_128,
+    NATIVE_PLUGIN_ENTRIES_OFFSET as NATIVE_PLUGIN_ENTRIES_OFFSET_128,
+    assert_native_plugin_entries_hidden as assert_native_plugin_entries_hidden_128,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 RECIPES_DIR = REPO_ROOT / 'ios' / 'recipes' / 'ios'
+RECIPES_127_DIR = RECIPES_DIR / '1.27.0'
 RECIPES_126_DIR = RECIPES_DIR / '1.26.0'
 
 
 class NativePluginEntriesPatchTests(unittest.TestCase):
     def test_constants_and_assertion_helper(self):
+        self.assertEqual(NATIVE_PLUGIN_ENTRIES_128, 56807)
         self.assertEqual(NATIVE_PLUGIN_ENTRIES_127, 45655)
         self.assertEqual(NATIVE_PLUGIN_ENTRIES_126, 52198)
         self.assertEqual(EMPTY_ARRAY_STUB, bytes.fromhex('080000007600'))
+        self.assertTrue(callable(assert_native_plugin_entries_hidden_128))
         self.assertTrue(callable(assert_native_plugin_entries_hidden_127))
         self.assertTrue(callable(assert_native_plugin_entries_hidden_126))
 
@@ -66,11 +75,19 @@ class NativePluginEntriesPatchTests(unittest.TestCase):
                 target_offset += len(raw)
         self.assertEqual(found, expected_add_bytes)
 
-    def test_committed_127_gateway_recipe_hides_native_plugin_entries(self):
+    def test_committed_128_gateway_recipe_hides_native_plugin_entries(self):
+        self._assert_recipe_hides_native_plugin_entries(
+            RECIPES_DIR,
+            EXPECTED_GATEWAY_128_SHA256,
+            NATIVE_PLUGIN_ENTRIES_OFFSET_128,
+            EMPTY_ARRAY_STUB,
+        )
+
+    def test_committed_127_fallback_gateway_recipe_hides_native_plugin_entries(self):
         # In 1.27.0 byte 6 of stock useNativePluginEntries is already 0x00
         # (LoadFromEnvironment 5, 4, 0), so bytepatch reuses it in the next COPY.
         self._assert_recipe_hides_native_plugin_entries(
-            RECIPES_DIR,
+            RECIPES_127_DIR,
             EXPECTED_GATEWAY_127_SHA256,
             NATIVE_PLUGIN_ENTRIES_OFFSET_127,
             EMPTY_ARRAY_STUB,
