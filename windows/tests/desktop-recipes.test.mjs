@@ -63,6 +63,11 @@ test('every extension source is carried verbatim by a recipe', async () => {
   }
   const updateView = await readFile(new URL('update-view.js', extensions), 'utf8');
   assert.match(updateView, /\(0,\s*x\.jsx\)\(h,\s*\{/, '1.3.0 update-view must render inside settings section h, not presentation hook g');
+  const computerView = await readFile(new URL('computer-view.js', extensions), 'utf8');
+  assert.match(computerView, /anchorId:\s*'bot-computer'/, '1.3.0 computer-view must preserve official bot-computer anchorId');
+  const computerSpec = SPEC.find(entry => entry.path.includes('chunk-view-_JwVsmv_.js'));
+  assert.ok(computerSpec?.edits.some(edit => edit.text?.includes('children:[i,a,o,(0,Q.jsx)(GrokRemoteDesktop,{})]')),
+    '1.3.0 Settings > Computer must keep official section order (Your computer at top, Bot computer at bottom)');
   const connectedAppsSpec = SPEC.find(entry => entry.path.includes('chunk-view-Ck6m2dRl.js'));
   assert.ok(connectedAppsSpec?.edits.some(edit => edit.insertBefore?.includes('platform===`darwin`') && edit.text === 'return null;'),
     '1.3.0 Connected Apps must hide the unimplemented This Mac device-tool section');

@@ -1,7 +1,8 @@
 import { hostname } from 'node:os';
 import { subscribe } from './streams.mjs';
 
-export function startNativeProvider({ config, computer, onUnauthorized }) {
+export function startNativeProvider({ config, computer, onUnauthorized, label = hostname }) {
+  const resolveLabel = () => (typeof label === 'function' ? label() : label) || hostname();
   const abort = new AbortController(), calls = new Map();
   let providerId, heartbeat;
   const post = async (frames, session = providerId) => {
@@ -18,7 +19,7 @@ export function startNativeProvider({ config, computer, onUnauthorized }) {
   const accept = async ({ data }) => {
     if (data.kind === 'welcome') {
       clear(); providerId = data.providerId;
-      await post([{ kind: 'hello', label: hostname(), tools: computer.tools }]);
+      await post([{ kind: 'hello', label: resolveLabel(), tools: computer.tools }]);
       heartbeat = setInterval(() => post([{ kind: 'ping' }]).catch(() => {}), 10000); heartbeat.unref();
     } else if (data.kind === 'cancel') calls.get(data.requestId)?.abort();
     else if (data.kind === 'call' && !calls.has(data.requestId)) {
@@ -38,5 +39,8 @@ export function startNativeProvider({ config, computer, onUnauthorized }) {
     onUnauthorized: () => { clear(); computer.close(); onUnauthorized?.(); },
     onDisconnected: () => { clear(); computer.disconnected?.(); },
   });
-  return { close() { abort.abort(); clear(); computer.close(); } };
+  return {
+    close() { abort.abort(); clear(); computer.close(); },
+    updateLabel() { return post([{ kind: 'hello', label: resolveLabel(), tools: computer.tools }]).catch(() => {}); },
+  };
 }

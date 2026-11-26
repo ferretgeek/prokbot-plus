@@ -4,6 +4,10 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## 未发布 / Unreleased
+
+- **桌面端「设置 → 电脑」恢复官方区块顺序并对接多电脑列表 / Restore official Settings > Computer section order and wire the multi-computer roster**：`GrokRemoteDesktop` 从页面顶部移回官方底部的 `bot-computer` 槽位（恢复深链接锚点，`your-computer` 保持在顶部）；`local-exec.mjs` 的 `getSandMachines` 补齐 1.3.0 所需的 `connected` 状态并合并 Host `/local/computers` 返回的其他电脑，同时实现本机重命名（`updateSandMachineLabel`，过滤控制字符并立即重新注册生效）、`removeSandMachine` 拒绝应答，并拒绝在本地修改其他电脑的名称或权限，重生成五平台 1.3.0 recipe。Moved `GrokRemoteDesktop` back to the official bottom `bot-computer` slot in `Settings > Computer` (keeping `your-computer` at the top and restoring deep-link anchors), wired `getSandMachines` in `local-exec.mjs` with 1.3.0's `connected` flag and paired `/local/computers` entries alongside `updateSandMachineLabel` (filtering control characters and re-registering immediately), `removeSandMachine` refusal handling, and rejections for renaming or changing permissions on other computers, and regenerated all five 1.3.0 desktop recipe sets.
+
 ## ProkBot Plus 1.16.1 (2026-11-26)
 
 桌面客户端（官方 1.3.0）的三处修补，由 jun9100 贡献（#21、#23）。用新的 Windows、Mac 或 Linux 包重新生成客户端后生效；用 1.1.0 界面的 Android 和网页版也有一处相同的修补，重新生成后生效。Host 和 iOS 不变。Three fixes for the desktop clients on the official 1.3.0, contributed by jun9100 (#21, #23). Rebuild the client with the new Windows, Mac or Linux package to get them; Android and the web client on the 1.1.0 interface get one of the same fixes after a rebuild. The Host and iOS are unchanged.
