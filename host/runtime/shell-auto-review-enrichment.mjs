@@ -17,6 +17,9 @@ const DANGEROUS_ENV_EXACT = new Set([
   'BASH_ENV',
   'ENV',
   'ZDOTDIR',
+  'HOME',
+  'XDG_CONFIG_HOME',
+  'PS4',
   'SHELLOPTS',
   'BASHOPTS',
 ]);
@@ -34,13 +37,13 @@ function isDangerousEnvVar(name) {
 
 // Strict allowlists per interpreter: any flag not listed here fails closed (returns null)
 // so unknown value-taking flags or unseen-file loaders never misbind a decoy argument.
-const PYTHON_BOOL_SHORT_FLAGS = new Set(['b', 'B', 'd', 'E', 'I', 'O', 'P', 'q', 's', 'S', 'u', 'v', 'x']);
+const PYTHON_BOOL_SHORT_FLAGS = new Set(['b', 'B', 'd', 'E', 'I', 'O', 'P', 'q', 's', 'S', 'u', 'v']);
 const PYTHON_VALUE_SHORT_FLAGS = new Set(['W', 'X']);
 const PYTHON_LONG_INLINE_FLAGS = new Set(['--version', '--help']);
 const PYTHON_LONG_VALUE_FLAGS = new Set(['--check-hash-based-pycs']);
 
 const NODE_INLINE_INFO_FLAGS = new Set(['-v', '--version', '-h', '--help']);
-const NODE_INLINE_CODE_FLAGS = new Set(['-e', '-p', '-pe', '-ep', '--eval', '--print']);
+const NODE_INLINE_CODE_FLAGS = new Set(['-e', '-p', '-pe', '--eval', '--print']);
 const NODE_INLINE_CODE_EQUALS_FLAGS = new Set(['--eval', '--print']);
 const NODE_BOOL_FLAGS = new Set([
   '-c', '--check',
@@ -68,10 +71,30 @@ const NODE_VALUE_FLAGS = new Set([
   '--max-http-header-size',
 ]);
 
-const SHELL_BOOL_SHORT_FLAGS = new Set(['a', 'C', 'e', 'f', 'h', 'l', 'm', 'n', 'p', 'u', 'v', 'x']);
+const SHELL_BOOL_SHORT_FLAGS = new Set(['a', 'C', 'e', 'f', 'h', 'm', 'n', 'p', 'u', 'v', 'x']);
 const SHELL_LONG_INLINE_FLAGS = new Set(['--version', '--help']);
-const SHELL_LONG_BOOL_FLAGS = new Set(['--login', '--noprofile', '--norc', '--posix', '--verbose']);
-const SHELL_OPTION_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
+const SHELL_LONG_BOOL_FLAGS = new Set(['--noprofile', '--norc', '--posix', '--verbose']);
+const SHELL_O_OPTIONS = new Set([
+  'errexit',
+  'nounset',
+  'pipefail',
+  'xtrace',
+  'verbose',
+  'noglob',
+  'noclobber',
+  'allexport',
+  'noexec',
+]);
+const BASH_SHOPT_OPTIONS = new Set([
+  'extglob',
+  'globstar',
+  'nullglob',
+  'failglob',
+  'dotglob',
+  'nocaseglob',
+  'lastpipe',
+]);
+const SHELL_EXPANSION_CHAR_PATTERN = /[~$`*?[{\\]/;
 
 export function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -213,15 +236,18 @@ function hasFlagWithEquals(token, flagSet) {
 
 /**
  * Inspect interpreter invocations (python/node/bash/sh/zsh) using strict per-interpreter
- * allowlists so safe inline/version flags (`-v`, `-V`, `-c`, `-e`, `-lc`, inline `-`
- * without `< file`) are not misparsed as script paths on disk, while real script arguments
- * after allowlisted flags (e.g. `python3 -uW ignore foo.py`, `bash -O extglob foo.sh`,
- * `node --unhandled-rejections strict foo.js`) resolve to the actual script path.
+ * allowlists so safe inline/version flags (`-v`, `-V`, `-c`, `-e`, `-pe`, inline `python3 -` /
+ * `node -` / `sh -s` without `< file`) are not misparsed as script paths on disk, while real
+ * script arguments after allowlisted flags (e.g. `python3 -uW ignore foo.py`,
+ * `bash -O extglob foo.sh`, `node --unhandled-rejections strict foo.js`) resolve to the actual
+ * script path.
  * Any unrecognized/disallowed flag (e.g. `-r`, `--require`, `--import`, `--env-file`,
  * `--rcfile`, `--test`, `--run`, `--experimental-config-file`, `--openssl-config`,
- * `python3 -m`), file stdin redirection (`< file`), or dangerous loader env prefix
- * (`NODE_OPTIONS`, `BASH_ENV`, `ENV`, `LD_*`, `DYLD_*`, `PYTHON*`, etc.) returns `null`
- * so the stock enrichment decision is preserved unchanged.
+ * `-l`/`--login`, `python3 -m`, `python3 -x`, unsafe `-o`/`-O` option names), file stdin
+ * redirection (`< file`), shell expansion chars in the script token, or startup/loader env
+ * prefix (`NODE_OPTIONS`, `BASH_ENV`, `ENV`, `HOME`, `ZDOTDIR`, `XDG_CONFIG_HOME`, `PS4`,
+ * `LD_*`, `DYLD_*`, `PYTHON*`, etc.) returns `null` so the stock enrichment decision is
+ * preserved unchanged.
  */
 export function parseInterpreterInvocation(command, workingDirectory) {
   const stripped = stripShellPrefixes(command, workingDirectory);
@@ -256,10 +282,11 @@ export function parseInterpreterInvocation(command, workingDirectory) {
 
   let index = 1;
   let noScriptFile = false;
+  let needsInlineCommandArg = false;
   let readsFromStdin = false;
   while (index < tokens.length) {
     const token = tokens[index];
-    if (token === '--') {
+    if (token === '--' || (isShell && token === '-')) {
       index += 1;
       break;
     }
@@ -301,12 +328,16 @@ export function parseInterpreterInvocation(command, workingDirectory) {
             continue;
           }
           if (PYTHON_VALUE_SHORT_FLAGS.has(ch)) {
+            let flagValue;
             if (charIdx + 1 < token.length) {
+              flagValue = token.slice(charIdx + 1);
               index += 1;
             } else {
               if (index + 1 >= tokens.length) return null;
+              flagValue = tokens[index + 1];
               index += 2;
             }
+            if (ch === 'W' && flagValue.includes('.')) return null;
             consumedValue = true;
             break;
           }
@@ -370,6 +401,7 @@ export function parseInterpreterInvocation(command, workingDirectory) {
       if (token.startsWith('--')) {
         if (SHELL_LONG_INLINE_FLAGS.has(token)) {
           noScriptFile = true;
+          needsInlineCommandArg = false;
           index += 1;
           continue;
         }
@@ -381,37 +413,40 @@ export function parseInterpreterInvocation(command, workingDirectory) {
       }
       if ((token.startsWith('-') || token.startsWith('+')) && token.length > 1) {
         const isMinus = token[0] === '-';
-        let sawC = false;
-        let valueArgsNeeded = 0;
+        const neededOptionSets = [];
         for (let charIdx = 1; charIdx < token.length; charIdx += 1) {
           const ch = token[charIdx];
           if (SHELL_BOOL_SHORT_FLAGS.has(ch)) {
             continue;
           }
           if (isMinus && ch === 'c') {
-            sawC = true;
+            noScriptFile = true;
+            needsInlineCommandArg = true;
             continue;
           }
           if (isMinus && ch === 's') {
             readsFromStdin = true;
             continue;
           }
-          if (ch === 'o' || (ch === 'O' && interpreter === 'bash')) {
-            valueArgsNeeded += 1;
+          if (ch === 'o' && interpreter !== 'zsh') {
+            neededOptionSets.push(SHELL_O_OPTIONS);
+            continue;
+          }
+          if (ch === 'O' && interpreter === 'bash') {
+            neededOptionSets.push(BASH_SHOPT_OPTIONS);
             continue;
           }
           return null;
         }
-        if (valueArgsNeeded > 0) {
-          if (index + valueArgsNeeded >= tokens.length) return null;
-          for (let offset = 1; offset <= valueArgsNeeded; offset += 1) {
-            if (!SHELL_OPTION_NAME_PATTERN.test(tokens[index + offset])) return null;
+        if (neededOptionSets.length > 0) {
+          if (index + neededOptionSets.length >= tokens.length) return null;
+          for (let offset = 0; offset < neededOptionSets.length; offset += 1) {
+            if (!neededOptionSets[offset].has(tokens[index + 1 + offset])) {
+              return null;
+            }
           }
         }
-        if (sawC) {
-          return { kind: 'no-script-file', ...resultMeta };
-        }
-        index += 1 + valueArgsNeeded;
+        index += 1 + neededOptionSets.length;
         continue;
       }
       break;
@@ -420,12 +455,16 @@ export function parseInterpreterInvocation(command, workingDirectory) {
   }
 
   if (noScriptFile) {
+    if (needsInlineCommandArg && index >= tokens.length) return null;
     return { kind: 'no-script-file', ...resultMeta };
   }
-  if (readsFromStdin || index >= tokens.length || tokens[index] === '-') {
+  if (readsFromStdin || index >= tokens.length || (!isShell && tokens[index] === '-')) {
     return hasFileInputRedirect ? null : { kind: 'no-script-file', ...resultMeta };
   }
   const scriptToken = tokens[index];
+  if (SHELL_EXPANSION_CHAR_PATTERN.test(scriptToken)) {
+    return null;
+  }
   if (path.posix.isAbsolute(scriptToken)) {
     return { kind: 'script-after-flags', ...resultMeta, path: scriptToken };
   }
@@ -607,10 +646,11 @@ export function readAutoReviewClassifierMaxAttempts(
 
 /**
  * Wrap the stock Shell auto-review target enrichment so:
- * 1. Stock enrichment runs first; only when stock returns `kind: "executable"` with
- *    `approval_binding_unavailable` and `path` matching `working_directory + <firstFlag>`
- *    do we clear inline/version flags (`node -v`, `python3 -c`, `bash -lc`) or re-bind
- *    scripts after safe flags (`python3 -u script.py`);
+ * 1. Stock enrichment runs first; when stock returns `kind: "executable"` and `path`
+ *    matches `working_directory + <firstFlag>` (whether stock failed to bind or bound a
+ *    decoy file named after the flag such as `-` or `-u`), we clear allowlisted
+ *    inline/version flags (`node -v`, `python3 -c`, `bash -c`) or re-bind scripts after
+ *    allowlisted flags (`python3 -u script.py`, `bash - evil.sh`);
  * 2. Large text scripts (>200 lines / >8 KiB) and compiled binaries (ELF/Mach-O/PE) up to
  *    256 MiB bind deterministically by full-file SHA-256 so user approvals remain TOCTOU-bound
  *    (while the local classifier blocks them for user confirmation rather than auto-allowing);
@@ -625,7 +665,6 @@ export function wrapSandShellAutoReviewTargetEnrichment(originalEnrich, deps = {
     if (
       interpreterTarget &&
       stock?.kind === 'executable' &&
-      stock.approval_binding_unavailable === true &&
       isInterpreterFirstFlagPath(
         stock.path,
         interpreterTarget.workingDirectory,

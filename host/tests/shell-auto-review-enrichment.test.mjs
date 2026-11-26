@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import vm from 'node:vm';
+import { gunzipSync } from 'node:zlib';
 import { enhancePromptToolsBindings } from '../runtime/recovered-prompt-tools.mjs';
 import {
   DEFAULT_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS,
@@ -41,11 +43,16 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
     'python3 -c"print(1)"',
     'python3 -uc "print(1)"',
     'python3 - <<\'PY\'\nprint(1)\nPY',
-    'bash -lc "ls -la"',
+    'bash -c "ls -la"',
+    'bash -ce "echo hi"',
+    'bash -c -e "echo hi"',
+    'bash -c -o errexit "echo hi"',
+    'bash -c - "echo hi"',
     'bash --noprofile --norc -c "echo hi"',
     'sh -c "echo hi"',
     'zsh -s',
-    'cd /workspace/work && HOME=/workspace/.toolhome python3 -c "print(1)"',
+    'bash -s - evil.sh',
+    'cd /workspace/work && FOO=1 python3 -c "print(1)"',
     'env NODE_ENV=test node -v',
     'MSG="NODE_OPTIONS=1 BASH_ENV=2" node -v',
   ]) {
@@ -83,11 +90,31 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
     '/workspace/deploy.sh',
   );
   assert.equal(
+    parseInterpreterInvocation('sh -o errexit evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
     parseInterpreterInvocation('bash -O extglob evil.sh', '/workspace')?.path,
     '/workspace/evil.sh',
   );
   assert.equal(
     parseInterpreterInvocation('bash +O extglob evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
+    parseInterpreterInvocation('bash -O globstar evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
+    parseInterpreterInvocation('bash - evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
+    parseInterpreterInvocation('bash -e - evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
+    parseInterpreterInvocation('sh - evil.sh', '/workspace')?.path,
     '/workspace/evil.sh',
   );
   assert.equal(
@@ -133,25 +160,56 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
     'node --experimental-default-config-file -e 1',
     'node --openssl-config=./x.cnf -e 1',
     'node --openssl-config ./x.cnf -e 1',
+    'node -ep "1"',
     'node --unknown-flag decoy evil.js',
-    // Shell rcfile / redirect / unknown flags
+    // Shell rcfile / login / unsafe -o|-O / trailing -c flag / redirect / unknown flags
     'bash --rcfile ./custom.rc -c "echo hi"',
     'bash --init-file=./custom.rc -c "echo hi"',
+    'bash -l harmless.sh',
+    'bash --login harmless.sh',
+    'sh -l harmless.sh',
+    'bash -lc "echo hi"',
+    'bash -c -i "echo hi"',
+    'bash -c --rcfile ./custom.rc "echo hi"',
+    'bash -c',
     'bash -s --rcfile ./custom.rc',
+    'bash -s - evil.sh < ./secret.sh',
+    'sh -o stdin harmless.sh < evil.sh',
+    'sh -o stdin harmless.sh',
+    'sh +o stdin harmless.sh',
+    'sh -o interactive harmless.sh',
+    'zsh -o shinstdin harmless.sh < evil.sh',
+    'zsh -o SHIN_STDIN harmless.sh',
+    'zsh -o errexit harmless.sh',
+    'zsh +o errexit harmless.sh',
     'sh -O extglob evil.sh',
+    'bash -O extdebug evil.sh',
+    'bash +O extdebug evil.sh',
     'bash -Z decoy evil.sh',
     'bash --unknown-flag decoy evil.sh',
     'sh -s < ./secret.sh',
     'bash < ./secret.sh',
-    // Python -m / missing value / unknown flags / redirect
+    // Python -m / -x / dotted -W / missing value / unknown flags / redirect
     'python3 - < ./secret.py',
     'python3 -m json.tool',
     'python3 -mhttp.server',
     'python3 -um http.server',
     'python3 -Im mymod',
+    'python3 -x harmless.py',
+    'python3 -W ignore::this.X evil.py',
+    'python3 -uWignore::this.X evil.py',
     'python3 -uW',
     'python3 -i evil.py',
     'python3 --unknown-flag decoy evil.py',
+    // Shell expansion characters in script argument
+    'python3 -u ~/evil.py',
+    'python3 -u $HOME/evil.py',
+    'python3 -u `echo evil`.py',
+    'python3 -u *.py',
+    'python3 -u evil?.py',
+    'python3 -u evil[0].py',
+    'python3 -u {a,b}.py',
+    'python3 -u "dir\\\\evil.py"',
     // Dangerous environment variable prefixes
     'NODE_OPTIONS="--require ./x.js" node -e 1',
     'env NODE_OPTIONS="--import ./x.mjs" node -v',
@@ -161,6 +219,11 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
     'cd /workspace && BASH_ENV=./x.sh bash -c true',
     'ENV=./x.sh sh -c true',
     'ZDOTDIR=./x zsh -c true',
+    'HOME=/workspace/.toolhome bash -l harmless.sh',
+    'HOME=/workspace/.toolhome bash -lc "echo hi"',
+    'cd /workspace/work && HOME=/workspace/.toolhome python3 -c "print(1)"',
+    'XDG_CONFIG_HOME=/workspace/.xdg bash -c "echo hi"',
+    "PS4='$(. ./evil.sh)+ ' sh -x harmless.sh",
     'LD_PRELOAD=./x.so python3 -c 1',
     'DYLD_INSERT_LIBRARIES=./x.dylib python3 -c 1',
     'PYTHONPATH=./evil python3 -c "import x"',
@@ -393,7 +456,8 @@ test('wrapSandShellAutoReviewTargetEnrichment preserves stock package-manager ch
 
 test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless decoy files for flag values or disallowed flags', async () => {
   // Simulate a workspace where the Bot planted harmless decoy files matching flag values
-  // alongside real target scripts, so any misbinding would return a valid-looking stock enrichment.
+  // or decoy script arguments alongside real target scripts, so any misbinding would return
+  // a valid-looking stock enrichment.
   const workspaceFiles = new Map([
     ['/workspace/strict', 'console.log("harmless strict");\n'],
     ['/workspace/extglob', 'echo "harmless extglob"\n'],
@@ -403,6 +467,13 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
     ['/workspace/spec', 'console.log("harmless spec");\n'],
     ['/workspace/100', 'console.log("harmless 100");\n'],
     ['/workspace/decoy', 'console.log("harmless decoy");\n'],
+    ['/workspace/errexit', 'echo "harmless errexit"\n'],
+    ['/workspace/pipefail', 'echo "harmless pipefail"\n'],
+    ['/workspace/globstar', 'echo "harmless globstar"\n'],
+    ['/workspace/-', 'echo "harmless dash"\n'],
+    ['/workspace/harmless.sh', 'echo "harmless shell"\n'],
+    ['/workspace/harmless.py', '"""\nos.system("id")\n""" # """\n'],
+    ['/workspace/~/evil.py', 'print("harmless tilde decoy")\n'],
     ['/workspace/evil.js', 'require("node:child_process").execSync("id");\n'],
     ['/workspace/evil.sh', 'id\n'],
     ['/workspace/evil.py', 'import os; os.system("id")\n'],
@@ -434,12 +505,19 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
     return undefined;
   });
 
-  // Allowlisted value flags skip their value (even when a same-named decoy exists) and bind the real script.
+  // Allowlisted value flags and Shell `--`/`-` skip their option/value (even when a same-named decoy exists)
+  // and bind the real script.
   for (const [command, expectedPath] of [
     ['python3 -uW ignore evil.py', '/workspace/evil.py'],
     ['python3 -uX dev evil.py', '/workspace/evil.py'],
+    ['sh -o errexit evil.sh', '/workspace/evil.sh'],
+    ['bash -o pipefail evil.sh', '/workspace/evil.sh'],
     ['bash -O extglob evil.sh', '/workspace/evil.sh'],
     ['bash +O extglob evil.sh', '/workspace/evil.sh'],
+    ['bash -O globstar evil.sh', '/workspace/evil.sh'],
+    ['bash - evil.sh', '/workspace/evil.sh'],
+    ['bash -e - evil.sh', '/workspace/evil.sh'],
+    ['sh - evil.sh', '/workspace/evil.sh'],
     ['node --unhandled-rejections strict evil.js', '/workspace/evil.js'],
   ]) {
     const res = await wrapped({}, { command, workingDirectory: '/workspace', toolCallId: 'allow-val' });
@@ -449,8 +527,9 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
     assert.equal(res?.approval_binding_unavailable, undefined);
   }
 
-  // Disallowed / unknown flags and dangerous env prefixes must keep stock approval_binding_unavailable
-  // rather than binding a same-named decoy file or clearing enrichment to undefined.
+  // Disallowed / unknown flags, unsafe `-o`/`-O` option names, `-l`/`--login`, `-x`,
+  // shell expansion chars, and startup/loader env prefixes must keep stock
+  // approval_binding_unavailable rather than binding a same-named decoy file or clearing enrichment.
   for (const command of [
     'node --run build',
     'node --test',
@@ -460,10 +539,28 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
     'node --experimental-config-file=x.json -e 1',
     'node --experimental-default-config-file -e 1',
     'node --openssl-config=./x.cnf -e 1',
+    'node -ep "1"',
     'node -e "1" -r ./preload.js',
     'node --unknown-flag decoy evil.js',
     'bash --unknown-flag decoy evil.sh',
     'python3 --unknown-flag decoy evil.py',
+    'sh -o stdin harmless.sh < evil.sh',
+    'sh -o interactive harmless.sh',
+    'zsh -o shinstdin harmless.sh < evil.sh',
+    'zsh -o SHIN_STDIN harmless.sh',
+    'zsh -o errexit harmless.sh',
+    'bash -O extdebug evil.sh',
+    'HOME=/workspace/.toolhome bash -l harmless.sh',
+    'bash -l harmless.sh',
+    'bash --login harmless.sh',
+    'sh -l harmless.sh',
+    'HOME=/workspace/.toolhome bash -lc "echo hi"',
+    'XDG_CONFIG_HOME=/workspace/.xdg bash -c "echo hi"',
+    'bash -c -i "echo hi"',
+    'python3 -x harmless.py',
+    'python3 -W ignore::this.X evil.py',
+    'python3 -u ~/evil.py',
+    "PS4='$(. ./evil.sh)+ ' sh -x harmless.sh",
     'NODE_OPTIONS="--require ./x.js" node -e 1',
     'BASH_ENV=./x.sh bash -c true',
     'LD_PRELOAD=./x.so python3 -c 1',
@@ -584,5 +681,187 @@ test('compose templates forward GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS to the host con
   for (const filename of ['compose.yaml', 'compose.host.yaml']) {
     const body = await readFile(path.join(releaseDir, filename), 'utf8');
     assert.match(body, /GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS:\s*\$\{GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS:-\}/);
+  }
+});
+
+const PINNED_HOST_ARCHIVE_SHA256 = 'b03894dc9a29eadc6ee1b7265424fe5695d77c5af0cdc022f27338cd69f73d0f';
+
+function extractTarEntry(tarBuf, targetEntry) {
+  let offset = 0;
+  while (offset + 512 <= tarBuf.length) {
+    const header = tarBuf.subarray(offset, offset + 512);
+    if (header.every(byte => byte === 0)) break;
+    const rawName = header.subarray(0, 100).toString('utf8').split('\0')[0];
+    const rawPrefix = header.subarray(345, 500).toString('utf8').split('\0')[0];
+    const fullName = rawPrefix ? `${rawPrefix}/${rawName}` : rawName;
+    const sizeText = header.subarray(124, 136).toString('utf8').split('\0')[0].trim();
+    const size = sizeText ? Number.parseInt(sizeText, 8) : 0;
+    const dataStart = offset + 512;
+    if (fullName === targetEntry || fullName === `./${targetEntry}`) {
+      return tarBuf.subarray(dataStart, dataStart + size).toString('utf8');
+    }
+    offset = dataStart + Math.ceil(size / 512) * 512;
+  }
+  throw new Error(`Missing tar entry: ${targetEntry}`);
+}
+
+async function loadPinnedStockEnrichment() {
+  const configured = process.env.PROKBOT_TEST_HOST_ARCHIVE;
+  const archivePath = configured
+    ? path.resolve(configured)
+    : path.resolve(import.meta.dirname, '../../inputs/host/sand-host-bundle-d0a4baa.tgz');
+  let archiveBytes;
+  try {
+    archiveBytes = await readFile(archivePath);
+  } catch {
+    return null;
+  }
+  const digest = createHash('sha256').update(archiveBytes).digest('hex');
+  if (digest !== PINNED_HOST_ARCHIVE_SHA256) return null;
+
+  const hostMain = extractTarEntry(gunzipSync(archiveBytes), 'sand-host/host-main.cjs');
+  const startMarker = '// ../packages/grok-bot-harness/src/runner/sand-shell-auto-review-enrichment.ts';
+  const endMarker = '// ../packages/grok-bot-harness/src/runner/sand-draft-verification-auto-review.ts';
+  const start = hostMain.indexOf(startMarker);
+  const end = hostMain.indexOf(endMarker, start);
+  assert.ok(start >= 0 && end > start, 'Could not locate sand-shell-auto-review-enrichment section in pinned bundle');
+
+  const readExecutorResource = Symbol('readExecutorResource');
+  class ReadArgs {
+    constructor(fields) {
+      Object.assign(this, fields);
+    }
+  }
+  const sandbox = {
+    require: id => {
+      if (id === 'node:path') return path.posix;
+      if (id === 'node:crypto') return { createHash, randomUUID: () => '00000000-0000-4000-8000-000000000000' };
+      throw new Error(`Unexpected require in stock enrichment slice: ${id}`);
+    },
+    readExecutorResource,
+    ReadArgs,
+  };
+  vm.runInNewContext(
+    `${hostMain.slice(start, end)}\nthis.__stockBuildSandShellAutoReviewTargetEnrichment = buildSandShellAutoReviewTargetEnrichment;`,
+    sandbox,
+  );
+  return {
+    stockEnrich: sandbox.__stockBuildSandShellAutoReviewTargetEnrichment,
+    readExecutorResource,
+  };
+}
+
+test('wrapper behavior matches expectations when composed with real pinned stock enrichment', async t => {
+  const loaded = await loadPinnedStockEnrichment();
+  if (!loaded) {
+    t.skip('set PROKBOT_TEST_HOST_ARCHIVE to run against the pinned stock enrichment function');
+    return;
+  }
+  const { stockEnrich, readExecutorResource } = loaded;
+  const workspaceFiles = new Map([
+    ['/workspace/package.json', JSON.stringify({ scripts: { test: 'vitest', build: 'tsc', x: 'echo x' } })],
+    ['/workspace/strict', 'console.log("harmless strict");\n'],
+    ['/workspace/extglob', 'echo "harmless extglob"\n'],
+    ['/workspace/ignore', 'print("harmless ignore")\n'],
+    ['/workspace/build', 'console.log("harmless build");\n'],
+    ['/workspace/errexit', 'echo "harmless errexit"\n'],
+    ['/workspace/-', 'echo "harmless dash"\n'],
+    ['/workspace/harmless.sh', 'echo "harmless shell"\n'],
+    ['/workspace/harmless.py', '"""\nos.system("id")\n""" # """\n'],
+    ['/workspace/evil.js', 'require("node:child_process").execSync("id");\n'],
+    ['/workspace/evil.sh', 'id\n'],
+    ['/workspace/evil.py', 'import os; os.system("id")\n'],
+  ]);
+  const readAccessor = {
+    get(resource) {
+      assert.equal(resource, readExecutorResource);
+      return {
+        async execute(_ctx, args) {
+          const text = workspaceFiles.get(args.path);
+          if (text === undefined) {
+            return { result: { case: 'failure', value: { error: 'ENOENT' } } };
+          }
+          const lines = text.split('\n');
+          const startIdx = Math.max(0, (args.offset ?? 1) - 1);
+          const slice = lines.slice(startIdx, startIdx + (args.limit ?? 200)).join('\n');
+          return {
+            result: {
+              case: 'success',
+              value: {
+                output: { case: 'content', value: slice },
+                totalLines: lines.length,
+                truncated: false,
+              },
+            },
+          };
+        },
+      };
+    },
+  };
+
+  const wrapped = wrapSandShellAutoReviewTargetEnrichment(stockEnrich);
+
+  for (const pkgCommand of [
+    'bash -lc "npm test"',
+    'sh -c "pnpm build"',
+    'node -v && npm run x',
+    'python3 -c 1; yarn build',
+  ]) {
+    const res = await wrapped({}, { resourceAccessor: readAccessor, command: pkgCommand, workingDirectory: '/workspace', toolCallId: 'real-pkg' });
+    assert.equal(res?.kind, 'package_script_unresolved', `Expected package_script_unresolved for: ${pkgCommand}`);
+    assert.equal(res?.approval_binding_unavailable, true);
+  }
+
+  for (const safeInline of [
+    'node -v',
+    'python3 -c "print(1)"',
+    'bash -c "echo hi"',
+    'bash -ce "echo hi"',
+    'bash -c -o errexit "echo hi"',
+  ]) {
+    const res = await wrapped({}, { resourceAccessor: readAccessor, command: safeInline, workingDirectory: '/workspace', toolCallId: 'real-inline' });
+    assert.equal(res, undefined, `Expected undefined for: ${safeInline}`);
+  }
+
+  for (const [command, expectedPath] of [
+    ['python3 -uW ignore evil.py', '/workspace/evil.py'],
+    ['bash -O extglob evil.sh', '/workspace/evil.sh'],
+    ['sh -o errexit evil.sh', '/workspace/evil.sh'],
+    ['bash - evil.sh', '/workspace/evil.sh'],
+    ['bash -e - evil.sh', '/workspace/evil.sh'],
+    ['sh - evil.sh', '/workspace/evil.sh'],
+    ['node --unhandled-rejections strict evil.js', '/workspace/evil.js'],
+  ]) {
+    const res = await wrapped({}, { resourceAccessor: readAccessor, command, workingDirectory: '/workspace', toolCallId: 'real-script' });
+    assert.equal(res?.kind, 'executable', `Expected executable for: ${command}`);
+    assert.equal(res?.path, expectedPath, `Expected ${expectedPath} for: ${command}`);
+    assert.equal(res?.definition, workspaceFiles.get(expectedPath));
+    assert.equal(res?.approval_binding_unavailable, undefined);
+  }
+
+  for (const unsafeCmd of [
+    'sh -o stdin harmless.sh < evil.sh',
+    'zsh -o shinstdin harmless.sh < evil.sh',
+    'zsh -o errexit harmless.sh',
+    'bash -O extdebug evil.sh',
+    'HOME=/workspace/.toolhome bash -l harmless.sh',
+    'HOME=/workspace/.toolhome bash -lc "echo hi"',
+    'XDG_CONFIG_HOME=/workspace/.xdg bash -c "echo hi"',
+    'bash -l harmless.sh',
+    'bash --login harmless.sh',
+    'bash -c -i "echo hi"',
+    'python3 -x harmless.py',
+    'python3 -W ignore::this.X evil.py',
+    'python3 -u ~/evil.py',
+    "PS4='$(. ./evil.sh)+ ' sh -x harmless.sh",
+    'node --run build',
+    'node --test',
+    'node --stack-size 100 evil.js',
+    'NODE_OPTIONS="--require ./x.js" node -e 1',
+    'BASH_ENV=./x.sh bash -c true',
+  ]) {
+    const res = await wrapped({}, { resourceAccessor: readAccessor, command: unsafeCmd, workingDirectory: '/workspace', toolCallId: 'real-unsafe' });
+    assert.equal(res?.approval_binding_unavailable, true, `Expected stock unavailable for: ${unsafeCmd}`);
+    assert.equal(workspaceFiles.has(res?.path), false, `Must never bind harmless decoy for: ${unsafeCmd}`);
   }
 });
