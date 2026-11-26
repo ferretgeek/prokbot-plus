@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import os from 'node:os';
 import { patchNativeHelperTeam } from './native-helper.mjs';
+import { patchBundleExecutableUuid } from './bundle-uuid.mjs';
 import { fileURLToPath } from 'node:url';
 import { applyReleaseRecipes } from './release-recipes.mjs';
 import { extractNotificationPolicy } from './extract-policy.mjs';
@@ -147,6 +148,8 @@ try {
     info.ElectronAsarIntegrity = { 'Resources/app.asar': { algorithm: 'SHA256', hash: sha(header) } };
     for (const key of ['SUFeedURL', 'SUPublicEDKey', 'SUEnableAutomaticChecks', 'SUAutomaticallyUpdate']) delete info[key];
     await writePlist(path.join(output, 'Contents/Info.plist'), info);
+    const executableUuids = [{ bundleId: info.CFBundleIdentifier,
+      uuids: await patchBundleExecutableUuid(path.join(output, 'Contents/MacOS', info.CFBundleExecutable), info.CFBundleIdentifier) }];
     // Helper identities must not collide with the unmodified app. The original
     // engine, executable names, icons and ASAR integrity fuses remain unchanged.
     const helpers = run('find', [path.join(output, 'Contents/Frameworks'), '-name', 'Info.plist']).trim().split('\n').filter(Boolean);
@@ -155,6 +158,8 @@ try {
       if (helper.CFBundleIdentifier?.startsWith(supported.bundleId)) {
         helper.CFBundleIdentifier = helper.CFBundleIdentifier.replace(supported.bundleId, info.CFBundleIdentifier);
         await writePlist(filename, helper);
+        if (helper.CFBundleExecutable) executableUuids.push({ bundleId: helper.CFBundleIdentifier,
+          uuids: await patchBundleExecutableUuid(path.join(path.dirname(filename), 'MacOS', helper.CFBundleExecutable), helper.CFBundleIdentifier) });
       }
     }
     const entitlements = path.join(temporary, 'entitlements.plist');
@@ -198,7 +203,7 @@ try {
       bundleId: info.CFBundleIdentifier, signature: signingKind, iconUnchanged,
       originalFrameworkSha256: frameworkSha256, originalUnchanged: true,
       originalWindow: { frame: true, titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 15 } },
-      profile: '~/Library/Application Support/Grok Bot Local', automaticUpdates: false, computerHelper,
+      profile: '~/Library/Application Support/Grok Bot Local', automaticUpdates: false, computerHelper, executableUuids,
       timings: { ...timings, totalSeconds: Number(((performance.now() - startedAt) / 1000).toFixed(3)) } };
     await writeFile(`${output}.patch.json`, JSON.stringify(manifest, null, 2));
     console.log(JSON.stringify(manifest, null, 2));
