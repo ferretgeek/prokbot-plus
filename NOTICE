@@ -424,6 +424,16 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
       Intel patcher; mac/README, docs/AI-INSTALL and docs/ARCHITECTURE
       describe signing, build UUIDs, the startup check and Tailcat builds.
 
+29. iOS 1.26.0 and 1.27.0 fallback setGroupMembers call-frame overlap fix.
+    - ios/tools/build_ios_126_recipe.py (fn#78160) and
+      ios/tools/build_ios_127_recipe.py (fn#83670): move r11 -> r7 in place
+      before Call3 in ?anon_0_setGroupMembers (preserving frame_size=21) so all
+      call source operands stay strictly below 21 - (7 + 3) = 11, regenerating
+      ios/recipes/ios/1.26.0/gateway-template.{hbc,json}.gbp.gz and
+      ios/recipes/ios/1.27.0/gateway-template.{hbc,json}.gbp.gz with 0
+      hbc98/audit.py issues across both fallback releases.
+    - Contributed by @jun9100.
+
 Upstream ProkBot changes incorporated
 -------------------------------------
 
