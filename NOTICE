@@ -379,6 +379,23 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
       changes targeting other computers.
     - Contributed by @jun9100 (GitHub pull request #22).
 
+28. Adaptations of upstream ProkBot v2026.11.26 (684e1ba).
+    - host/runtime/reliability/seed-manifest.mjs names runtime files with "/"
+      so the reliability manifest can also be written on Windows.
+    - host/tests/reliability-prepare.test.mjs checks offline that the runtime
+      modules pinned in the manifest recipe match host/runtime, and exercises
+      prepare.mjs on a fixture; host/tests/bytepatch_checks.py expects the
+      unmodified stable harness again.
+    - All five prebuilt Tailcat binaries (host/bin x64 and ARM64,
+      mac/dist/network ARM64 and x64, windows/dist/network) are rebuilt with
+      host/network/build-tailcat.py from one clean commit.
+    - host/server/notifications.mjs keeps the ProkBot Plus backpressured
+      replay (item 16), which already passes the upstream
+      notification-replay test; only that test is taken.
+    - The Mac build UUID change is applied to the 1.3.0 Apple silicon and
+      Intel patcher; mac/README, docs/AI-INSTALL and docs/ARCHITECTURE
+      describe signing, build UUIDs, the startup check and Tailcat builds.
+
 Upstream ProkBot changes incorporated
 -------------------------------------
 
@@ -404,6 +421,30 @@ ProkBot Plus; the adaptations are listed in items 4 and 13 above.
            (only the part that stops naming a fixed bundle file)
   a2fdb31  only the Host part: start(0) takes an ephemeral web client port;
            its desktop client part is not included yet
+
+ProkBot Plus (unreleased) incorporates these changes from upstream ProkBot
+release v2026.11.26, by the same contributors and under the same license;
+the adaptations are listed in item 28 above.
+
+  684e1ba  release: v2026.11.26
+           - Tailcat recovery fix (host/network/tailcat/core/tunnel.go) and
+             the rebuilt Tailcat binaries
+           - startup check of the runtime modules generated files import
+             (host/runtime/reliability/prepare.mjs, seed-manifest.mjs and
+             seven host/recipes/host/ recipes: the release-reliability
+             manifest, reliability.json, engine-tool-stream-executor,
+             harness-turn-run-shell and harness-provenance, and the
+             recovered-core stable harness-turn-run-shell and
+             harness-provenance)
+           - Mac build UUIDs (mac/patchers/desktop/bundle-uuid.mjs,
+             patch.mjs, mac/tests/desktop-bundle-uuid.test.mjs) and the
+             signing section of mac/README (rewritten for ProkBot Plus)
+           - host/tests/notification-replay.test.mjs, and the renames of
+             host/tests/model-provider-routing.test.mjs and
+             mac/tests/desktop-attachment-drafts.test.mjs
+           Not taken: the notifications.mjs change (see item 28), the
+           test skips for upstream's release-tree layout, and the upstream
+           release notes and installation guides.
 
 Third-party components
 ----------------------
