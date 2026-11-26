@@ -6,13 +6,15 @@
 const MINUTE_MS = 60_000;
 
 export const IDLE_DESKTOP_PARK_INTERVAL_MS = 60_000;
+export const MIN_DESKTOP_PARK_INTERVAL_MS = 10_000;
+export const WINDOW_COMMAND_TIMEOUT_SECONDS = 150;
 export const UNPARKED_BACKOFF_BASE_MS = 5 * MINUTE_MS;
 export const UNPARKED_BACKOFF_MAX_MS = 60 * MINUTE_MS;
 export const UNSUPPORTED_PARK_PAUSE_MS = 60 * MINUTE_MS;
 export const WAKE_GAP_INTERVALS = 3;
 
 export const DEFAULT_DESKTOP_PARK_CONFIG = Object.freeze({
-  enabled: true,
+  enabled: false,
   idleMinutes: 30,
   pressureIdleMinutes: 5,
   pressureAvailablePercent: 15,
@@ -48,14 +50,20 @@ const PARK_OUTCOME_BY_EXIT_CODE = new Map([
   [SAND_BOX_WINDOW_PARK_UNSUPPORTED_EXIT_CODE, 'unsupported'],
 ]);
 
-const sharedDesktopBoxes = new WeakMap();
-
 export class SandBoxParkWindowError extends Error {
   constructor(message, code) {
     super(message);
     this.name = 'SandBoxParkWindowError';
     this.code = code;
   }
+}
+
+function shellSingleQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+function wrapTimedShellCommand(innerCommand) {
+  return `timeout -k 5 ${WINDOW_COMMAND_TIMEOUT_SECONDS} /bin/sh -c ${shellSingleQuote(innerCommand)}`;
 }
 
 function envBool(raw, fallback) {
@@ -66,7 +74,11 @@ function envBool(raw, fallback) {
   return fallback;
 }
 
-function envPositiveNumber(raw, fallback, { allowZero = false, integer = true, max = Number.POSITIVE_INFINITY } = {}) {
+function envPositiveNumber(
+  raw,
+  fallback,
+  { allowZero = false, integer = true, min = Number.NEGATIVE_INFINITY, max = Number.POSITIVE_INFINITY } = {},
+) {
   if (typeof raw !== 'string') return fallback;
   const trimmed = raw.trim();
   if (trimmed === '') return fallback;
@@ -74,7 +86,7 @@ function envPositiveNumber(raw, fallback, { allowZero = false, integer = true, m
   if (!Number.isFinite(parsed)) return fallback;
   if (integer && !Number.isInteger(parsed)) return fallback;
   if (allowZero ? parsed < 0 : parsed <= 0) return fallback;
-  if (parsed > max) return fallback;
+  if (parsed < min || parsed > max) return fallback;
   return parsed;
 }
 
@@ -99,13 +111,16 @@ export function readDesktopParkConfig(env = process.env) {
     maxParksPerTick: envPositiveNumber(
       env?.GROKBOT_DESKTOP_PARK_MAX_PER_TICK,
       DEFAULT_DESKTOP_PARK_CONFIG.maxParksPerTick,
+      { allowZero: true },
     ),
     desktopEstimateKb: DEFAULT_DESKTOP_PARK_CONFIG.desktopEstimateKb,
   };
 }
 
 export function readDesktopParkIntervalMs(env = process.env) {
-  return envPositiveNumber(env?.GROKBOT_DESKTOP_PARK_INTERVAL_MS, IDLE_DESKTOP_PARK_INTERVAL_MS);
+  return envPositiveNumber(env?.GROKBOT_DESKTOP_PARK_INTERVAL_MS, IDLE_DESKTOP_PARK_INTERVAL_MS, {
+    min: MIN_DESKTOP_PARK_INTERVAL_MS,
+  });
 }
 
 export function isUnderMemoryPressure(memory, config = DEFAULT_DESKTOP_PARK_CONFIG) {
@@ -206,27 +221,27 @@ export function lockedStartWindowCommand(windowIndex, ownerToken) {
   assertValidForkWindowIndex(windowIndex, 'start-window');
   if (ownerToken !== undefined) assertValidOwnerToken(ownerToken, 'start-window');
   const script = ownerToken !== undefined
-    ? `/usr/local/bin/start-window ${windowIndex} '${ownerToken}'`
-    : `/usr/local/bin/start-window ${windowIndex}`;
-  return (
+    ? `setpriv --pdeathsig KILL /usr/local/bin/start-window ${windowIndex} '${ownerToken}'`
+    : `setpriv --pdeathsig KILL /usr/local/bin/start-window ${windowIndex}`;
+  return wrapTimedShellCommand(
     `mkdir -p ${SAND_BOX_WINDOW_LOCK_DIR} && ` +
     `exec 9>>${SAND_BOX_WINDOW_LOCK_DIR}/${windowIndex} && ` +
     `flock -w ${WINDOW_LOCK_WAIT_SECONDS} 9 || exit ${SAND_BOX_WINDOW_LOCK_BUSY_EXIT_CODE}; ` +
     `${script} 9>&-; sx=$?; ` +
     `if [ "$sx" -eq 0 ]; then touch ${ensuredMarkerPath(windowIndex)} 2>/dev/null || true; fi; ` +
-    `exit "$sx"`
+    `exit "$sx"`,
   );
 }
 
 export function lockedStopWindowCommand(windowIndex) {
   assertValidForkWindowIndex(windowIndex, 'stop-window');
-  return (
+  return wrapTimedShellCommand(
     `mkdir -p ${SAND_BOX_WINDOW_LOCK_DIR} && ` +
     `exec 9>>${SAND_BOX_WINDOW_LOCK_DIR}/${windowIndex} && ` +
     `flock -w ${WINDOW_LOCK_WAIT_SECONDS} 9 || exit ${SAND_BOX_WINDOW_LOCK_BUSY_EXIT_CODE}; ` +
     `rm -f ${ensuredMarkerPath(windowIndex)} 2>/dev/null || true; ` +
-    `/usr/local/bin/stop-window ${windowIndex} 9>&-; sx=$?; ` +
-    `exit "$sx"`
+    `setpriv --pdeathsig KILL /usr/local/bin/stop-window ${windowIndex} 9>&-; sx=$?; ` +
+    `exit "$sx"`,
   );
 }
 
@@ -240,7 +255,7 @@ export function parkWindowCommand(windowIndex, ownerToken, { idleSeconds }) {
   const vncPort = SAND_BOX_FORK_VNC_PORT_BASE + windowIndex;
   const markers = `${SAND_BOX_MONITOR_BUSY_MARKER_PREFIX}${windowIndex} ${SAND_BOX_WINDOW_USED_DIR}/${windowIndex} ${ensuredMarkerPath(windowIndex)}`;
   const inFlight = `${SAND_BOX_WINDOW_USED_DIR}/${windowIndex}${SAND_BOX_WINDOW_IN_FLIGHT_SUFFIX}`;
-  return (
+  return wrapTimedShellCommand(
     `grep -qF -- --park /usr/local/bin/stop-window 2>/dev/null || exit ${SAND_BOX_WINDOW_PARK_UNSUPPORTED_EXIT_CODE}; ` +
     `mkdir -p ${SAND_BOX_WINDOW_LOCK_DIR} && ` +
     `exec 9>>${SAND_BOX_WINDOW_LOCK_DIR}/${windowIndex} && ` +
@@ -253,9 +268,9 @@ export function parkWindowCommand(windowIndex, ownerToken, { idleSeconds }) {
     `[ "$recent" = yes ]; }; then exit ${SAND_BOX_WINDOW_IN_USE_EXIT_CODE}; fi; ` +
     `if ss -tnH state established "( sport = :${vncPort} )" 2>/dev/null | grep -q .; then exit ${SAND_BOX_WINDOW_IN_USE_EXIT_CODE}; fi; ` +
     `xp="$(tr -dc 0-9 2>/dev/null < /tmp/.X${windowIndex}-lock)"; ` +
-    `/usr/local/bin/stop-window --park ${windowIndex} 9>&-; sx=$?; ` +
+    `setpriv --pdeathsig KILL /usr/local/bin/stop-window --park ${windowIndex} 9>&-; sx=$?; ` +
     `if [ -n "$xp" ]; then for _ in $(seq 1 50); do kill -0 "$xp" 2>/dev/null || break; sleep 0.1; done; fi; ` +
-    `exit "$sx"`
+    `exit "$sx"`,
   );
 }
 
@@ -264,7 +279,7 @@ export function desktopActivityCommand(windowIndexes) {
     windowIndex => Number.isInteger(windowIndex) && windowIndex >= SAND_BOX_FIRST_FORK_WINDOW && windowIndex <= 1000,
   );
   const windows = forks.join(' ');
-  return (
+  return wrapTimedShellCommand(
     `echo "now $(date +%s)"; ` +
     `awk '/^MemTotal:/{t=$2} /^MemAvailable:/{a=$2} END{if (t>0) print "mem", t+0, a+0}' /proc/meminfo 2>/dev/null; ` +
     `awk '/^some /{for(i=2;i<=NF;i++) if ($i ~ /^avg10=/) {sub(/^avg10=/, "", $i); print "psi", $i}}' /proc/pressure/memory 2>/dev/null; ` +
@@ -281,7 +296,7 @@ export function desktopActivityCommand(windowIndexes) {
         `[ -e ${SAND_BOX_WINDOW_USED_DIR}/$n${SAND_BOX_WINDOW_IN_FLIGHT_SUFFIX} ] && u="$(date +%s)"; ` +
         `v=0; printf '%s\\n' "$est" | grep -q ":$((${SAND_BOX_FORK_VNC_PORT_BASE} + n))$" && v=1; ` +
         `echo "w $n $r $b $u $v"; ` +
-        `done`)
+        `done`),
   );
 }
 
@@ -363,6 +378,7 @@ export function createIdleDesktopPark(deps) {
   let unsupportedSince;
   let timer = null;
   let tickInFlight = false;
+  let rosterPendingTicks = 0;
   const unparked = new Map();
 
   const backingOff = (key, now) => {
@@ -376,11 +392,19 @@ export function createIdleDesktopPark(deps) {
       idleClockStartMs = undefined;
       lastReading = undefined;
       unsupportedSince = undefined;
+      rosterPendingTicks = 0;
       unparked.clear();
       return { kind: 'disabled' };
     }
     const liveAgentIds = deps.liveAgentIds();
-    if (liveAgentIds === undefined) return { kind: 'roster-pending' };
+    if (liveAgentIds === undefined) {
+      rosterPendingTicks += 1;
+      if (rosterPendingTicks === 3 || (rosterPendingTicks > 3 && rosterPendingTicks % 10 === 0)) {
+        deps.log?.(`idle desktop park waiting for transcript roster (ticks=${rosterPendingTicks})`);
+      }
+      return { kind: 'roster-pending' };
+    }
+    rosterPendingTicks = 0;
     const monoNow = clock.monotonicNow();
     if (unsupportedSince !== undefined && monoNow - unsupportedSince < UNSUPPORTED_PARK_PAUSE_MS) {
       return { kind: 'unsupported' };
@@ -433,7 +457,7 @@ export function createIdleDesktopPark(deps) {
         unsupportedSince = clock.monotonicNow();
         break;
       }
-      if (outcome === 'parked' || outcome === 'not-running') {
+      if (outcome === 'parked') {
         unparked.delete(key);
       } else {
         unparked.set(key, {
@@ -482,7 +506,36 @@ export function createIdleDesktopPark(deps) {
   };
 }
 
-export function createComputerParkOverrides(original) {
+function abortErrorFromSignal(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  const err = new Error(typeof signal?.reason === 'string' && signal.reason ? signal.reason : 'Aborted');
+  err.name = 'AbortError';
+  return err;
+}
+
+async function untilCanceled(promise, signal) {
+  if (!signal) {
+    await promise;
+    return;
+  }
+  if (signal.aborted) {
+    throw abortErrorFromSignal(signal);
+  }
+  let onAbort;
+  try {
+    await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        onAbort = () => reject(abortErrorFromSignal(signal));
+        signal.addEventListener('abort', onAbort, { once: true });
+      }),
+    ]);
+  } finally {
+    if (onAbort) signal.removeEventListener('abort', onAbort);
+  }
+}
+
+export function createComputerParkOverrides(original, log = () => {}) {
   const {
     SAND_BOX_FIRST_FORK_WINDOW_INDEX = SAND_BOX_FIRST_FORK_WINDOW,
     SAND_BOX_WINDOW_UNAVAILABLE_EXIT_CODE: origUnavailableCode = SAND_BOX_WINDOW_UNAVAILABLE_EXIT_CODE,
@@ -490,7 +543,16 @@ export function createComputerParkOverrides(original) {
     isPrimaryWindowIndex,
     reportHostDiagnostic,
     shellExecutorResource,
-  } = original;
+  } = original ?? {};
+
+  const missing = [];
+  if (typeof isPrimaryWindowIndex !== 'function') missing.push('isPrimaryWindowIndex');
+  if (SandBoxNoMonitorAvailableError === undefined) missing.push('SandBoxNoMonitorAvailableError');
+  if (shellExecutorResource === undefined) missing.push('shellExecutorResource');
+  if (missing.length > 0) {
+    log(`idle desktop park overrides disabled: missing original computer dependencies (${missing.join(', ')})`);
+    return {};
+  }
 
   return {
     runStartWindow: (_origRunStartWindow, bindings) => async function lockedRunStartWindow(ctx, accessor, windowIndex, ownerToken) {
@@ -499,6 +561,9 @@ export function createComputerParkOverrides(original) {
         return;
       }
       const { buildHostShellArgs, SandBoxWindowError } = bindings;
+      if (typeof buildHostShellArgs !== 'function' || SandBoxWindowError === undefined) {
+        throw new Error('Missing Computer/Box runtime bindings for start-window');
+      }
       if (ownerToken !== undefined && !OWNER_TOKEN_PATTERN.test(ownerToken)) {
         throw new SandBoxWindowError('refusing to run start-window with a malformed owner token');
       }
@@ -531,6 +596,9 @@ export function createComputerParkOverrides(original) {
         return;
       }
       const { buildHostShellArgs, SandBoxWindowError } = bindings;
+      if (typeof buildHostShellArgs !== 'function' || SandBoxWindowError === undefined) {
+        throw new Error('Missing Computer/Box runtime bindings for stop-window');
+      }
       const result = await accessor.get(shellExecutorResource).execute(
         ctx,
         buildHostShellArgs({
@@ -550,8 +618,11 @@ export function createComputerParkOverrides(original) {
     },
 
     LoopbackSandBox: (BaseLoopbackSandBox, bindings) => {
-      const { buildHostShellArgs, SandBoxWindowError, sandBoxWindowKey } = bindings;
       BaseLoopbackSandBox.prototype.readDesktopActivity = async function readDesktopActivity(ctx, agentId, windowIndexes) {
+        const { buildHostShellArgs, SandBoxWindowError } = bindings;
+        if (typeof buildHostShellArgs !== 'function' || SandBoxWindowError === undefined) {
+          throw new Error('Missing Computer/Box runtime bindings for readDesktopActivity');
+        }
         const forks = windowIndexes.filter(
           windowIndex => Number.isInteger(windowIndex) && !isPrimaryWindowIndex(windowIndex),
         );
@@ -577,6 +648,10 @@ export function createComputerParkOverrides(original) {
       };
 
       BaseLoopbackSandBox.prototype.parkWindow = async function parkWindow(ctx, agentId, windowIndex, opts) {
+        const { buildHostShellArgs, sandBoxWindowKey } = bindings;
+        if (typeof buildHostShellArgs !== 'function' || typeof sandBoxWindowKey !== 'function') {
+          throw new SandBoxParkWindowError('Missing Computer/Box runtime bindings for parkWindow', 'missing-bindings');
+        }
         if (windowIndex == null || isPrimaryWindowIndex(windowIndex)) return 'not-running';
         const primary = await this.ensureReady(ctx, agentId);
         const result = await primary.remoteAccessor.get(shellExecutorResource).execute(
@@ -615,25 +690,39 @@ export function createComputerParkOverrides(original) {
       const origEnsureReady = BaseSharedDesktopSandBox.prototype.ensureReady;
       const origReleaseWindow = BaseSharedDesktopSandBox.prototype.releaseWindow;
 
-      BaseSharedDesktopSandBox.prototype.inAgentQueue = function inAgentQueue(agentId, work) {
+      BaseSharedDesktopSandBox.prototype.inAgentQueue = function inAgentQueue(agentId, work, ctx) {
+        if (ctx?.signal?.aborted) {
+          return Promise.reject(abortErrorFromSignal(ctx.signal));
+        }
         this._agentParkQueues ??= new Map();
         const previous = this._agentParkQueues.get(agentId) ?? Promise.resolve();
-        const current = previous.catch(() => {}).then(work);
-        const tail = current.catch(() => {}).finally(() => {
+        let releaseTurn;
+        const turnDone = new Promise(resolve => {
+          releaseTurn = resolve;
+        });
+        const tail = turnDone.finally(() => {
           if (this._agentParkQueues.get(agentId) === tail) {
             this._agentParkQueues.delete(agentId);
           }
         });
         this._agentParkQueues.set(agentId, tail);
-        return current;
+
+        return (async () => {
+          try {
+            await untilCanceled(previous.catch(() => {}), ctx?.signal);
+            return await work();
+          } finally {
+            releaseTurn();
+          }
+        })();
       };
 
       BaseSharedDesktopSandBox.prototype.ensureReady = function queuedEnsureReady(ctx, agentId) {
-        return this.inAgentQueue(agentId, () => origEnsureReady.call(this, ctx, agentId));
+        return this.inAgentQueue(agentId, () => origEnsureReady.call(this, ctx, agentId), ctx);
       };
 
       BaseSharedDesktopSandBox.prototype.releaseWindow = function queuedReleaseWindow(ctx, agentId) {
-        return this.inAgentQueue(agentId, () => origReleaseWindow.call(this, ctx, agentId));
+        return this.inAgentQueue(agentId, () => origReleaseWindow.call(this, ctx, agentId), ctx);
       };
 
       BaseSharedDesktopSandBox.prototype.startedForkSeats = async function startedForkSeats(ctx) {
@@ -652,9 +741,6 @@ export function createComputerParkOverrides(original) {
       BaseSharedDesktopSandBox.prototype.snapshotForkDesktops = async function snapshotForkDesktops(ctx) {
         if (typeof this.inner?.readDesktopActivity !== 'function') return undefined;
         const seats = await this.startedForkSeats(ctx);
-        if (seats.length === 0) {
-          return { nowMs: Date.now(), memory: undefined, seats: [] };
-        }
         const activity = await this.inner.readDesktopActivity(
           ctx,
           this.sharedBoxId,
@@ -684,23 +770,10 @@ export function createComputerParkOverrides(original) {
             ownerToken,
             idleSeconds: opts.minIdleSeconds,
           });
-        });
+        }, ctx);
       };
 
       return BaseSharedDesktopSandBox;
-    },
-
-    applySharedDesktop: origApplySharedDesktop => function trackedApplySharedDesktop(box, options = {}) {
-      const wrapped = origApplySharedDesktop(box, options);
-      if (
-        wrapped &&
-        typeof wrapped === 'object' &&
-        typeof wrapped.snapshotForkDesktops === 'function' &&
-        typeof wrapped.parkAgentWindow === 'function'
-      ) {
-        sharedDesktopBoxes.set(wrapped, wrapped);
-      }
-      return wrapped;
     },
   };
 }
@@ -710,21 +783,37 @@ export function resolveSharedDesktopBox(box) {
   if (typeof box.snapshotForkDesktops === 'function' && typeof box.parkAgentWindow === 'function') {
     return box;
   }
-  if (sharedDesktopBoxes.has(box)) return sharedDesktopBoxes.get(box);
   if (box.inner && typeof box.inner === 'object') return resolveSharedDesktopBox(box.inner);
   if (box.box && typeof box.box === 'object') return resolveSharedDesktopBox(box.box);
   return undefined;
 }
 
-export function collectLiveAgentIds({ host, autoReview, session, desktops }) {
-  const transcript = host?.transcript;
-  const rawRunning = typeof transcript?.liveRunningAgentIds === 'function'
-    ? transcript.liveRunningAgentIds()
-    : typeof transcript?.runLifecycle?.runningAgentIds === 'function'
-      ? transcript.runLifecycle.runningAgentIds()
+export function collectLiveAgentIds({ host, transcript, autoReview, session, desktops }) {
+  const transcriptApi = typeof transcript === 'function' ? transcript() : (transcript ?? host?.transcript);
+  const rawRunning = typeof transcriptApi?.liveRunningAgentIds === 'function'
+    ? transcriptApi.liveRunningAgentIds()
+    : typeof transcriptApi?.runLifecycle?.runningAgentIds === 'function'
+      ? transcriptApi.runLifecycle.runningAgentIds()
       : undefined;
   if (rawRunning == null) return undefined;
   const live = new Set(rawRunning);
+
+  const runners = typeof transcriptApi?.runnerRegistry?.values === 'function'
+    ? transcriptApi.runnerRegistry.values()
+    : transcriptApi?.runnerRegistry?.runners instanceof Map
+      ? transcriptApi.runnerRegistry.runners.values()
+      : Array.isArray(transcriptApi?.runnerRegistry?.runners)
+        ? transcriptApi.runnerRegistry.runners
+        : undefined;
+  if (runners) {
+    for (const runner of runners) {
+      if (typeof runner?.hasRunningBackgroundShellWork === 'function' && runner.hasRunningBackgroundShellWork()) {
+        const agentId = runner.agentId ?? runner.session?.agentId ?? runner.getAgentId?.();
+        if (typeof agentId === 'string' && agentId) live.add(agentId);
+      }
+    }
+  }
+
   const approvalAgents = autoReview?.()?.agentIdsWithPendingApprovals?.();
   if (approvalAgents) {
     for (const agentId of approvalAgents) live.add(agentId);
@@ -742,17 +831,33 @@ export function collectLiveAgentIds({ host, autoReview, session, desktops }) {
   return live;
 }
 
-export function startLocalIdleDesktopPark({ context, host, library, foreverBox, autoReview, session, env = process.env }) {
+export function startLocalIdleDesktopPark({
+  context,
+  host,
+  library,
+  foreverBox,
+  transcript,
+  autoReview,
+  session,
+  env = process.env,
+}) {
+  const initialConfig = readDesktopParkConfig(env);
+  if (!initialConfig.enabled) return null;
   const desktops = resolveSharedDesktopBox(foreverBox?.box);
   if (!desktops || typeof library?.createContext !== 'function') return null;
   const [baseCtx, cancel] = library.createContext().withCancel();
   const ctx = typeof baseCtx.withName === 'function' ? baseCtx.withName('idleDesktopPark') : baseCtx;
   const intervalMs = readDesktopParkIntervalMs(env);
+  host?.log?.(
+    `idle desktop park enabled: idleMinutes=${initialConfig.idleMinutes} pressureIdleMinutes=${initialConfig.pressureIdleMinutes} ` +
+    `pressureAvailablePercent=${initialConfig.pressureAvailablePercent} pressurePsiSomeAvg10=${initialConfig.pressurePsiSomeAvg10} ` +
+    `maxParksPerTick=${initialConfig.maxParksPerTick} intervalMs=${intervalMs}`,
+  );
   const parker = createIdleDesktopPark({
     ctx,
     desktops,
     readConfig: () => readDesktopParkConfig(env),
-    liveAgentIds: () => collectLiveAgentIds({ host, autoReview, session, desktops }),
+    liveAgentIds: () => collectLiveAgentIds({ host, transcript, autoReview, session, desktops }),
     intervalMs,
     log: message => host?.log?.(message),
     onDispose: () => cancel(new Error('idle desktop park stopped')),

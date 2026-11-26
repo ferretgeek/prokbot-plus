@@ -1,9 +1,14 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 import {
   DEFAULT_DESKTOP_PARK_CONFIG,
   IDLE_DESKTOP_PARK_INTERVAL_MS,
+  MIN_DESKTOP_PARK_INTERVAL_MS,
   SAND_BOX_WINDOW_IN_USE_EXIT_CODE,
   SAND_BOX_WINDOW_NOT_RUNNING_EXIT_CODE,
   SAND_BOX_WINDOW_PARK_UNSUPPORTED_EXIT_CODE,
@@ -26,25 +31,27 @@ import {
   resolveSharedDesktopBox,
   startLocalIdleDesktopPark,
 } from '../runtime/idle-desktop-park.mjs';
+import { installRecoveredComputer } from '../runtime/recovered-computer.mjs';
 
-test('readDesktopParkConfig uses official 9d2ac1b defaults and honors valid env overrides', () => {
+test('readDesktopParkConfig defaults to disabled and honors valid env overrides', () => {
+  assert.equal(DEFAULT_DESKTOP_PARK_CONFIG.enabled, false);
   assert.deepEqual(readDesktopParkConfig({}), DEFAULT_DESKTOP_PARK_CONFIG);
   assert.equal(readDesktopParkIntervalMs({}), 60_000);
 
   const custom = readDesktopParkConfig({
-    GROKBOT_DESKTOP_PARK_ENABLED: 'false',
+    GROKBOT_DESKTOP_PARK_ENABLED: '1',
     GROKBOT_DESKTOP_PARK_IDLE_MINUTES: '20',
     GROKBOT_DESKTOP_PARK_PRESSURE_IDLE_MINUTES: '3',
     GROKBOT_DESKTOP_PARK_PRESSURE_AVAILABLE_PERCENT: '18.5',
     GROKBOT_DESKTOP_PARK_PRESSURE_PSI: '7.5',
-    GROKBOT_DESKTOP_PARK_MAX_PER_TICK: '4',
+    GROKBOT_DESKTOP_PARK_MAX_PER_TICK: '0',
   });
-  assert.equal(custom.enabled, false);
+  assert.equal(custom.enabled, true);
   assert.equal(custom.idleMinutes, 20);
   assert.equal(custom.pressureIdleMinutes, 3);
   assert.equal(custom.pressureAvailablePercent, 18.5);
   assert.equal(custom.pressurePsiSomeAvg10, 7.5);
-  assert.equal(custom.maxParksPerTick, 4);
+  assert.equal(custom.maxParksPerTick, 0);
 
   // Malformed or out-of-range values fall back cleanly without parseInt truncation
   const fallback = readDesktopParkConfig({
@@ -58,6 +65,8 @@ test('readDesktopParkConfig uses official 9d2ac1b defaults and honors valid env 
   assert.deepEqual(fallback, DEFAULT_DESKTOP_PARK_CONFIG);
   assert.equal(readDesktopParkIntervalMs({ GROKBOT_DESKTOP_PARK_INTERVAL_MS: '1.5' }), IDLE_DESKTOP_PARK_INTERVAL_MS);
   assert.equal(readDesktopParkIntervalMs({ GROKBOT_DESKTOP_PARK_INTERVAL_MS: '60s' }), IDLE_DESKTOP_PARK_INTERVAL_MS);
+  assert.equal(readDesktopParkIntervalMs({ GROKBOT_DESKTOP_PARK_INTERVAL_MS: '5000' }), IDLE_DESKTOP_PARK_INTERVAL_MS);
+  assert.equal(readDesktopParkIntervalMs({ GROKBOT_DESKTOP_PARK_INTERVAL_MS: String(MIN_DESKTOP_PARK_INTERVAL_MS) }), 10_000);
   assert.equal(readDesktopParkIntervalMs({ GROKBOT_DESKTOP_PARK_INTERVAL_MS: '15000' }), 15_000);
 });
 
@@ -125,26 +134,30 @@ test('decideDesktopParks evicts >=5m idle forks under MemAvailable or PSI memory
   );
 });
 
-test('window commands validate inputs, close flock fd 9 for children, and parse activity output', () => {
+test('window commands wrap timeouts and pdeathsig, close flock fd 9, and parse activity output', () => {
   assert.throws(() => parkWindowCommand(1, 'valid-token', { idleSeconds: 1800 }), /Invalid fork window index/);
   assert.throws(() => parkWindowCommand(2, 'bad token; rm -rf /', { idleSeconds: 1800 }), /malformed owner token/);
   assert.throws(() => lockedStartWindowCommand(2, "bad'quote"), /malformed owner token/);
 
   const startCmd = lockedStartWindowCommand(17, 'token_abc-123');
+  assert.match(startCmd, /^timeout -k 5 150 \/bin\/sh -c '/);
   assert.match(startCmd, /flock -w 70 9/);
-  assert.match(startCmd, /\/usr\/local\/bin\/start-window 17 'token_abc-123' 9>&-/);
+  assert.match(startCmd, /setpriv --pdeathsig KILL \/usr\/local\/bin\/start-window 17 '\\''token_abc-123'\\'' 9>&-/);
   assert.match(startCmd, /touch \/tmp\/sand-window-locks\.d\/17\.ensured/);
 
   const stopCmd = lockedStopWindowCommand(17);
-  assert.match(stopCmd, /\/usr\/local\/bin\/stop-window 17 9>&-/);
+  assert.match(stopCmd, /^timeout -k 5 150 \/bin\/sh -c '/);
+  assert.match(stopCmd, /setpriv --pdeathsig KILL \/usr\/local\/bin\/stop-window 17 9>&-/);
 
   const parkCmd = parkWindowCommand(17, 'token_abc-123', { idleSeconds: 1800 });
+  assert.match(parkCmd, /^timeout -k 5 150 \/bin\/sh -c '/);
   assert.match(parkCmd, /flock -n 9/);
-  assert.match(parkCmd, /\/usr\/local\/bin\/stop-window --park 17 9>&-/);
+  assert.match(parkCmd, /setpriv --pdeathsig KILL \/usr\/local\/bin\/stop-window --park 17 9>&-/);
   assert.match(parkCmd, /sport = :5917/);
   assert.match(parkCmd, /sport = :14017/);
 
   const actCmd = desktopActivityCommand([1, 2, 17]);
+  assert.match(actCmd, /^timeout -k 5 150 \/bin\/sh -c '/);
   assert.match(actCmd, /for n in 2 17; do/);
 
   const parsed = parseDesktopActivity(
@@ -168,18 +181,21 @@ test('window commands validate inputs, close flock fd 9 for children, and parse 
   });
 });
 
-test('createIdleDesktopPark handles backoff on in-use and pauses on unsupported box', async () => {
+test('createIdleDesktopPark handles backoff (not cleared by not-running), roster-pending logs, and unsupported pause', async () => {
   let monoMs = 10_000;
   let boxNowMs = 1_000_000;
-  let outcomes = ['in-use'];
+  let outcomes = ['not-running'];
+  let rosterReady = false;
   const calls = [];
+  const logs = [];
 
   const parker = createIdleDesktopPark({
     ctx: {},
     clock: { monotonicNow: () => monoMs },
     intervalMs: 60_000,
-    readConfig: () => DEFAULT_DESKTOP_PARK_CONFIG,
-    liveAgentIds: () => new Set(),
+    readConfig: () => ({ ...DEFAULT_DESKTOP_PARK_CONFIG, enabled: true }),
+    liveAgentIds: () => (rosterReady ? new Set() : undefined),
+    log: message => logs.push(message),
     desktops: {
       snapshotForkDesktops: async () => ({
         nowMs: boxNowMs,
@@ -193,18 +209,24 @@ test('createIdleDesktopPark handles backoff on in-use and pauses on unsupported 
     },
   });
 
-  // First tick: idle Clock initializes to boxNowMs; ttlIdleMs is 0 because idleClockStartMs clamps pre-boot idle
+  // Repeated roster-pending ticks emit a single diagnostic once threshold is reached
+  assert.equal((await parker.tick()).kind, 'roster-pending');
+  assert.equal((await parker.tick()).kind, 'roster-pending');
+  assert.equal((await parker.tick()).kind, 'roster-pending');
+  assert.equal(logs.filter(line => line.includes('waiting for transcript roster')).length, 1);
+  rosterReady = true;
+
+  // First ticked run initializes idleClockStartMs
   let res = await parker.tick();
   assert.equal(res.results.length, 0);
 
-  // Advance 31 minutes without clock jump -> parks a1, receives 'in-use' -> enters 5m backoff
+  // Advance 31 minutes -> parks a1, receives 'not-running' -> STILL enters 5m backoff (only 'parked' clears backoff)
   monoMs += 31 * 60_000;
   boxNowMs += 31 * 60_000;
   res = await parker.tick();
   assert.equal(res.results.length, 1);
-  assert.equal(res.results[0].outcome, 'in-use');
+  assert.equal(res.results[0].outcome, 'not-running');
 
-  // 1 minute later -> still in 5m backoff, skipped
   monoMs += 60_000;
   boxNowMs += 60_000;
   res = await parker.tick();
@@ -230,7 +252,7 @@ test('createIdleDesktopPark handles backoff on in-use and pauses on unsupported 
   assert.equal(res.results[0].outcome, 'parked');
 });
 
-test('computer park overrides wire SharedDesktopSandBox park/wake cycle and protect handoff/approval agents', async () => {
+test('computer park overrides work with real host shape (no host.transcript/session) and protect active/background bots', async () => {
   const shellExecutions = [];
   const shellExecutorResource = Symbol('shellExecutor');
   class SandBoxNoMonitorAvailableError extends Error {}
@@ -246,11 +268,31 @@ test('computer park overrides wire SharedDesktopSandBox park/wake cycle and prot
     shellExecutorResource,
   });
 
-  const bindings = {
-    buildHostShellArgs: args => args,
-    SandBoxWindowError,
-    sandBoxWindowKey: (agentId, windowIndex) => `${agentId}#${windowIndex}`,
-  };
+  // Note: buildHostShellArgs and SandBoxWindowError are NOT in bindings at LoopbackSandBox construction time!
+  const bindings = {};
+  class FakeLoopbackSandBox {
+    constructor() {
+      this.windowConnections = new Map();
+    }
+    async ensureReady() {
+      return { remoteAccessor: accessor, vncUrl: 'http://box:6080/vnc.html', terminalsFolder: '/tmp' };
+    }
+    async ensureWindow(ctx, boxId, windowIndex, opts) {
+      const key = bindings.sandBoxWindowKey(boxId, windowIndex);
+      if (this.windowConnections.has(key) && runningDisplays.has(windowIndex)) {
+        return this.windowConnections.get(key);
+      }
+      await bindings.runStartWindow(ctx, accessor, windowIndex, opts.ownerToken);
+      const win = { windowIndex, computerUse: accessor, vncUrl: `http://box:6081/?token=${windowIndex}` };
+      this.windowConnections.set(key, win);
+      return win;
+    }
+  }
+  overrides.LoopbackSandBox(FakeLoopbackSandBox, bindings);
+  // Populated later in recovery order, proving lazy lookup works
+  bindings.buildHostShellArgs = args => args;
+  bindings.SandBoxWindowError = SandBoxWindowError;
+  bindings.sandBoxWindowKey = (agentId, windowIndex) => `${agentId}#${windowIndex}`;
   bindings.runStartWindow = overrides.runStartWindow(() => {}, bindings);
   bindings.runStopWindow = overrides.runStopWindow(() => {}, bindings);
 
@@ -267,8 +309,10 @@ test('computer park overrides wire SharedDesktopSandBox park/wake cycle and prot
           }
           if (args.name === 'desktop-activity') {
             const lines = ['now 2000000', 'mem 16000000 8000000', 'psi 0.00'];
-            for (const n of [2, 3]) {
-              lines.push(`w ${n} ${runningDisplays.has(n) ? 1 : 0} 1990000 1990000 0`);
+            for (const n of [2, 3, 4]) {
+              if (args.command.includes('for n in')) {
+                lines.push(`w ${n} ${runningDisplays.has(n) ? 1 : 0} 1990000 1990000 0`);
+              }
             }
             return { result: { case: 'success', value: { exitCode: 0, stdout: lines.join('\n'), stderr: '' } } };
           }
@@ -289,26 +333,6 @@ test('computer park overrides wire SharedDesktopSandBox park/wake cycle and prot
       };
     },
   };
-
-  class FakeLoopbackSandBox {
-    constructor() {
-      this.windowConnections = new Map();
-    }
-    async ensureReady() {
-      return { remoteAccessor: accessor, vncUrl: 'http://box:6080/vnc.html', terminalsFolder: '/tmp' };
-    }
-    async ensureWindow(ctx, boxId, windowIndex, opts) {
-      const key = bindings.sandBoxWindowKey(boxId, windowIndex);
-      if (this.windowConnections.has(key) && runningDisplays.has(windowIndex)) {
-        return this.windowConnections.get(key);
-      }
-      await bindings.runStartWindow(ctx, accessor, windowIndex, opts.ownerToken);
-      const win = { windowIndex, computerUse: accessor, vncUrl: `http://box:6081/?token=${windowIndex}` };
-      this.windowConnections.set(key, win);
-      return win;
-    }
-  }
-  overrides.LoopbackSandBox(FakeLoopbackSandBox, bindings);
 
   class FakeSharedDesktopSandBox {
     constructor(inner) {
@@ -336,38 +360,75 @@ test('computer park overrides wire SharedDesktopSandBox park/wake cycle and prot
     async releaseWindow() {}
   }
   overrides.SharedDesktopSandBox(FakeSharedDesktopSandBox);
-  const applySharedDesktop = overrides.applySharedDesktop(inner => new FakeSharedDesktopSandBox(inner));
 
-  const shared = applySharedDesktop(new FakeLoopbackSandBox());
+  const shared = new FakeSharedDesktopSandBox(new FakeLoopbackSandBox());
   const wrappedHostBox = { inner: shared };
 
-  // Start two bot Fork desktops (:2 for botA, :3 for botB)
+  // Even with 0 seats, snapshotForkDesktops reads the Box clock (never Host Date.now())
+  const emptySnap = await shared.snapshotForkDesktops({});
+  assert.equal(emptySnap.nowMs, 2000000 * 1000);
+  assert.deepEqual(emptySnap.seats, []);
+
+  // Start three bot Fork desktops (:2 for botA, :3 for botB, :4 for botC)
   await shared.ensureReady({}, 'botA');
   await shared.ensureReady({}, 'botB');
-  assert.deepEqual([...runningDisplays].sort(), [2, 3]);
-  assert.equal(shared.inner.windowConnections.size, 2);
+  await shared.ensureReady({}, 'botC');
+  assert.deepEqual([...runningDisplays].sort(), [2, 3, 4]);
 
-  // Suppose botB has an active handoff; botA is completely idle
-  const host = {
-    transcript: { liveRunningAgentIds: () => new Set() },
-    session: { pendingHandoff: id => (id === 'botB' ? { requestId: 'h1' } : null) },
-    log: () => {},
+  // Real d0a4baa host shape: NO host.transcript and NO host.session!
+  const startupLogs = [];
+  const realShapeHost = {
+    log: message => startupLogs.push(message),
+    events: {},
+    isIdle: () => true,
+    whenBackgroundWorkReady: async () => {},
   };
+  const transcriptApi = {
+    runLifecycle: { runningAgentIds: () => new Set() },
+    runnerRegistry: {
+      values: () => [
+        { agentId: 'botC', hasRunningBackgroundShellWork: () => true },
+      ],
+    },
+  };
+  const sessionApi = { pendingHandoff: id => (id === 'botB' ? { requestId: 'h1' } : null) };
   const autoReview = () => ({ agentIdsWithPendingApprovals: () => [] });
-  assert.deepEqual([...collectLiveAgentIds({ host, autoReview, desktops: shared })], ['botB']);
+
+  assert.deepEqual(
+    [...collectLiveAgentIds({ host: realShapeHost, transcript: () => transcriptApi, autoReview, session: () => sessionApi, desktops: shared })].sort(),
+    ['botB', 'botC'],
+  );
+
+  // Default disabled: startLocalIdleDesktopPark returns null
+  assert.equal(
+    startLocalIdleDesktopPark({
+      context: { onStop: () => {} },
+      host: realShapeHost,
+      library: { createContext: () => ({ withCancel: () => [{}, () => {}] }) },
+      foreverBox: { box: wrappedHostBox },
+      transcript: () => transcriptApi,
+      autoReview,
+      session: () => sessionApi,
+      env: {},
+    }),
+    null,
+  );
 
   let stopHook;
   const parker = startLocalIdleDesktopPark({
     context: { onStop: fn => { stopHook = fn; } },
-    host,
+    host: realShapeHost,
     library: { createContext: () => ({ withCancel: () => [{ withName() { return this; } }, () => {}] }) },
     foreverBox: { box: wrappedHostBox },
+    transcript: () => transcriptApi,
     autoReview,
-    env: { GROKBOT_DESKTOP_PARK_IDLE_MINUTES: '1', GROKBOT_DESKTOP_PARK_INTERVAL_MS: '600000' },
+    session: () => sessionApi,
+    env: { GROKBOT_DESKTOP_PARK_ENABLED: '1', GROKBOT_DESKTOP_PARK_IDLE_MINUTES: '1', GROKBOT_DESKTOP_PARK_INTERVAL_MS: '600000' },
   });
   assert.ok(parker);
+  assert.ok(startupLogs.some(line => line.includes('idle desktop park enabled:')));
 
-  // Snapshot initializes idleClockStartMs, then second snapshot 2m later parks botA (:2) while keeping botB (:3)
+  // Snapshot initializes idleClockStartMs, then second snapshot 2m later parks botA (:2) while keeping botB (:3, handoff) & botC (:4, bg shell)
   await parker.tick();
   const origSnapshot = shared.snapshotForkDesktops.bind(shared);
   shared.snapshotForkDesktops = async ctx => {
@@ -375,10 +436,11 @@ test('computer park overrides wire SharedDesktopSandBox park/wake cycle and prot
     return { ...snap, nowMs: snap.nowMs + 2 * 60_000 };
   };
   const tickResult = await parker.tick();
+  assert.equal(tickResult.kind, 'ticked');
   assert.equal(tickResult.results.length, 1);
   assert.equal(tickResult.results[0].agentId, 'botA');
   assert.equal(tickResult.results[0].outcome, 'parked');
-  assert.deepEqual([...runningDisplays], [3]);
+  assert.deepEqual([...runningDisplays].sort(), [3, 4]);
   assert.equal(shared.inner.windowConnections.has('shared#2'), false);
 
   // Next ensureReady on botA transparently re-runs start-window on :2 and restores connection
@@ -386,14 +448,14 @@ test('computer park overrides wire SharedDesktopSandBox park/wake cycle and prot
   await shared.ensureReady({}, 'botA');
   const startCallsAfter = shellExecutions.filter(item => item.name === 'start-window').length;
   assert.equal(startCallsAfter, startCallsBefore + 1);
-  assert.deepEqual([...runningDisplays].sort(), [2, 3]);
+  assert.deepEqual([...runningDisplays].sort(), [2, 3, 4]);
 
   assert.equal(SAND_BOX_WINDOW_PARK_UNSUPPORTED_EXIT_CODE, 74);
   assert.equal(SAND_BOX_WINDOW_IN_USE_EXIT_CODE, 78);
   stopHook?.();
 });
 
-test('SharedDesktopSandBox.inAgentQueue does not emit unhandledRejection on task failures and keeps queue healthy', async () => {
+test('SharedDesktopSandBox.inAgentQueue supports ctx.signal cancellation and stays healthy on errors', async () => {
   const unhandled = [];
   const onUnhandled = reason => unhandled.push(reason);
   process.on('unhandledRejection', onUnhandled);
@@ -407,8 +469,15 @@ test('SharedDesktopSandBox.inAgentQueue does not emit unhandledRejection on task
       shellExecutorResource: Symbol('shell'),
     });
 
+    let releaseBlockingPark;
+    let parkStartedResolve;
+    const parkStarted = new Promise(resolve => {
+      parkStartedResolve = resolve;
+    });
+    let ensureCalls = 0;
     let failEnsure = true;
     let failPark = true;
+
     class FakeSharedDesktopSandBox {
       constructor() {
         this.sharedBoxId = 'shared';
@@ -416,6 +485,13 @@ test('SharedDesktopSandBox.inAgentQueue does not emit unhandledRejection on task
         this.agentWindowTokens = new Map([['botA', 'tok_a']]);
         this.inner = {
           parkWindow: async () => {
+            if (releaseBlockingPark === 'wait') {
+              parkStartedResolve();
+              await new Promise(resolve => {
+                releaseBlockingPark = resolve;
+              });
+              return 'parked';
+            }
             if (failPark) throw new Error('transient box park failure');
             return 'parked';
           },
@@ -423,6 +499,7 @@ test('SharedDesktopSandBox.inAgentQueue does not emit unhandledRejection on task
       }
       async ensureAssignmentsLoaded() {}
       async ensureReady() {
+        ensureCalls += 1;
         if (failEnsure) throw new Error('transient box ensure failure');
         return { ok: true };
       }
@@ -436,10 +513,22 @@ test('SharedDesktopSandBox.inAgentQueue does not emit unhandledRejection on task
     await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(unhandled, []);
 
+    // Aborting ctx.signal while queued rejects immediately without running the queued ensureReady
+    releaseBlockingPark = 'wait';
+    const blockingPark = shared.parkAgentWindow({}, 'botA', { minIdleSeconds: 1800 });
+    await parkStarted;
+
     failEnsure = false;
-    failPark = false;
+    const callsBeforeAbort = ensureCalls;
+    const ac = new AbortController();
+    const queuedEnsure = shared.ensureReady({ signal: ac.signal }, 'botA');
+    ac.abort(new Error('turn cancelled'));
+    await assert.rejects(() => queuedEnsure, /turn cancelled/);
+
+    releaseBlockingPark?.();
+    assert.equal(await blockingPark, 'parked');
+    assert.equal(ensureCalls, callsBeforeAbort);
     assert.deepEqual(await shared.ensureReady({}, 'botA'), { ok: true });
-    assert.equal(await shared.parkAgentWindow({}, 'botA', { minIdleSeconds: 1800 }), 'parked');
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(shared._agentParkQueues.size, 0);
   } finally {
@@ -447,46 +536,76 @@ test('SharedDesktopSandBox.inAgentQueue does not emit unhandledRejection on task
   }
 });
 
-test('resolveSharedDesktopBox skips unwrapped non-multi-window box and collectLiveAgentIds supports runLifecycle and session API', () => {
-  const overrides = createComputerParkOverrides({
-    SAND_BOX_FIRST_FORK_WINDOW_INDEX: 2,
-    SAND_BOX_WINDOW_UNAVAILABLE_EXIT_CODE,
-    SandBoxNoMonitorAvailableError: class extends Error {},
-    isPrimaryWindowIndex: index => index === 1,
-    reportHostDiagnostic: () => {},
-    shellExecutorResource: Symbol('shell'),
-  });
-  const applySharedDesktop = overrides.applySharedDesktop(box => box);
+test('createComputerParkOverrides degrades safely when original dependencies are missing', () => {
+  const warnings = [];
+  const overrides = createComputerParkOverrides({ isPrimaryWindowIndex: i => i === 1 }, message => warnings.push(message));
+  assert.deepEqual(overrides, {});
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /missing original computer dependencies/);
+});
+
+test('resolveSharedDesktopBox skips unwrapped non-multi-window box', () => {
   const plainBox = { ensureReady: async () => {} };
-  const result = applySharedDesktop(plainBox);
-  assert.equal(result, plainBox);
-  assert.equal(resolveSharedDesktopBox(result), undefined);
+  assert.equal(resolveSharedDesktopBox(plainBox), undefined);
   assert.equal(
     startLocalIdleDesktopPark({
       host: {},
       library: { createContext: () => ({ withCancel: () => [{}, () => {}] }) },
-      foreverBox: { box: result },
+      foreverBox: { box: plainBox },
+      env: { GROKBOT_DESKTOP_PARK_ENABLED: '1' },
     }),
     null,
   );
+});
 
-  const desktops = { agentWindows: new Map([['botA', 2], ['botB', 3], ['botC', 4]]) };
-  const live = collectLiveAgentIds({
-    host: {
-      transcript: {
-        runLifecycle: {
-          runningAgentIds: () => new Set(['botA']),
-        },
+test('installRecoveredComputer installs park overrides only when GROKBOT_DESKTOP_PARK_ENABLED=1 on pinned Host archive', async t => {
+  const configured = process.env.PROKBOT_TEST_HOST_ARCHIVE;
+  const archivePath = configured || path.resolve(import.meta.dirname, '../../inputs/host/sand-host-bundle-d0a4baa.tgz');
+  if (!existsSync(archivePath)) {
+    t.skip('set PROKBOT_TEST_HOST_ARCHIVE to run the pinned Computer/Box recovery integration test');
+    return;
+  }
+
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), 'park-host-seed-'));
+  t.after(() => rm(tmpDir, { recursive: true, force: true }));
+  const preparedDir = path.join(tmpDir, 'prepared');
+  execFileSync('python3', [
+    path.resolve(import.meta.dirname, '../release/patch-host.py'),
+    '--archive',
+    archivePath,
+    '--output',
+    preparedDir,
+  ]);
+
+  const seedDir = path.join(preparedDir, 'seed', 'release-reliability');
+  const { createRequire } = await import('node:module');
+  const require = createRequire(import.meta.url);
+  const library = require(path.join(preparedDir, 'seed', 'host-library.cjs'));
+
+  const makeMockLibrary = () => {
+    const orig = library.getComputerRecoveryBindings();
+    let installedBindings;
+    return {
+      computerRecoveryPlan: library.computerRecoveryPlan,
+      getComputerRecoveryBindings: () => orig,
+      installRecoveredComputer: bindings => {
+        installedBindings = bindings;
+        return bindings;
       },
-    },
-    autoReview: () => ({ agentIdsWithPendingApprovals: () => ['botB'] }),
-    session: () => ({ pendingHandoff: id => (id === 'botC' ? { requestId: 'h1' } : undefined) }),
-    desktops,
-  });
-  assert.deepEqual([...live].sort(), ['botA', 'botB', 'botC']);
+      getInstalled: () => installedBindings,
+    };
+  };
 
-  const extensionsSource = readFileSync(new URL('../runtime/host-extensions.mjs', import.meta.url), 'utf8');
-  assert.match(extensionsSource, /session:\s*\(\)\s*=>\s*apis\.get\('session'\)/);
+  // Disabled by default -> SharedDesktopSandBox has NO parkAgentWindow
+  const disabledLib = makeMockLibrary();
+  await installRecoveredComputer(disabledLib, seedDir, {});
+  assert.equal(typeof disabledLib.getInstalled().SharedDesktopSandBox.prototype.parkAgentWindow, 'undefined');
+
+  // Enabled -> SharedDesktopSandBox gets parkAgentWindow & snapshotForkDesktops
+  const enabledLib = makeMockLibrary();
+  await installRecoveredComputer(enabledLib, seedDir, { GROKBOT_DESKTOP_PARK_ENABLED: '1' });
+  assert.equal(typeof enabledLib.getInstalled().SharedDesktopSandBox.prototype.parkAgentWindow, 'function');
+  assert.equal(typeof enabledLib.getInstalled().SharedDesktopSandBox.prototype.snapshotForkDesktops, 'function');
 });
 
 test('compose files forward all GROKBOT_DESKTOP_PARK_* variables to Host container', () => {

@@ -123,6 +123,7 @@ export function createExtensionStarter(library, modelConfig) {
           host,
           library,
           foreverBox: api,
+          transcript: () => apis.get('transcript'),
           autoReview: () => apis.get('auto-review'),
           session: () => apis.get('session'),
         });

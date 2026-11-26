@@ -158,7 +158,7 @@ Bot 做有风险的操作前，原版会问官方分类服务。这里改用你�
 
 直接使用官方 Linux 桌面镜像，Host 通过带认证的连接操作它，可以和 Host 同机，也可以放到另一台。让 Agent 操作你的电脑时，客户端主动连到 Host，你的电脑不需要开放端口。
 
-- **闲置 Fork 桌面自动休眠**：`host/runtime/idle-desktop-park.mjs`（经 `recovered-computer.mjs` 与 `host-extensions.mjs` 注入）补齐了官方 `9d2ac1b` 的共享桌面休眠策略。每个使用桌面的 Bot 拥有独立的 `Fork-<N>` 虚拟桌面与浏览器目录；当某个 Fork 桌面无活跃对话回合、无待批操作或桌面接管、无 `.inflight` 命令且无 VNC 观看连接时，闲置满 30 分钟（或当 Box 可用内存低于 15% / 内存 PSI `avg10 > 10` 且闲置满 5 分钟）会自动调用容器内建的 `/usr/local/bin/stop-window --park <N>` 停止 Chrome、`Xvfb`、`x11vnc` 与 `exec-daemon`，同时保留座位归属与浏览器登录态，下次需要用电脑时由 `ensureReady` 原地唤醒。
+- **闲置 Fork 桌面自动休眠（实验性，默认关闭）**：`host/runtime/idle-desktop-park.mjs`（经 `recovered-computer.mjs` 与 `host-extensions.mjs` 在 `GROKBOT_DESKTOP_PARK_ENABLED=1` 时按启动配置启用；关闭时不安装覆盖层）将官方 `9d2ac1b` 的共享桌面休眠策略接入 Host。当某个 `Fork-<N>` 桌面无活跃对话回合、无待批操作或桌面接管、无后台 Shell 任务、无 `.inflight` 命令且无 VNC 观看连接时，闲置满 30 分钟（或当 Box 可用内存低于 15% / 内存 PSI `avg10 > 10` 且闲置满 5 分钟；同机部署下读取宿主机整体内存）会调用 `/usr/local/bin/stop-window --park <N>` 停止 Chrome、`Xvfb`、`x11vnc` 与 `exec-daemon`（GUI 程序、进行中的下载及会话 Cookie/标签页可能中断，持久化 Cookie 与座位归属保留），下次 `ensureReady` 原地唤醒。
 
 <a id="mac-client"></a><a id="windows-client"></a><a id="linux-client"></a><a id="mac-客户端"></a><a id="windows-客户端本版本新增"></a>
 ### 桌面客户端（Mac、Windows 与 Linux）
