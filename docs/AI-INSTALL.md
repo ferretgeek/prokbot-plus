@@ -121,6 +121,6 @@ AI 可以用 `python3 host/deploy.py admin help` 查看同一套管理操作。�
 | 聊天通、桌面不通或很慢 | `status` 查 box；独立模式查第二台机器。ARM 模拟很慢时优先分开部署 |
 | 地址不一致 / 配对失败 | 对照 `.env` 和客户端地址；检查反向代理与 WebSocket；重发配对码。遇 429 等一分钟 |
 | 网页版打不开，或从 `/web/` 跳转后连不上 | 网页版用自己的端口（默认 18081）。检查防火墙和反向代理有没有给它入口，`.env` 的 `GROKBOT_WEB_PUBLIC_URL` 是否就是浏览器实际访问的地址；它不能和 `GROKBOT_PUBLIC_URL` 相同 |
-| 对话一直起不来，`logs` 里反复出现 `Prepared runtime … integrity failure`、`identity mismatch` 或 `cache edited` | 镜像里的运行时模块或 `/data/runtime/reliable-core/` 里的缓存被改过，Host 拒绝启动。不要手改这些文件；用未修改的代码执行 `update` 重建镜像。只报 `cache edited` 时，征得用户同意后删除报错的 `reliable-core/<摘要>` 目录，下次启动会重新生成 |
+| 对话一直起不来，`logs` 里反复出现 `Prepared runtime … integrity failure`、`identity mismatch` 或 `cache edited` | 镜像里的运行时模块或 `/data/runtime/reliable-core/` 里的缓存被改过，Host 拒绝启动。不要手改这些文件；用未修改的代码执行 `update` 重建镜像。只报 `cache edited` 时，征得用户同意后删除报错的 `reliable-core/<摘要>` 目录，下次启动会重新生成。如果文件是在运行中的容器里改的，`update` 会沿用原来的容器，仍然报错；这时用 `recover` 从更新前的备份恢复到一个新项目，新项目的容器是重新创建的 |
 
 客户端特有问题见上表对应平台说明。报告错误时附系统架构、代码版本、步骤和脱敏日志，不附密码、配对码或备份。
