@@ -71,7 +71,7 @@ python3 host/deploy.py status < /dev/null
 | 客户端 | 固定输入及对应包内手册 |
 | --- | --- |
 | Windows 10/11 x64 | Windows 包内 `windows/README.md`。默认用官方 1.3.0 x64 安装包生成便携版或安装器；1.3.0 用不了时加 `--version 1.2.3` 回退，仍不行再用 `--version 1.1.0` 或 `--version 0.71.2`。保留同包的 `mac/` 共用代码。 |
-| Mac（Apple Silicon 或 Intel） | Mac 包内 `mac/README.md`。使用官方 1.3.0 原版（仍需 1.2.3 时改用 v1.15.0 的 Mac 包），工具按本机芯片选择 Apple Silicon 或 Intel 版；本机图形控制还需 `--identity auto` 证书签名和系统授权。 |
+| Mac（Apple Silicon 或 Intel） | Mac 包内 `mac/README.md`。使用官方 1.3.0 原版（仍需 1.2.3 时改用 v1.15.0 的 Mac 包），工具按本机芯片选择 Apple Silicon 或 Intel 版；本机图形控制还需 `--identity auto` 证书签名和系统授权：生成前在 Mac 上运行 `security find-identity -v -p codesigning`，列出 Apple Development 或 Developer ID Application 证书就加 `--identity auto`；没有证书时告诉用户默认命令生成的 App 不能本机控制，建议按 Mac README 的「签名与本机控制」用免费 Apple 账户创建证书（需用户自己登录），用户不想建就用默认命令。 |
 | Linux 桌面（x64 或 ARM64） | Linux 包内 `linux/README.md`。使用官方 1.3.0 `.deb` 原包（仍需 1.2.3 时改用 v1.15.0 的 Linux 包）生成便携目录、`.tar.gz` 和用户级 `install.sh`（无需 root）；保留同包的 `mac/` 和 `host/bin/` 共用文件。Ubuntu 24.04+ 如遇 AppArmor 限制，可运行随包 `sudo …/setup-apparmor.sh`。 |
 | iPhone | iOS 包内 `ios/README.md` 的「签名」。自备 1.28.0 (29649，推荐)、1.27.0 (29519，回退)、1.26.0 (29388，回退) 或 1.16.0 (23152，回退) 的已解密 IPA；按 `extension-signing.json` 为主应用和三个扩展配置各自的签名。 |
 | Android 9+ | Android 包内 `android/README.md`。默认用官方 Windows 1.1.0 安装包（和 Windows 客户端同一个文件）的界面和项目外壳生成 APK，1.1.0 界面用不了时加 `--version 0.71.2`；不使用官方 Android APK；单独备份自己的签名密钥，升级须使用同一密钥。 |
@@ -121,5 +121,6 @@ AI 可以用 `python3 host/deploy.py admin help` 查看同一套管理操作。�
 | 聊天通、桌面不通或很慢 | `status` 查 box；独立模式查第二台机器。ARM 模拟很慢时优先分开部署 |
 | 地址不一致 / 配对失败 | 对照 `.env` 和客户端地址；检查反向代理与 WebSocket；重发配对码。遇 429 等一分钟 |
 | 网页版打不开，或从 `/web/` 跳转后连不上 | 网页版用自己的端口（默认 18081）。检查防火墙和反向代理有没有给它入口，`.env` 的 `GROKBOT_WEB_PUBLIC_URL` 是否就是浏览器实际访问的地址；它不能和 `GROKBOT_PUBLIC_URL` 相同 |
+| 对话一直起不来，`logs` 里反复出现 `Prepared runtime … integrity failure`、`identity mismatch` 或 `cache edited` | 镜像里的运行时模块或 `/data/runtime/reliable-core/` 里的缓存被改过，Host 拒绝启动。不要手改这些文件；用未修改的代码执行 `update` 重建镜像。只报 `cache edited` 时，征得用户同意后删除报错的 `reliable-core/<摘要>` 目录，下次启动会重新生成。如果文件是在运行中的容器里改的，`update` 会沿用原来的容器，仍然报错；这时用 `recover` 从更新前的备份恢复到一个新项目，新项目的容器是重新创建的 |
 
 客户端特有问题见上表对应平台说明。报告错误时附系统架构、代码版本、步骤和脱敏日志，不附密码、配对码或备份。

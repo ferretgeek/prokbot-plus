@@ -20,7 +20,27 @@ To use an existing `.app` or `.dmg`, add `--source "/path/to/Grok Bot.app"`. A D
 
 `--verify-only` replays the fixed recipes in temporary storage without building a client. A supplied DMG must match the full archive SHA-256, and the Mac tool verifies the input app's signature. See the [version table](../README.en.md#client-versions) for accepted inputs and the latest official releases.
 
-For local graphical control (Computer Use), add `--identity auto` to sign with an existing Apple Development / Developer ID certificate and update the trusted Team ID in `CUGrokBotService`.
+The main executable and its helpers get build UUIDs of their own, so the app no longer shares local network permission with the official client. After you replace an app built by an earlier version, macOS may ask again for local network access the first time it connects to a Host on the LAN; allow it.
+
+## Signing and local control
+
+The default command signs the app ad hoc, so it has no Team ID. Chat, pairing and remote access all work, but a Bot cannot operate this Mac's graphical interface (Computer Use), because the original local-control helper `CUGrokBotService` only accepts signatures that carry a Team ID.
+
+If you already have a certificate, this is the recommended way to build:
+
+```sh
+node patchers/desktop/patch.mjs --identity auto
+```
+
+Run `security find-identity -v -p codesigning` in Terminal; an Apple Development or Developer ID Application certificate in the list will work. `--identity auto` prefers Developer ID Application, then Apple Development, and updates the trusted Team ID in `CUGrokBotService`. If it finds no usable certificate, it stops with an error and does not build the app. To pick a specific certificate, replace `auto` with its name or SHA-1.
+
+If you don't have one yet, you can create one first; a free Apple account is enough:
+
+1. Install Xcode, open Xcode → Settings → Accounts, click "+" at the bottom left and sign in with your Apple account.
+2. Select the team under the account, click "Manage Certificates…", then click "+" and choose "Apple Development".
+3. Check with the command above that the certificate is listed, then build again with `--identity auto`.
+
+You can also skip the certificate and use the default command; only local control is unavailable. The first time you use local control, grant Accessibility and Screen Recording access when macOS asks.
 
 ## License and support
 

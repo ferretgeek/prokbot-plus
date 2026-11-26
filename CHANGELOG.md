@@ -4,6 +4,14 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## 未发布 / Unreleased
+
+- **上游 v2026.11.26 / Upstream v2026.11.26**：移植自上游 ProkBot `684e1ba`。Host 和 Mac 需要更新，其他客户端不用重新生成。Ported from upstream ProkBot `684e1ba`. Update the Host and the Mac app; other clients need no rebuild.
+  - **Tailcat**：内置 Tailcat 收到实时 DiscoPing 回复后才报告 ready，睡眠或换网络后不再把失效的连接当成可用（iOS 自 v2026.11.02 已有此修复）。Linux x64/ARM64、Windows 和 Intel Mac 的预编译 Tailcat 都从同一提交在干净的工作区重新编译；Apple 芯片 Mac 的原来就有这个修复，没有改动。The built-in Tailcat reports ready only after a live DiscoPing reply, so a stale connection is no longer treated as usable after sleep or a network change (iOS has had this since v2026.11.02). The prebuilt Tailcat binaries for Linux x64/ARM64, Windows and Intel Mac are rebuilt from one commit in a clean tree; the Apple silicon Mac binary already had the fix and is unchanged.
+  - **Host 启动检查 / Host startup check**：可靠性层的清单还记录生成文件导入的运行时模块，Host 启动时核对它们和 `reliable-core` 缓存，被改过就拒绝启动；缓存改为原子写入。Plus 补充：Windows 上也能生成清单，并新增离线测试，改了这些模块但没更新清单时测试会失败。The reliability manifest also records the runtime modules the generated files import; at startup the Host checks them and the `reliable-core` cache and refuses to start if anything was changed; the cache is written atomically. Plus additions: the manifest can also be written on Windows, and an offline test fails when one of these modules changes without the manifest.
+  - **Mac**：主程序和辅助程序使用自己的构建 UUID（Apple 芯片和 Intel 版各不相同），不再和官方客户端共用「本地网络」权限；替换后第一次连接局域网 Host 时 macOS 可能再次询问。Mac README 新增「签名与本机控制」。The main executable and helpers get build UUIDs of their own (different for Apple silicon and Intel), so they no longer share local network permission with the official client; macOS may ask again the first time the replaced app connects to a Host on the LAN. The Mac README gains "Signing and local control".
+  - **通知流 / Notification stream**：上游这次修复的问题（长时间离线后积压的通知回放时被当成慢客户端断开）Plus 自 1.9.0 起已用背压回放解决，这次只加入上游的回归测试。The upstream fix (a long backlog replay dropped as a slow client) has been covered in Plus since 1.9.0 by the backpressured replay; only the upstream regression test is added.
+
 ## ProkBot Plus 1.17.0 (2026-11-26)
 
 iOS 支持官方 1.28.0；桌面客户端设置里的「电脑」页对齐官方 1.3.0；Mac 1.3.0 标为已实测。都由 jun9100 贡献（#20、#22、#26）。iOS 用新的 iOS 包和官方 1.28.0 IPA 重新生成，桌面用新的 Windows、Mac 或 Linux 包重新生成；Host、Android 和网页版不变。iOS now supports the official 1.28.0, the Computer page in the desktop settings matches the official 1.3.0, and Mac 1.3.0 is marked as tested, all contributed by jun9100 (#20, #22, #26). Rebuild iOS with the new iOS package and the official 1.28.0 IPA, and the desktop clients with the new Windows, Mac or Linux package; the Host, Android and the web client are unchanged.
@@ -219,6 +227,7 @@ Windows 补丁跟进官方 1.1.0，并发布五个平台工具包。Host 改动�
 
 来自 https://gitee.com/ahaduoduoduo/ProkBot ，仅作记录。From upstream, for reference.
 
+- **v2026.11.26**：Host 修复长时间离线后通知积压导致订阅被断开；内置 Tailcat 收到 2026-11-02 的恢复修复；启动时还检查生成文件导入的运行时模块。Mac 主程序和辅助程序使用自己的构建 UUID，安装说明讲解 `--identity auto` 签名。Host: a long notification backlog replays without dropping the stream; the built-in Tailcat gets the 2026-11-02 recovery fix; startup also checks the runtime modules the generated files import. Mac: the main executable and helpers get build UUIDs of their own, and the install guides explain signing with `--identity auto`.
 - **v2026.11.25**：Host 安全修复：记忆目录只读，且只通过单独的 Compose 文件开启；网页版使用单独的端口和网址；额度耗尽后仍能用后面的备用模型。另有 Jev 路由、Mac Codex 项目检查、401 原因和 Intel Mac Tailcat 的修复。Host security fixes: read-only memory mounts through an opt-in Compose file, and a web client on its own port and origin; later fallbacks stay reachable after a quota failure. Also Jev routing, the Mac Codex project check, the 401 reason and the Intel Mac Tailcat.
 - **v2026.11.05**：Mac 修复 Bot 置顶、分组及折叠状态的保存。Mac saves pinned Bots, groups and collapsed state.
 - **v2026.11.02**：iOS 修复锁屏后 Tailcat 持续重连。iOS stops Tailcat reconnecting while locked.

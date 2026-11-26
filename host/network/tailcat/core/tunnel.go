@@ -255,9 +255,11 @@ func (t *Tunnel) monitor() {
 		_, err := t.client.Ping(ctx)
 		state, path := "connecting", "unknown"
 		if err == nil {
-			state = "ready"
 			ping, e := t.client.DiscoPing(ctx)
 			if e == nil && ping != nil {
+				// Ping's initial handshake is cached by the client. A live
+				// disco reply is required after a suspension or network change.
+				state = "ready"
 				if ping.Endpoint != "" {
 					path = "direct"
 				} else if ping.DERPRegionID != 0 {
