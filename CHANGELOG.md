@@ -4,6 +4,10 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## 未发布 / Unreleased
+
+- **修复 iOS 1.26.0 / 1.27.0 回退版 `setGroupMembers` 的 Hermes 调用帧寄存器重叠 / Fix Hermes call-frame register overlap in `setGroupMembers` for iOS 1.26.0 / 1.27.0 fallbacks**：与 1.28.0 同法修复 `ios/tools/build_ios_126_recipe.py`（`fn#78160`）与 `ios/tools/build_ios_127_recipe.py`（`fn#83670`）的 `?anon_0_setGroupMembers` 中 `Call3` 源寄存器 `r11 == frame_size - (7 + 3)` 重叠（原位改用 `Mov 7, 11; Call3 7, 8, 9, 7, 10`，保持 `frame_size = 21`），并重新生成 1.26.0 与 1.27.0 的 `gateway-template.{hbc,json}.gbp.gz`；全量 `ios/tools/hbc98/audit.py` 审计均为 0 问题。Applies the same in-place fix from 1.28.0 to `?anon_0_setGroupMembers` in `ios/tools/build_ios_126_recipe.py` (`fn#78160`) and `ios/tools/build_ios_127_recipe.py` (`fn#83670`) (`Mov 7, 11; Call3 7, 8, 9, 7, 10`, keeping `frame_size = 21` so every source register stays below `21 - 10 = 11`), regenerating both `gateway-template.{hbc,json}.gbp.gz` recipes with 0 `hbc98/audit.py` issues.
+
 ## ProkBot Plus 1.18.0 (2026-11-26)
 
 移植上游 ProkBot v2026.11.26（`684e1ba`）的修复。Host 需要更新；Windows、Mac 和 Linux 客户端重新生成后才有 Tailcat 的修复（Mac 还换了构建 UUID）；iOS、Android 和网页版不变。Ports the fixes from upstream ProkBot v2026.11.26 (`684e1ba`). Update the Host; rebuild the Windows, Mac and Linux clients to get the Tailcat fix (the Mac app also gets build UUIDs of its own); iOS, Android and the web client are unchanged.

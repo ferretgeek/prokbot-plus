@@ -81,7 +81,7 @@ EXPECTED_UNPAIRED_127_SHA256 = (
     '71908b73b5f4522b8b5d439b446577b969661085eb3877c34a00ccdcab7509d5'
 )
 EXPECTED_GATEWAY_127_SHA256 = (
-    '17595b1bb89cf33c6aa6ce298958869e9594115ac6cf133899f79b8780f46bc6'
+    'db2abf3a2a01a437c75a1475b2ba96eb2c12b4fcfa6493cc473115a17660e3d9'
 )
 NATIVE_PLUGIN_ENTRIES_OFFSET = 31099614
 
@@ -1130,6 +1130,10 @@ def build_gateway(
     replacements[13553] = FunctionEdit(body=body_storage, metadata=meta_storage)
 
     # 12. Group/identity gateway writes (fn#83670, fn#83673, fn#83674).
+    # Stock fn#83670 has frame_size=21 and ends with ``CallBuiltin 0, 44, 2`` using
+    # r12 == frame_size - 9, so frame_size MUST remain 21. Move r11 -> r7 (r7 is
+    # dead after reading .gateway and overwritten by Call3's dst) so every Call3
+    # source operand stays strictly below 21 - (7 + 3) == 11.
     h_grp = effective_header(stock, 83670)
     if strs[h_grp.function_name].text != '?anon_0_setGroupMembers':
         raise ValueError('Function 83670 is not ?anon_0_setGroupMembers')
@@ -1137,8 +1141,8 @@ def build_gateway(
     patch_grp = (
         _encode_get_by_id(opcodes, 9, 7, 1, _unique_str_idx(strs, 'gateway'))
         + _encode_get_by_id(opcodes, 8, 9, 2, _unique_str_idx(strs, 'setGroupMembers'))
-        + _encode_ins(opcodes, 'Call3', 7, 8, 9, 11, 10)
-        + _encode_ins(opcodes, 'Mov', 12, 12)
+        + _encode_ins(opcodes, 'Mov', 7, 11)
+        + _encode_ins(opcodes, 'Call3', 7, 8, 9, 7, 10)
         + _encode_ins(opcodes, 'LoadConstUndefined', 12) * 7
     )
     if len(patch_grp) != 268 - 233:

@@ -57,7 +57,7 @@ EXPECTED_GATEWAY_SHA256 = (
     '1fe92c5c37f401eaef0ea4c4eb574471c828e1f99b96826919f74f550d178bf2'
 )
 EXPECTED_GATEWAY_SHA256_WITH_AVATAR_MOTION = (
-    '0f82ccd7b58503d7ecde6752237c596a94580141e0be2227a209d5aea5517dc7'
+    'a0cf308a5b3d9ecdb5285373011d8be8e7a19924e8347b55f2d364cc96e4757f'
 )
 CHAT_AVATAR_FUNCTION = 40727
 CHAT_AVATAR_DEFAULT_STATIC_INDEX = 16147
@@ -1218,13 +1218,19 @@ def apply_clean_126_fixes(
     replacements[13169] = FunctionEdit(body=body_13169, metadata=meta_13169)
 
     # 10. fn#78160 (?anon_0_setGroupMembers): exact in-place patch on stock 1.26.
+    # Stock fn#78160 has frame_size=21 and ends with ``CallBuiltin 0, 44, 2`` using
+    # r12 == frame_size - 9, so frame_size MUST remain 21. Move r11 -> r7 (r7 is
+    # dead after reading .gateway and overwritten by Call3's dst) so every Call3
+    # source operand stays strictly below 21 - (7 + 3) == 11.
     h78160 = effective_header(stock, 78160)
+    if strs[h78160.function_name].text != '?anon_0_setGroupMembers':
+        raise ValueError('Function 78160 is not ?anon_0_setGroupMembers')
     b78160 = bytearray(stock.data[h78160.offset:h78160.offset + h78160.bytecode_size])
     patch_78160 = (
         _encode_ins(opcodes, 'GetById', 9, 7, 1, _unique_str_idx(strs, 'gateway'))
         + _encode_ins(opcodes, 'GetById', 8, 9, 2, _unique_str_idx(strs, 'setGroupMembers'))
-        + _encode_ins(opcodes, 'Call3', 7, 8, 9, 11, 10)
-        + _encode_ins(opcodes, 'Mov', 12, 12)
+        + _encode_ins(opcodes, 'Mov', 7, 11)
+        + _encode_ins(opcodes, 'Call3', 7, 8, 9, 7, 10)
         + _encode_ins(opcodes, 'LoadConstUndefined', 12) * 7
     )
     if len(patch_78160) != 268 - 233:

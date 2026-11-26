@@ -98,7 +98,7 @@ class NativePluginEntriesPatchTests(unittest.TestCase):
             RECIPES_126_DIR,
             EXPECTED_GATEWAY_SHA256_WITH_AVATAR_MOTION,
             31163313,
-            EMPTY_ARRAY_STUB + b'\x00',
+            EMPTY_ARRAY_STUB,
         )
 
 
