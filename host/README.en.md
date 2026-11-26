@@ -57,6 +57,7 @@ server {
 Settings in the instance `.env` file tune the Host container (applied to both single-machine and standalone Host deployments):
 
 - `GROKBOT_BLOB_DB_QUICK_CHECK_MAX_BYTES`: Byte threshold for fast-opening large `conversation-blobs.db` files, defaulting to `33554432` (32 MiB). When a database exceeds this size and has no pending recovery marker, open runs a structural probe to avoid startup stalls and then runs `PRAGMA quick_check(1)` off the main event loop in a worker thread using `node:sqlite`; if corruption is found, a `.quickcheck-required` marker is written so the next open falls back to the stock full quarantine and salvage flow. Note that `quick_check(1)` only stops after reporting the first error and still scans the entire file for healthy large databases; the verified stamp tracks `(size, mtimeMs)`, which WAL checkpoints update, so active large databases will typically rescan in the background on cold restarts. Set this to `infinity` to restore the original synchronous `quick_check` on every open.
+- `GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS`: Maximum attempts for the Shell auto-review classifier, defaulting to `2` (valid range `1`–`5`), so a single transient 10 s classifier timeout retries automatically instead of immediately rejecting the command.
 
 ## Model capability sync and cache
 

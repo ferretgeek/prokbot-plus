@@ -57,6 +57,7 @@ server {
 实例目录的 `.env` 可用于调整 Host 容器的运行参数（同机与独立 Host 部署均生效）：
 
 - `GROKBOT_BLOB_DB_QUICK_CHECK_MAX_BYTES`：大体积 `conversation-blobs.db` 快速打开的字节阈值，默认 `33554432`（32 MiB）。文件大于该阈值且无待恢复标记时，打开连接先做结构探针避免阻塞启动，再通过独立工作线程（`node:sqlite`）在主事件循环之外执行 `PRAGMA quick_check(1)`；若检测到损坏会写入 `.quickcheck-required`，下次打开自动回退到原版完整隔离与抢救流程。注意：`quick_check(1)` 只在报告第一条错误后提前停止，对健康的大库仍会完整读取整个文件；已验证标记按 `(size, mtimeMs)` 记录，WAL 检查点会更新文件元信息，因此活跃的大库在冷启动时通常会重新扫描（在后台线程进行，不阻塞主线程）。设为 `infinity` 则恢复每次打开都在主线程同步执行完整 `quick_check` 的原版行为。
+- `GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS`：Shell 自动审查分类器的最大尝试次数，默认 `2`（有效范围 `1`–`5`），避免分类模型偶发单次 10 秒超时即直接拒绝命令。
 
 ## 模型能力同步与缓存
 

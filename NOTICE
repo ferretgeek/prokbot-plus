@@ -15,7 +15,7 @@ modifications below. The noncommercial conditions also apply to everything
 ProkBot Plus adds; none of it is offered under terms that allow commercial use.
 CHANGELOG.md lists the changes by release.
 
-Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
+Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
 --------------------------------------------------------------
 
 1. Windows x64 client (new)
@@ -364,6 +364,16 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
       device-tool section and local Obsidian vault entry in Connected Apps,
       regenerating the connectedApps recipe across all five 1.3.0 targets.
     - Contributed by @jun9100 (GitHub pull request #23).
+
+26. Shell auto-review executable binding fix and classifier retry (new).
+    - host/runtime/shell-auto-review-enrichment.mjs (new),
+      host/runtime/recovered-prompt-tools.mjs, and
+      host/tests/shell-auto-review-enrichment.test.mjs: prevent stock Shell
+      auto-review target enrichment from misparsing interpreter flags (such as
+      node -v, python3 -c, bash -lc) as script paths, bind large (>200-line /
+      >8 KB) text scripts and compiled binaries (ELF/Mach-O/PE) deterministically
+      by cryptographic digest while failing closed on missing or unreadable
+      paths, and raise SAND_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS from 1 to 2.
 
 Upstream ProkBot changes incorporated
 -------------------------------------

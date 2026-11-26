@@ -120,6 +120,8 @@ All three APIs release tool calls only after a complete end-of-stream marker. An
 
 Before a risky action, the official Host asks an official classifier. Here your configured model decides, with the official classifier prompt and result format (`host/runtime/host-auto-review.mjs`). If the model does not answer in the expected form, it retries once and only then refuses; every failure logs `Local auto-review failed: <reason>`.
 
+- **Shell target-binding fix (`host/runtime/shell-auto-review-enrichment.mjs`, `host/runtime/recovered-prompt-tools.mjs`)**: stock Shell preflight enrichment misparsed interpreter flags (such as `node -v`, `python3 -c`, or `bash -lc` with an explicit `working_directory`) as script filenames on disk, and marked compiled binaries (ELF/Mach-O/PE) as well as text scripts larger than 200 lines / 8 KB as `approval_binding_unavailable`, causing a hard pre-classifier rejection (`The executable content could not be bound to this review`). The runtime wrapper now skips inline/version interpreter flags (while still binding scripts that follow option flags like `python3 -u script.py`), binds large text scripts and compiled binaries deterministically by cryptographic digest (full SHA-256 up to 16 MiB, or `stat` metadata plus first/last 64 KiB SHA-256 above 16 MiB) so the classifier can evaluate them with TOCTOU protection intact while missing/unreadable paths still fail closed, and raises `SAND_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS` from `1` to `2` (tunable via `GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS`) so a single 10 s classifier timeout retries automatically.
+
 ### Web access and image generation
 
 The official `WebSearch`, `WebFetch` and `GenerateImage` tools are served by the Host and appear only when a provider is configured.
