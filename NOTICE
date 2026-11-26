@@ -432,7 +432,7 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
       ios/recipes/ios/1.26.0/gateway-template.{hbc,json}.gbp.gz and
       ios/recipes/ios/1.27.0/gateway-template.{hbc,json}.gbp.gz with 0
       hbc98/audit.py issues across both fallback releases.
-    - Contributed by @jun9100.
+    - Contributed by @jun9100 (GitHub pull request #27).
 
 Upstream ProkBot changes incorporated
 -------------------------------------
