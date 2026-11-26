@@ -22,7 +22,7 @@ import {
 
 const execFileAsync = promisify(execFile);
 
-test('parseInterpreterInvocation skips inline/version flags while keeping unseen-file flags and redirects on stock path', () => {
+test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown flags, unseen-file loaders, and dangerous env prefixes on stock path', () => {
   assert.equal(SHELL_ENRICHMENT_FULL_HASH_MAX_BYTES, 256 * 1024 * 1024);
 
   // Inline / version / heredoc flags with no unseen external file must resolve to no-script-file.
@@ -32,48 +32,91 @@ test('parseInterpreterInvocation skips inline/version flags while keeping unseen
     'node -e "console.log(1)"',
     'node --eval="console.log(1)"',
     'node -p "1+1"',
+    'node -pe "1+1"',
+    'node --no-warnings -e "console.log(1)"',
     'python3 -V',
+    'python3 -VV',
     'python3 --version',
     'python3 -c "print(1)"',
     'python3 -c"print(1)"',
     'python3 -uc "print(1)"',
     'python3 - <<\'PY\'\nprint(1)\nPY',
     'bash -lc "ls -la"',
+    'bash --noprofile --norc -c "echo hi"',
     'sh -c "echo hi"',
     'zsh -s',
     'cd /workspace/work && HOME=/workspace/.toolhome python3 -c "print(1)"',
     'env NODE_ENV=test node -v',
+    'MSG="NODE_OPTIONS=1 BASH_ENV=2" node -v',
   ]) {
     const parsed = parseInterpreterInvocation(command, '/workspace');
     assert.equal(parsed?.kind, 'no-script-file', `Expected no-script-file for: ${command}`);
   }
 
-  // Real scripts after safe option flags resolve to the actual script path.
-  assert.deepEqual(
+  // Real scripts after allowlisted option flags resolve to the actual script path (never a flag value).
+  assert.equal(
     parseInterpreterInvocation('python3 -u ./scripts/report.py --flag', '/workspace')?.path,
     '/workspace/scripts/report.py',
   );
-  assert.deepEqual(
+  assert.equal(
     parseInterpreterInvocation('python3 -W ignore /workspace/tools/check.py', '/workspace')?.path,
     '/workspace/tools/check.py',
   );
-  assert.deepEqual(
+  assert.equal(
     parseInterpreterInvocation('python3 -Wonce -Xtracemalloc ./scripts/report.py', '/workspace')?.path,
     '/workspace/scripts/report.py',
   );
-  assert.deepEqual(
+  assert.equal(
+    parseInterpreterInvocation('python3 -uW ignore evil.py', '/workspace')?.path,
+    '/workspace/evil.py',
+  );
+  assert.equal(
+    parseInterpreterInvocation('python3 -uWignore evil.py', '/workspace')?.path,
+    '/workspace/evil.py',
+  );
+  assert.equal(
+    parseInterpreterInvocation('python3 -uX dev evil.py', '/workspace')?.path,
+    '/workspace/evil.py',
+  );
+  assert.equal(
     parseInterpreterInvocation('bash -euo pipefail ./deploy.sh --dry-run', '/workspace')?.path,
     '/workspace/deploy.sh',
   );
+  assert.equal(
+    parseInterpreterInvocation('bash -O extglob evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
+    parseInterpreterInvocation('bash +O extglob evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
+    parseInterpreterInvocation('node --unhandled-rejections strict evil.js', '/workspace')?.path,
+    '/workspace/evil.js',
+  );
+  assert.equal(
+    parseInterpreterInvocation('node --stack-size=100 evil.js', '/workspace')?.path,
+    '/workspace/evil.js',
+  );
+  assert.equal(
+    parseInterpreterInvocation('node --inspect --enable-source-maps --no-warnings app.js', '/workspace')?.path,
+    '/workspace/app.js',
+  );
+  assert.equal(
+    parseInterpreterInvocation('node --inspect=9229 app.js', '/workspace')?.path,
+    '/workspace/app.js',
+  );
 
-  // Invocations that load unseen external files (preload modules, env files, rcfiles, -m, `< file`)
-  // and direct script invocations or bare interpreters must defer to stock logic (null).
+  // Unknown flags, disallowed loaders/runners, file redirects, dangerous env prefixes,
+  // direct script invocations, and bare interpreters must defer to stock logic (null).
   for (const command of [
     'python3 ./script.py',
     'npm run build',
     'HOME=/workspace/.toolhome /workspace/bin/demo-cli --status',
     'bash',
+    // Node preload / config / runner / test / unknown flags
     'node -r ./preload.js -e "console.log(1)"',
+    'node -e "console.log(1)" -r ./preload.js',
     'node --require=./preload.js -e "console.log(1)"',
     'node --import ./hook.mjs -e "console.log(1)"',
     'node --loader ./loader.mjs -v',
@@ -81,14 +124,47 @@ test('parseInterpreterInvocation skips inline/version flags while keeping unseen
     'node --no-warnings --env-file .env scripts/run.mjs',
     'node --env-file=.env -e "console.log(process.env.X)"',
     'node --env-file-if-exists .env -v',
+    'node --run build',
+    'node --test',
+    'node --test --test-reporter spec',
+    'node --test-reporter=./x.mjs --test',
+    'node --stack-size 100 evil.js',
+    'node --experimental-config-file=x.json -e 1',
+    'node --experimental-default-config-file -e 1',
+    'node --openssl-config=./x.cnf -e 1',
+    'node --openssl-config ./x.cnf -e 1',
+    'node --unknown-flag decoy evil.js',
+    // Shell rcfile / redirect / unknown flags
     'bash --rcfile ./custom.rc -c "echo hi"',
     'bash --init-file=./custom.rc -c "echo hi"',
+    'bash -s --rcfile ./custom.rc',
+    'sh -O extglob evil.sh',
+    'bash -Z decoy evil.sh',
+    'bash --unknown-flag decoy evil.sh',
     'sh -s < ./secret.sh',
     'bash < ./secret.sh',
+    // Python -m / missing value / unknown flags / redirect
     'python3 - < ./secret.py',
     'python3 -m json.tool',
     'python3 -mhttp.server',
     'python3 -um http.server',
+    'python3 -Im mymod',
+    'python3 -uW',
+    'python3 -i evil.py',
+    'python3 --unknown-flag decoy evil.py',
+    // Dangerous environment variable prefixes
+    'NODE_OPTIONS="--require ./x.js" node -e 1',
+    'env NODE_OPTIONS="--import ./x.mjs" node -v',
+    'NODE_PATH=./evil node -e 1',
+    'OPENSSL_CONF=./x.cnf node -e 1',
+    'BASH_ENV=./x.sh bash -c true',
+    'cd /workspace && BASH_ENV=./x.sh bash -c true',
+    'ENV=./x.sh sh -c true',
+    'ZDOTDIR=./x zsh -c true',
+    'LD_PRELOAD=./x.so python3 -c 1',
+    'DYLD_INSERT_LIBRARIES=./x.dylib python3 -c 1',
+    'PYTHONPATH=./evil python3 -c "import x"',
+    'PYTHONSTARTUP=./x.py python3 -V',
   ]) {
     assert.equal(parseInterpreterInvocation(command, '/workspace'), null, `Expected null for: ${command}`);
   }
@@ -313,6 +389,89 @@ test('wrapSandShellAutoReviewTargetEnrichment preserves stock package-manager ch
   // 9. Reject paths containing NUL bytes and invalid fullHashMaxBytes.
   assert.throws(() => buildExecutableProbeCommand('/tmp/bad\0path'), /Invalid executable path/);
   assert.throws(() => buildExecutableProbeCommand('/tmp/ok', { fullHashMaxBytes: 0 }), /Invalid fullHashMaxBytes/);
+});
+
+test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless decoy files for flag values or disallowed flags', async () => {
+  // Simulate a workspace where the Bot planted harmless decoy files matching flag values
+  // alongside real target scripts, so any misbinding would return a valid-looking stock enrichment.
+  const workspaceFiles = new Map([
+    ['/workspace/strict', 'console.log("harmless strict");\n'],
+    ['/workspace/extglob', 'echo "harmless extglob"\n'],
+    ['/workspace/ignore', 'print("harmless ignore")\n'],
+    ['/workspace/dev', 'print("harmless dev")\n'],
+    ['/workspace/build', 'console.log("harmless build");\n'],
+    ['/workspace/spec', 'console.log("harmless spec");\n'],
+    ['/workspace/100', 'console.log("harmless 100");\n'],
+    ['/workspace/decoy', 'console.log("harmless decoy");\n'],
+    ['/workspace/evil.js', 'require("node:child_process").execSync("id");\n'],
+    ['/workspace/evil.sh', 'id\n'],
+    ['/workspace/evil.py', 'import os; os.system("id")\n'],
+  ]);
+
+  const wrapped = wrapSandShellAutoReviewTargetEnrichment(async (_ctx, args) => {
+    const stripped = args.command.replace(/^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s+)+/, '');
+    const parts = stripped.trim().split(/\s+/);
+    if (parts.length >= 2 && /^(python3|node|bash|sh|zsh)$/.test(parts[0])) {
+      const candidate = parts[1].replace(/^['"]|['"]$/g, '');
+      const resolved = candidate.startsWith('/') ? candidate : path.posix.resolve(args.workingDirectory ?? '/', candidate);
+      if (workspaceFiles.has(resolved)) {
+        const content = workspaceFiles.get(resolved);
+        return {
+          kind: 'executable',
+          path: resolved,
+          definition: content,
+          definition_hash: createHash('sha256').update(content).digest('hex'),
+          truncated: false,
+        };
+      }
+      return {
+        kind: 'executable',
+        path: resolved,
+        approval_binding_unavailable: true,
+        approval_binding_nonce: 'nonce-stock',
+      };
+    }
+    return undefined;
+  });
+
+  // Allowlisted value flags skip their value (even when a same-named decoy exists) and bind the real script.
+  for (const [command, expectedPath] of [
+    ['python3 -uW ignore evil.py', '/workspace/evil.py'],
+    ['python3 -uX dev evil.py', '/workspace/evil.py'],
+    ['bash -O extglob evil.sh', '/workspace/evil.sh'],
+    ['bash +O extglob evil.sh', '/workspace/evil.sh'],
+    ['node --unhandled-rejections strict evil.js', '/workspace/evil.js'],
+  ]) {
+    const res = await wrapped({}, { command, workingDirectory: '/workspace', toolCallId: 'allow-val' });
+    assert.equal(res?.kind, 'executable', `Expected bound executable for: ${command}`);
+    assert.equal(res?.path, expectedPath, `Must bind real script instead of decoy for: ${command}`);
+    assert.equal(res?.definition, workspaceFiles.get(expectedPath));
+    assert.equal(res?.approval_binding_unavailable, undefined);
+  }
+
+  // Disallowed / unknown flags and dangerous env prefixes must keep stock approval_binding_unavailable
+  // rather than binding a same-named decoy file or clearing enrichment to undefined.
+  for (const command of [
+    'node --run build',
+    'node --test',
+    'node --test --test-reporter spec',
+    'node --test-reporter=./x.mjs --test',
+    'node --stack-size 100 evil.js',
+    'node --experimental-config-file=x.json -e 1',
+    'node --experimental-default-config-file -e 1',
+    'node --openssl-config=./x.cnf -e 1',
+    'node -e "1" -r ./preload.js',
+    'node --unknown-flag decoy evil.js',
+    'bash --unknown-flag decoy evil.sh',
+    'python3 --unknown-flag decoy evil.py',
+    'NODE_OPTIONS="--require ./x.js" node -e 1',
+    'BASH_ENV=./x.sh bash -c true',
+    'LD_PRELOAD=./x.so python3 -c 1',
+  ]) {
+    const res = await wrapped({}, { command, workingDirectory: '/workspace', toolCallId: 'deny-decoy' });
+    assert.equal(res?.approval_binding_unavailable, true, `Expected stock unavailable for: ${command}`);
+    assert.equal(workspaceFiles.has(res?.path), false, `Must never bind a decoy file for: ${command}`);
+  }
 });
 
 test('POSIX probe command executes cleanly in isolated /usr/bin:/bin environment', { skip: process.platform === 'win32' }, async t => {

@@ -104,6 +104,8 @@ export function createLocalClassifier(config, library, { fetchImpl = globalThis.
     async execute(ctx, args) {
       const target = args.target?.toJson ? args.target.toJson() : args.target;
       if (!target || typeof target.action !== 'string') throw new Error('Auto-review target is missing');
+      // Keep `binary_executable` and `truncated` in sync with `parseExecutableProbeOutput`
+      // in `host/runtime/shell-auto-review-enrichment.mjs`.
       const enrichment = target.arguments?.target_enrichment ?? target.arguments?.targetEnrichment;
       if (enrichment && (enrichment.kind === 'binary_executable' || enrichment.truncated === true)) {
         const reason = '内容无法完整审查';

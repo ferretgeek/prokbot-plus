@@ -9,23 +9,69 @@ export const DEFAULT_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS = 2;
 
 const INTERPRETER_PATTERN = /^(python(?:3(?:\.\d+)?)?|node|bash|sh|zsh)(?=\s|$)/;
 
-const PYTHON_INLINE_FLAGS = new Set(['-c', '-V', '--version', '-h', '--help']);
-const PYTHON_VALUE_FLAGS = new Set(['-W', '-X', '--check-hash-based-pycs']);
-
-const NODE_INLINE_FLAGS = new Set(['-e', '--eval', '-p', '--print', '-v', '--version', '-h', '--help']);
-const NODE_UNSEEN_FILE_FLAGS = new Set([
-  '-r', '--require', '--import', '--loader', '--experimental-loader',
-  '--env-file', '--env-file-if-exists',
+const DANGEROUS_ENV_EXACT = new Set([
+  'NODE_OPTIONS',
+  'NODE_PATH',
+  'NODE_REPL_EXTERNAL_MODULE',
+  'OPENSSL_CONF',
+  'BASH_ENV',
+  'ENV',
+  'ZDOTDIR',
+  'SHELLOPTS',
+  'BASHOPTS',
 ]);
+const ENV_ASSIGNMENT_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)=(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s+/;
+
+function isDangerousEnvVar(name) {
+  return (
+    DANGEROUS_ENV_EXACT.has(name) ||
+    name.startsWith('LD_') ||
+    name.startsWith('DYLD_') ||
+    name.startsWith('PYTHON') ||
+    name.startsWith('BASH_FUNC_')
+  );
+}
+
+// Strict allowlists per interpreter: any flag not listed here fails closed (returns null)
+// so unknown value-taking flags or unseen-file loaders never misbind a decoy argument.
+const PYTHON_BOOL_SHORT_FLAGS = new Set(['b', 'B', 'd', 'E', 'I', 'O', 'P', 'q', 's', 'S', 'u', 'v', 'x']);
+const PYTHON_VALUE_SHORT_FLAGS = new Set(['W', 'X']);
+const PYTHON_LONG_INLINE_FLAGS = new Set(['--version', '--help']);
+const PYTHON_LONG_VALUE_FLAGS = new Set(['--check-hash-based-pycs']);
+
+const NODE_INLINE_INFO_FLAGS = new Set(['-v', '--version', '-h', '--help']);
+const NODE_INLINE_CODE_FLAGS = new Set(['-e', '-p', '-pe', '-ep', '--eval', '--print']);
+const NODE_INLINE_CODE_EQUALS_FLAGS = new Set(['--eval', '--print']);
+const NODE_BOOL_FLAGS = new Set([
+  '-c', '--check',
+  '--no-warnings', '--no-deprecation', '--throw-deprecation',
+  '--trace-deprecation', '--trace-warnings', '--trace-uncaught',
+  '--enable-source-maps',
+  '--preserve-symlinks', '--preserve-symlinks-main',
+  '--pending-deprecation',
+  '--experimental-strip-types', '--no-experimental-strip-types',
+  '--experimental-transform-types',
+  '--no-experimental-detect-module',
+  '--experimental-vm-modules',
+  '--disallow-code-generation-from-strings',
+  '--frozen-intrinsics',
+  '--zero-fill-buffers',
+]);
+const NODE_OPTIONAL_EQUALS_FLAGS = new Set(['--inspect', '--inspect-brk', '--inspect-wait']);
+const NODE_EQUALS_ONLY_VALUE_FLAGS = new Set(['--max-old-space-size', '--max-semi-space-size', '--stack-size']);
 const NODE_VALUE_FLAGS = new Set([
   '-C', '--conditions',
-  '--max-old-space-size', '--test-name-pattern', '--input-type',
-  '--diagnostic-dir', '--redirect-warnings', '--title',
+  '--input-type',
+  '--unhandled-rejections',
+  '--dns-result-order',
+  '--title',
+  '--max-http-header-size',
 ]);
 
-const SHELL_INLINE_FLAGS = new Set(['-c', '--version', '--help']);
-const SHELL_UNSEEN_FILE_FLAGS = new Set(['--rcfile', '--init-file']);
-const SHELL_VALUE_FLAGS = new Set(['-o', '+o']);
+const SHELL_BOOL_SHORT_FLAGS = new Set(['a', 'C', 'e', 'f', 'h', 'l', 'm', 'n', 'p', 'u', 'v', 'x']);
+const SHELL_LONG_INLINE_FLAGS = new Set(['--version', '--help']);
+const SHELL_LONG_BOOL_FLAGS = new Set(['--login', '--noprofile', '--norc', '--posix', '--verbose']);
+const SHELL_OPTION_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
 export function shellSingleQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
@@ -45,12 +91,23 @@ function unquote(token) {
 export function stripShellPrefixes(command, workingDirectory) {
   let candidateCommand = String(command ?? '').trim();
   let candidateWorkingDirectory = workingDirectory;
+  const envNames = [];
   for (let prefixCount = 0; prefixCount < 4; prefixCount += 1) {
-    const environmentPrefix = candidateCommand.match(
-      /^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s+)+/,
-    );
-    if (environmentPrefix !== null) {
-      candidateCommand = candidateCommand.slice(environmentPrefix[0].length);
+    let rest = candidateCommand;
+    const leadingEnv = rest.match(/^env\s+/);
+    if (leadingEnv !== null) {
+      rest = rest.slice(leadingEnv[0].length);
+    }
+    const batchNames = [];
+    while (true) {
+      const assign = rest.match(ENV_ASSIGNMENT_PATTERN);
+      if (assign === null) break;
+      batchNames.push(assign[1]);
+      rest = rest.slice(assign[0].length);
+    }
+    if (batchNames.length > 0) {
+      envNames.push(...batchNames);
+      candidateCommand = rest;
       continue;
     }
     const changeDirectoryPrefix = candidateCommand.match(
@@ -65,7 +122,7 @@ export function stripShellPrefixes(command, workingDirectory) {
     }
     candidateCommand = changeDirectoryPrefix[2].trim();
   }
-  return { command: candidateCommand, workingDirectory: candidateWorkingDirectory };
+  return { command: candidateCommand, workingDirectory: candidateWorkingDirectory, envNames };
 }
 
 /**
@@ -155,17 +212,21 @@ function hasFlagWithEquals(token, flagSet) {
 }
 
 /**
- * Inspect interpreter invocations (python/node/bash/sh/zsh) so inline/version flags such as
- * `-v`, `-V`, `-c`, `-e`, `-lc`, or inline `-` (heredoc/stdin without `< file`) are not
- * misparsed as script paths on disk, while real script arguments after safe flags (e.g.
- * `python3 -u foo.py`) resolve to the target script path. Flags or redirections that load
- * unseen external files (`-r`, `--require`, `--import`, `--loader`, `--experimental-loader`,
- * `--env-file`, `--rcfile`, `--init-file`, `python3 -m`, `sh -s < file`, `bash < file`)
- * return `null` so the stock enrichment decision is preserved unchanged.
+ * Inspect interpreter invocations (python/node/bash/sh/zsh) using strict per-interpreter
+ * allowlists so safe inline/version flags (`-v`, `-V`, `-c`, `-e`, `-lc`, inline `-`
+ * without `< file`) are not misparsed as script paths on disk, while real script arguments
+ * after allowlisted flags (e.g. `python3 -uW ignore foo.py`, `bash -O extglob foo.sh`,
+ * `node --unhandled-rejections strict foo.js`) resolve to the actual script path.
+ * Any unrecognized/disallowed flag (e.g. `-r`, `--require`, `--import`, `--env-file`,
+ * `--rcfile`, `--test`, `--run`, `--experimental-config-file`, `--openssl-config`,
+ * `python3 -m`), file stdin redirection (`< file`), or dangerous loader env prefix
+ * (`NODE_OPTIONS`, `BASH_ENV`, `ENV`, `LD_*`, `DYLD_*`, `PYTHON*`, etc.) returns `null`
+ * so the stock enrichment decision is preserved unchanged.
  */
 export function parseInterpreterInvocation(command, workingDirectory) {
   const stripped = stripShellPrefixes(command, workingDirectory);
   if (!stripped.command) return null;
+  if (stripped.envNames.some(isDangerousEnvVar)) return null;
   const match = stripped.command.match(INTERPRETER_PATTERN);
   if (!match) return null;
 
@@ -194,6 +255,8 @@ export function parseInterpreterInvocation(command, workingDirectory) {
   };
 
   let index = 1;
+  let noScriptFile = false;
+  let readsFromStdin = false;
   while (index < tokens.length) {
     const token = tokens[index];
     if (token === '--') {
@@ -201,72 +264,154 @@ export function parseInterpreterInvocation(command, workingDirectory) {
       break;
     }
     if (token === '-') {
-      return hasFileInputRedirect ? null : { kind: 'no-script-file', ...resultMeta };
+      readsFromStdin = true;
+      break;
     }
     if (isPython) {
-      if (token.startsWith('-W') || token.startsWith('-X')) {
-        index += token.length === 2 ? 2 : 1;
-        continue;
-      }
-      if (PYTHON_VALUE_FLAGS.has(token) || hasFlagWithEquals(token, PYTHON_VALUE_FLAGS)) {
-        index += PYTHON_VALUE_FLAGS.has(token) ? 2 : 1;
-        continue;
-      }
-      if (
-        token === '-m' ||
-        token.startsWith('-m') ||
-        (/^-[A-Za-z]+$/.test(token) && token.slice(1).includes('m'))
-      ) {
+      if (token.startsWith('--')) {
+        if (PYTHON_LONG_INLINE_FLAGS.has(token)) {
+          return { kind: 'no-script-file', ...resultMeta };
+        }
+        if (PYTHON_LONG_VALUE_FLAGS.has(token)) {
+          if (index + 1 >= tokens.length) return null;
+          index += 2;
+          continue;
+        }
+        if (hasFlagWithEquals(token, PYTHON_LONG_VALUE_FLAGS)) {
+          index += 1;
+          continue;
+        }
         return null;
       }
-      if (PYTHON_INLINE_FLAGS.has(token) || token.startsWith('-c')) {
-        return { kind: 'no-script-file', ...resultMeta };
-      }
-      if (/^-[A-Za-z]+$/.test(token) && /[cVh]/.test(token.slice(1))) {
-        return { kind: 'no-script-file', ...resultMeta };
-      }
-      if (token.startsWith('-')) {
+      if (token.startsWith('-') && token.length > 1) {
+        let sawInlineCode = false;
+        let sawVersionOrHelp = false;
+        let consumedValue = false;
+        for (let charIdx = 1; charIdx < token.length; charIdx += 1) {
+          const ch = token[charIdx];
+          if (ch === 'c') {
+            sawInlineCode = true;
+            break;
+          }
+          if (PYTHON_BOOL_SHORT_FLAGS.has(ch)) {
+            continue;
+          }
+          if (ch === 'V' || ch === 'h') {
+            sawVersionOrHelp = true;
+            continue;
+          }
+          if (PYTHON_VALUE_SHORT_FLAGS.has(ch)) {
+            if (charIdx + 1 < token.length) {
+              index += 1;
+            } else {
+              if (index + 1 >= tokens.length) return null;
+              index += 2;
+            }
+            consumedValue = true;
+            break;
+          }
+          return null;
+        }
+        if (sawInlineCode || sawVersionOrHelp) {
+          return { kind: 'no-script-file', ...resultMeta };
+        }
+        if (consumedValue) {
+          continue;
+        }
         index += 1;
         continue;
       }
       break;
     }
     if (isNode) {
-      if (NODE_UNSEEN_FILE_FLAGS.has(token) || hasFlagWithEquals(token, NODE_UNSEEN_FILE_FLAGS)) {
-        return null;
+      if (NODE_INLINE_INFO_FLAGS.has(token)) {
+        noScriptFile = true;
+        index += 1;
+        continue;
       }
-      if (NODE_INLINE_FLAGS.has(token) || token.startsWith('--eval=') || token.startsWith('--print=')) {
-        return { kind: 'no-script-file', ...resultMeta };
-      }
-      if (NODE_VALUE_FLAGS.has(token)) {
+      if (NODE_INLINE_CODE_FLAGS.has(token)) {
+        if (index + 1 >= tokens.length) return null;
+        noScriptFile = true;
         index += 2;
         continue;
       }
-      if (token.startsWith('-')) {
+      if (hasFlagWithEquals(token, NODE_INLINE_CODE_EQUALS_FLAGS)) {
+        noScriptFile = true;
         index += 1;
         continue;
+      }
+      if (NODE_BOOL_FLAGS.has(token)) {
+        index += 1;
+        continue;
+      }
+      if (NODE_OPTIONAL_EQUALS_FLAGS.has(token) || hasFlagWithEquals(token, NODE_OPTIONAL_EQUALS_FLAGS)) {
+        index += 1;
+        continue;
+      }
+      if (hasFlagWithEquals(token, NODE_EQUALS_ONLY_VALUE_FLAGS)) {
+        index += 1;
+        continue;
+      }
+      if (NODE_VALUE_FLAGS.has(token)) {
+        if (index + 1 >= tokens.length) return null;
+        index += 2;
+        continue;
+      }
+      if (token.startsWith('--') && hasFlagWithEquals(token, NODE_VALUE_FLAGS)) {
+        index += 1;
+        continue;
+      }
+      if (token.startsWith('-')) {
+        return null;
       }
       break;
     }
     if (isShell) {
-      if (SHELL_UNSEEN_FILE_FLAGS.has(token) || hasFlagWithEquals(token, SHELL_UNSEEN_FILE_FLAGS)) {
+      if (token.startsWith('--')) {
+        if (SHELL_LONG_INLINE_FLAGS.has(token)) {
+          noScriptFile = true;
+          index += 1;
+          continue;
+        }
+        if (SHELL_LONG_BOOL_FLAGS.has(token)) {
+          index += 1;
+          continue;
+        }
         return null;
       }
-      if (SHELL_INLINE_FLAGS.has(token)) {
-        return { kind: 'no-script-file', ...resultMeta };
-      }
-      if (token === '-s' || (/^-[A-Za-z]+$/.test(token) && token.slice(1).includes('s'))) {
-        return hasFileInputRedirect ? null : { kind: 'no-script-file', ...resultMeta };
-      }
-      if (/^-[A-Za-z]+$/.test(token) && token.slice(1).includes('c')) {
-        return { kind: 'no-script-file', ...resultMeta };
-      }
-      if (SHELL_VALUE_FLAGS.has(token) || /^[-+][A-Za-z]*o$/.test(token)) {
-        index += 2;
-        continue;
-      }
-      if (token.startsWith('-') || token.startsWith('+')) {
-        index += 1;
+      if ((token.startsWith('-') || token.startsWith('+')) && token.length > 1) {
+        const isMinus = token[0] === '-';
+        let sawC = false;
+        let valueArgsNeeded = 0;
+        for (let charIdx = 1; charIdx < token.length; charIdx += 1) {
+          const ch = token[charIdx];
+          if (SHELL_BOOL_SHORT_FLAGS.has(ch)) {
+            continue;
+          }
+          if (isMinus && ch === 'c') {
+            sawC = true;
+            continue;
+          }
+          if (isMinus && ch === 's') {
+            readsFromStdin = true;
+            continue;
+          }
+          if (ch === 'o' || (ch === 'O' && interpreter === 'bash')) {
+            valueArgsNeeded += 1;
+            continue;
+          }
+          return null;
+        }
+        if (valueArgsNeeded > 0) {
+          if (index + valueArgsNeeded >= tokens.length) return null;
+          for (let offset = 1; offset <= valueArgsNeeded; offset += 1) {
+            if (!SHELL_OPTION_NAME_PATTERN.test(tokens[index + offset])) return null;
+          }
+        }
+        if (sawC) {
+          return { kind: 'no-script-file', ...resultMeta };
+        }
+        index += 1 + valueArgsNeeded;
         continue;
       }
       break;
@@ -274,10 +419,10 @@ export function parseInterpreterInvocation(command, workingDirectory) {
     break;
   }
 
-  if (index >= tokens.length) {
-    return hasFileInputRedirect ? null : { kind: 'no-script-file', ...resultMeta };
+  if (noScriptFile) {
+    return { kind: 'no-script-file', ...resultMeta };
   }
-  if (tokens[index] === '-') {
+  if (readsFromStdin || index >= tokens.length || tokens[index] === '-') {
     return hasFileInputRedirect ? null : { kind: 'no-script-file', ...resultMeta };
   }
   const scriptToken = tokens[index];
@@ -373,6 +518,8 @@ export function parseExecutableProbeOutput(stdout, targetPath) {
   const sizeBytes = Number.parseInt(sizeRaw, 10);
   const sample = headB64 ? Buffer.from(headB64, 'base64') : Buffer.alloc(0);
   const binaryFormat = detectBinaryFormat(sample);
+  // Keep `kind: 'binary_executable'` and `truncated` in sync with the local BLOCK check
+  // in `host/runtime/host-auto-review.mjs` (`createLocalClassifier`).
   if (binaryFormat !== null) {
     return {
       kind: 'binary_executable',

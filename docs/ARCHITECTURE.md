@@ -120,7 +120,7 @@ flowchart LR
 
 Bot 做有风险的操作前，原版会问官方分类服务。这里改用你配置的模型判断，沿用原版的分类提示词和结果格式（`host/runtime/host-auto-review.mjs`）。模型不按格式回答时重试一次，仍失败才拒绝；每次失败都在日志里写 `Local auto-review failed: <原因>`。
 
-- **Shell 目标内容绑定修复与分类器重试（`host/runtime/shell-auto-review-enrichment.mjs`、`host/runtime/recovered-prompt-tools.mjs`、`host/runtime/host-auto-review.mjs`）**：原版将解释器选项误判为脚本路径（如 `node -v`、`python3 -c`、`bash -lc`）时，仅在其确实被误判为 `working_directory` 下的可执行路径且不涉及外部加载文件或包管理器时修正（`python3 -u script.py` 等仍按真实脚本绑定）；对 256 MiB 以内的编译二进制与大文本脚本改用整文件 SHA-256 完成防篡改绑定，且本地分类器对 `binary_executable` 或 `truncated: true` 目标直接返回 `BLOCK`（「内容无法完整审查」）交由用户卡片确认，超出上限或不可读仍 fail-closed 拦截。同时将 Shell 与 MCP 自动审查分类器尝试次数 `SAND_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS` 由 `1` 提升至 `2`（可用 `GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS` 调整）。
+- **Shell 目标内容绑定与分类器重试**（`host/runtime/shell-auto-review-enrichment.mjs`、`host/runtime/recovered-prompt-tools.mjs`、`host/runtime/host-auto-review.mjs`）：原版把解释器选项误判为 `<working_directory>/<选项>` 时，包装层仅对白名单内的安全开关、带值参数和内联选项修正或改绑后续脚本，遇到白名单外参数、包管理器或会加载外部代码的环境变量前缀（`NODE_OPTIONS`、`BASH_ENV`、`ENV`、`LD_*`、`DYLD_*`、`PYTHON*` 等）一律保留原版结果。≤ 256 MiB 的二进制与大文本脚本改用整文件 SHA-256 绑定防篡改，但本地分类器对 `binary_executable` 或 `truncated: true` 直接返回 `BLOCK`（「内容无法完整审查」）交由用户卡片确认，超出上限或不可读仍 fail-closed 拦截。Shell 与 MCP 自动审查分类器尝试次数 `SAND_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS` 由 `1` 提升至 `2`（可用 `GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS` 调整）。
 
 ### 联网与生成图片
 
