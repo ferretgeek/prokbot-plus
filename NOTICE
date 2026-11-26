@@ -386,9 +386,10 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
       modules pinned in the manifest recipe match host/runtime, and exercises
       prepare.mjs on a fixture; host/tests/bytepatch_checks.py expects the
       unmodified stable harness again.
-    - All five prebuilt Tailcat binaries (host/bin x64 and ARM64,
-      mac/dist/network ARM64 and x64, windows/dist/network) are rebuilt with
-      host/network/build-tailcat.py from one clean commit.
+    - The prebuilt Tailcat binaries for host/bin x64 and ARM64,
+      mac/dist/network/x64 and windows/dist/network are rebuilt with
+      host/network/build-tailcat.py from one clean commit; the Apple silicon
+      Mac binary already had the fix and is unchanged.
     - host/server/notifications.mjs keeps the ProkBot Plus backpressured
       replay (item 16), which already passes the upstream
       notification-replay test; only that test is taken.
