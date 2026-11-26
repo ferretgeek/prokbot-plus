@@ -11,6 +11,7 @@
 #import "GBLocalize.h"
 #import "GBUsage.h"
 #import "GBNetwork.h"
+#import "GBPerf.h"
 #import <dlfcn.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
@@ -116,7 +117,7 @@ static NSSet<NSString *> *GBLibraryLabels(void) {
 static NSSet<NSString *> *GBComputerLabels(void) {
   static NSSet<NSString *> *set;
   static dispatch_once_t once;
-  dispatch_once(&once, ^{ set = [NSSet setWithArray:@[@"Bot 电脑", @"Bot Computer"]]; });
+  dispatch_once(&once, ^{ set = [NSSet setWithArray:@[@"Bot 电脑", @"Bot Computer", @"Bot computer"]]; });
   return set;
 }
 static NSSet<NSString *> *GBToolbarHostLabels(void) {
@@ -318,7 +319,7 @@ static NSSet<NSString *> *GBSettingsContextLabels(void) {
       @"Appearance", @"外观", @"外觀",
       @"Language", @"语言", @"語言",
       @"Usage", @"用量",
-      @"Bot 电脑", @"Bot Computer"
+      @"Bot 电脑", @"Bot Computer", @"Bot computer"
     ]];
   });
   return set;
@@ -553,7 +554,11 @@ static void GBNoteSettingsMarkerOnView(UIView *view) {
     rawLabel = [((UIButton *)view) titleForState:UIControlStateNormal];
   else if ([view isKindOfClass:UILabel.class])
     rawLabel = ((UILabel *)view).text;
-  else
+  else if (__builtin_expect(GBPerfActive, 0)) {
+    uint64_t t0 = GBPerfNow();
+    rawLabel = view.accessibilityLabel;
+    GBPerfRecordLabelRead(GBPerfNow() - t0);
+  } else
     rawLabel = view.accessibilityLabel;
   if (!hasPluginChild) {
     if (rawLabel.length == 0 || rawLabel.length > 80) {
@@ -907,6 +912,21 @@ static GBLayoutKind GBLayoutKindForClass(Class cls) {
   return kind;
 }
 static void GBLayout(id self, SEL selector) {
+  if (__builtin_expect(GBPerfActive, 0)) {
+    uint64_t t0 = GBPerfNow();
+    ((void (*)(id, SEL))GBOriginalLayout)(self, selector);
+    uint64_t t1 = GBPerfNow();
+    GBLayoutKind kind = GBPerfLayoutHooksDisabled ? GBLayoutKindSkip : GBLayoutKindForClass([self class]);
+    switch (kind) {
+      case GBLayoutKindSkip: break;
+      case GBLayoutKindEntry: [GBInterface replaceEntry:self]; break;
+      case GBLayoutKindSwitch: GBReplacePushView(self); break;
+      case GBLayoutKindImage: if (GBConnection.shared.isPaired) GBReplaceProfileView(self); break;
+    }
+    GBPerfRecordLayout(t1 - t0, GBPerfNow() - t1, kind == GBLayoutKindEntry);
+    GBPerfRecordLayoutClass([self class]);
+    return;
+  }
   ((void (*)(id, SEL))GBOriginalLayout)(self, selector);
   // Skip known expensive non-target Fabric subclasses (scroll views at 120Hz,
   // text paragraphs, text inputs, RNSVG* avatar nodes) while still handling

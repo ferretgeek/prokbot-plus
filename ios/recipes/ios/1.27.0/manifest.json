@@ -1,0 +1,24 @@
+{
+  "schema": "grokbot-ios-inputs/v1",
+  "version": "1.27.0",
+  "build": "29519",
+  "hbcVersion": 98,
+  "hbcSha256": "6a8a877981bbaa3fc05040f5b5e01781b8f6e07dd1e110d8cca07904d6483498",
+  "dylibSha256": "01141b01ff843faa0cb9b7764f659bfbb88263a7be8a6c7e24a56ece6a4bd89e",
+  "nativeTextSha256": "2f74e8e192bfb40c3b5bba0073dcbcc3d8664bfc1be8ccef21ef35ffde573cce",
+  "resources": [
+    {
+      "target": "unpaired.hbc",
+      "patch": "unpaired.hbc.gbp.gz"
+    },
+    {
+      "target": "gateway-template.hbc",
+      "patch": "gateway-template.hbc.gbp.gz"
+    },
+    {
+      "target": "gateway-template.json",
+      "patch": "gateway-template.json.gbp.gz"
+    }
+  ],
+  "signing": "user-managed"
+}

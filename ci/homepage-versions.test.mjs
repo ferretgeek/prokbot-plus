@@ -106,13 +106,21 @@ test('a Linux or Mac pin newer than the last real-machine test says it is untest
   assert.ok(testedEn.includes(' | 1.3.0 (tested working on an Intel Mac with 1.3.0) |'));
 });
 
-test('iOS marks a newer observed App Store release unsupported but keeps the pinned build', async () => {
+test('iOS marks a newer observed App Store release unsupported and reports tested baseline', async () => {
   const data = await fixtureData();
-  data.ios = { ...data.ios, version: '1.26.0', build: '29388' };
-  data.snap.ios = { ...data.snap.ios, version: '1.27.0' };
+  data.ios = { ...data.ios, version: '1.28.0', build: '29649' };
+  data.snap.ios = { ...data.snap.ios, version: '1.28.0' };
   const zh = render(fixture, 'zh', data), en = render(fixture, 'en', data);
-  assert.ok(zh.includes('| iOS | [1.27.0](https://apps.apple.com/us/app/grok-bot/id6794501026)（此补丁不支持） | 1.26.0（构建 29388；已在 iPad 上验证连接、发消息和 App Intent） |'));
-  assert.ok(en.includes('| iOS | [1.27.0](https://apps.apple.com/us/app/grok-bot/id6794501026) (not supported by this patch) | 1.26.0 (build 29388; pairing, messaging and App Intents verified on an iPad) |'));
+  assert.ok(zh.includes('| iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.28.0（构建 29649；已在 iPhone 上实测 1.28.0 可用） |'));
+  assert.ok(en.includes('| iOS | [1.28.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.28.0 (build 29649; tested working on an iPhone with 1.28.0) |'));
+  data.snap.ios = { ...data.snap.ios, version: '1.29.0' };
+  const zhOld = render(fixture, 'zh', data), enOld = render(fixture, 'en', data);
+  assert.ok(zhOld.includes('| iOS | [1.29.0](https://apps.apple.com/us/app/grok-bot/id6794501026)（此补丁不支持） | 1.28.0（构建 29649；已在 iPhone 上实测 1.28.0 可用） |'));
+  assert.ok(enOld.includes('| iOS | [1.29.0](https://apps.apple.com/us/app/grok-bot/id6794501026) (not supported by this patch) | 1.28.0 (build 29649; tested working on an iPhone with 1.28.0) |'));
+  data.ios = { ...data.ios, version: '1.29.0', build: '30000' };
+  const zhNew = render(fixture, 'zh', data), enNew = render(fixture, 'en', data);
+  assert.ok(zhNew.includes('| iOS | [1.29.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.29.0（构建 30000；1.29.0 未在真机上测试；1.28.0 曾在 iPhone 上实测可用） |'));
+  assert.ok(enNew.includes('| iOS | [1.29.0](https://apps.apple.com/us/app/grok-bot/id6794501026) | 1.29.0 (build 30000; 1.29.0 not tested on a device; 1.28.0 was tested working on an iPhone) |'));
 });
 
 test('vendor observation does not promote supported client, shell, or cloud inputs', async () => {

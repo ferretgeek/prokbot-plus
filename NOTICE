@@ -379,6 +379,33 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
       changes targeting other computers.
     - Contributed by @jun9100 (GitHub pull request #22).
 
+27. iOS 1.28.0 (build 29649), static ChatAvatar scroll-jank fix, restored
+    Realtime Voice toggle sync, HBC 98 closure/call-frame audits, and opt-in
+    URL scroll profiler.
+    - ios/recipes/ios/ pins the official 1.28.0 (build 29649) and archives
+      1.27.0 (29519) under ios/recipes/ios/1.27.0/ alongside 1.26.0 (29388) and
+      1.16.0 (23152) as fallbacks. ios/tools/build_ios_128_recipe.py (new)
+      rebuilds the 1.28.0 HBC 98 recipes from the user's own app, keeping
+      ChatAvatar's stock "static" default on 1.28.0 (avoiding per-frame
+      GrokBotFace SVG redraws on home Bot list rows) and appending all 11
+      experimental Realtime Voice closures as NewFunction entries (with
+      callable FunctionHeader flags and safe Hermes call-frame margins,
+      preserving stock AgentPickerRow and ConnectorGrantCard closures) mounted
+      into SettingsSheet and synced with Host GET /local/voice/status.
+    - ios/tools/hbc98/audit.py adds closure-prohibit-call and
+      call-frame-overlap structural checks to guard Hermes ProhibitInvoke flags
+      and StackFrameLayout::CallerExtraRegistersAtEnd margins.
+    - ios/patchers/ios/extensions.py adds the 1.28.0 extension digests and two
+      widget scheme sites; ios/clients/ios/GBBootstrap.m adds 1.28.0
+      sentence-case label matching; ios/clients/ios/GBVoice.m intercepts
+      GET https://local.voice/local/voice/status (defaulting conservatively to
+      disabled on Host errors as well as enabled:false);
+      ios/clients/ios/GBPerf.{h,m} and GBDeepLinks.m add opt-in URL-only scroll
+      diagnostics (grokbot-local://perf/start, gated behind
+      GBDiagnosticsEnabled() and restoring Fabric probes on finish). Rebuilt
+      ios/bin/GrokBotLocal.dylib and updated all four iOS manifests.
+    - Contributed by @jun9100 (GitHub pull request #20).
+
 Upstream ProkBot changes incorporated
 -------------------------------------
 

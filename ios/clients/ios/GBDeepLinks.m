@@ -1,5 +1,6 @@
 #import "GBDeepLinks.h"
 #import "GBDiagnostics.h"
+#import "GBPerf.h"
 #import <objc/message.h>
 #import <objc/runtime.h>
 
@@ -11,6 +12,7 @@ static BOOL GBObserving;
 static BOOL GBHasBeenActive;
 static NSURL *GBPendingNotificationURL;
 static NSURL *GBInitialNotificationURL;
+static NSString *GBHandledInitialPerfURL;
 
 static void GBDeliverURL(NSURL *url) {
   GBDiagnosticsEvent(@"link.deliver", @{@"url":url.absoluteString ?: @""});
@@ -52,6 +54,7 @@ NSURL *GBNormalizeLocalURL(NSURL *url) {
 }
 
 static BOOL GBLinkURL(id self, SEL cmd, id application, NSURL *url, NSDictionary *options) {
+  if (GBPerfHandleURL(url)) return YES;
   return ((BOOL (*)(id, SEL, id, id, id))GBOriginalLinkURL)(
       self, cmd, application, GBNormalizeLocalURL(url), options);
 }
@@ -68,8 +71,23 @@ static void GBInitialURL(id self, SEL cmd, void (^resolve)(id), id reject) {
         GBPendingNotificationURL = nil;
       }
     }
-    if ([value isKindOfClass:NSString.class])
-      value = GBNormalizeLocalURL([NSURL URLWithString:value]).absoluteString ?: value;
+    if ([value isKindOfClass:NSString.class]) {
+      NSURL *parsed = [NSURL URLWithString:value];
+      if (parsed && [parsed.scheme.lowercaseString isEqualToString:@"grokbot-local"] &&
+          [parsed.host.lowercaseString isEqualToString:@"perf"]) {
+        BOOL shouldHandle = NO;
+        @synchronized (NSClassFromString(@"RCTLinkingManager")) {
+          if (![GBHandledInitialPerfURL isEqualToString:value]) {
+            GBHandledInitialPerfURL = [value copy];
+            shouldHandle = YES;
+          }
+        }
+        if (shouldHandle) GBPerfHandleURL(parsed);
+        value = nil;
+      } else {
+        value = GBNormalizeLocalURL(parsed).absoluteString ?: value;
+      }
+    }
     GBDiagnosticsEvent(@"link.initial", @{@"url":[value isKindOfClass:NSString.class] ? value : @""});
     resolve(value);
   };
