@@ -68,6 +68,11 @@ test('every extension source is carried verbatim by a recipe', async () => {
   const computerSpec = SPEC.find(entry => entry.path.includes('chunk-view-_JwVsmv_.js'));
   assert.ok(computerSpec?.edits.some(edit => edit.text?.includes('children:[i,a,o,(0,Q.jsx)(GrokRemoteDesktop,{})]')),
     '1.3.0 Settings > Computer must keep official section order (Your computer at top, Bot computer at bottom)');
+  const connectedAppsSpec = SPEC.find(entry => entry.path.includes('chunk-view-Ck6m2dRl.js'));
+  assert.ok(connectedAppsSpec?.edits.some(edit => edit.insertBefore?.includes('platform===`darwin`') && edit.text === 'return null;'),
+    '1.3.0 Connected Apps must hide the unimplemented This Mac device-tool section');
+  assert.ok(connectedAppsSpec?.edits.some(edit => edit.replace?.startsWith('var sa=[`messages`,`mail`') && edit.text === 'var sa=[]'),
+    '1.3.0 Connected Apps must omit unserved local device tools and local Obsidian vault entries');
 });
 
 test('a replacement copies the original bytes it shares at either end', () => {

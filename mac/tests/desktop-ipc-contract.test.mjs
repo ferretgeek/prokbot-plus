@@ -56,6 +56,11 @@ test('desktop IPC probes require a trusted window, a declaration and an installe
   assert.deepEqual(await call('listCloudAgentPublishedApps'), { kind: 'off' });
   assert.deepEqual(await call('getCloudAgentPublishProposals'), { kind: 'off' });
   assert.deepEqual(await call('getLocalToolActionGrant'), { granted: false });
+  assert.equal(await call('readDeviceToolPermission', { tool: 'notes' }), 'unavailable');
+  assert.equal(await call('requestDeviceToolPermission', { tool: 'notes' }), 'unavailable');
+  assert.equal(await call('readObsidianVault'), null);
+  assert.equal(await call('chooseObsidianVault'), null);
+  assert.equal(await call('clearObsidianVault'), null);
   assert.deepEqual(await call('readScmConnections'), { github: false, gitlab: false, bitbucket: false, 'azure-devops': false });
   // 1.3.0 main-edge reads answer with the official empty values.
   assert.deepEqual(await call('getBotPage', { agentId: 'a' }), {});
@@ -63,6 +68,9 @@ test('desktop IPC probes require a trusted window, a declaration and an installe
   assert.deepEqual(await call('getGrokBotAgentPreview', { agentId: 'a', maxPeople: 3 }), { people: [], stats: null, popularWithRoles: [] });
   assert.deepEqual(await call('browseGrokBotTeamAgents'), { kind: 'unranked' });
   assert.equal(await call('getPluginMcpServerLinks', { pluginId: '1' }), null);
+  assert.equal(await call('getGrokBotAutomationPurchase', { agentId: 'a', automationId: 'b' }), null);
+  assert.equal(await call('getGrokBotInviteByEmailEligibility'), 'unknown');
+  assert.deepEqual(await call('listCursorTeamMembers', { teamId: 1 }), { members: [] });
   assert.deepEqual(await call('getMcpMarketplaceLinkNeeds'), { bitbucketServerHostIds: [] });
   assert.equal(await call('openBotDictationSettings'), null);
   for (const passive of ['reportComputerControl', 'reportInfoPaneToggled', 'reportTasksPanelOpened', 'reportTaskOpened'])

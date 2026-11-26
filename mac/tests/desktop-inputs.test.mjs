@@ -48,3 +48,10 @@ test('the Intel recipes add the same code as the Apple silicon recipes', async (
   }))).sort((a, b) => a.path.localeCompare(b.path) || JSON.stringify(a.added).localeCompare(JSON.stringify(b.added)));
   assert.deepEqual(await summarize(builds[1].inputs, x64), await summarize(builds[0].inputs, arm));
 });
+
+test('arm64 Mac builds pass --pagesize 16384 when signing binaries and the app bundle', async () => {
+  const patcher = await readFile(path.join(mac, 'patchers/desktop/patch.mjs'), 'utf8');
+  assert.match(patcher, /const signPageSize = arch === 'arm64' \? \['--pagesize', '16384'\] : \[\];/);
+  const codesignCalls = patcher.match(/run\('codesign',[^\n]+\.\.\.signPageSize/g) ?? [];
+  assert.equal(codesignCalls.length, 2);
+});

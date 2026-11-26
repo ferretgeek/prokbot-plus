@@ -130,8 +130,11 @@ export function buildSpec(target = 'windows') {
       { insertBefore: 'if(Nt.size===0)It({kind:`message`,args:e})', text: 'return;' },
     ]),
 
-    // Connected apps: only apps the Host can serve, a local empty state and the Host's share link.
+    // Connected apps: only apps the Host can serve (no built-in Mac device tools or local
+    // Obsidian vault), a local empty state and the Host's share link.
     edit(chunks.connectedApps, [
+      { insertBefore: 'let t=(0,Z.c)(11),{_:n}=Y(),r=ln().platform===`darwin`', text: 'return null;' },
+      { replace: 'var sa=[`messages`,`mail`,...[`notes`,`reminders`,`calendar`,`location`,`contacts`].flatMap(e=>e===`notes`?[e,`obsidian`]:[e])]', text: 'var sa=[]' },
       { replace: 'c=r?n.filter(sl):n;', text: 'c=n.filter(sl);' },
       { replace: 'onSelect:()=>y(xn(D)),children:N', text: 'onSelect:()=>y(r.shareUrl),children:N' },
     ]),
