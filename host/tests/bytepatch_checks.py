@@ -97,9 +97,11 @@ class PinnedPatchTests(unittest.TestCase):
         source = pinned_host_archive()
         if source is None:
             self.skipTest('set PROKBOT_TEST_HOST_ARCHIVE to run the pinned Host recipe check')
+        # Since upstream 684e1ba the stable copy is the unmodified recovered
+        # harness again; the release-reliability copy the Host loads injects the Bot ID.
         expected = {
             'recovered-core__stable__harness-turn-run-shell.mjs.gbp.gz': (
-                '23657bba5e9d8a5b9cb90553312be1793b568bbe89af3d377c31cd681195911d', 769, (418, 449)),
+                '0d545b121d648ae63b263384d5bcc80f8ff7bc1858d5b863a588145089a5d70e', 762, ()),
             'release-reliability__harness-turn-run-shell.mjs.gbp.gz': (
                 'b402f015e19eae49b730ae202bd6dae3ddd16cc26f82b308a15fef87d13a48bd', 776, (421, 453)),
         }
