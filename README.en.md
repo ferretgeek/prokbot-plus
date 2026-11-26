@@ -57,6 +57,8 @@ The interface, tool calls, memory, scheduled tasks and approvals are the officia
 
 > Unofficial and not affiliated with xAI. Noncommercial use only; see [License and notices](#license-and-notices).
 
+If you find it useful, a star helps others find it too.
+
 <a id="server-requirements"></a><a id="what-you-need"></a>
 ## Server requirements
 
