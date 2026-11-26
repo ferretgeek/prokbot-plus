@@ -358,5 +358,5 @@ node --expose-internals windows/tools/inspect-desktop-preload.mjs <preload.cjs> 
 - Android：不支持 Tailcat；排版照官方手机版，但页面内容是桌面版的（设置是「通用 / 电脑 / 更新」等标签页，Bot 的电脑从对话详情打开）；后台通知靠前台服务，部分厂商系统需要允许后台运行；语音只验证到请求送达 Host；只在模拟器上测过。
 - 网页版：只能使用 Host 上的 Bot 电脑；不支持 Tailcat；http 地址下麦克风、语音输入和通知不可用，页面关闭后没有通知；没有在真机浏览器上测试。
 - 原版桌面只有 amd64。单台 ARM 机器同时运行 Host 和模拟桌面的完整部署和性能没有验证。
-- Mac：1.3.0 尚未在 Mac 上生成或运行（Mac 的 `--verify-only` 只能在 macOS 上执行），只在 Windows 上从官方 DMG 内容做了 recipe 重现和 `CUGrokBotService` Team ID 偏移检查。上一版 Intel 1.2.3 已在 Intel Mac 上实测生成、配对和对话可用（本机图形控制和 Tailcat 尚未在 Intel Mac 上实测）；Apple 芯片 1.2.3 已通过证书签名构建校验，但尚未在 Apple 芯片真机上实测运行。
+- Mac：1.3.0 的 Apple 芯片（ARM64）与 Intel（x64）版本均已由贡献者在对应芯片的 Mac 真机上实测生成、配对、对话、连接应用与自动化详情页可用（本机图形控制和 Tailcat 尚未覆盖全部组合）。
 - iOS 需要自备已解密的 IPA 和签名证书。1.27.0（29519）由贡献者在 iPad Pro 上实测了升级、配对、消息与图片附件、自动审查设置和通知流；之后重编的注入库（`053542bc…`）只在 Mac 上跑过离线与原生测试，尚未重新上真机验证。iPhone 还没有完整实测；1.26.0 和 1.16.0 回退版本搭配新注入库也没有真机测试。
