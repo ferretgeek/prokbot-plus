@@ -158,6 +158,8 @@ When the model asks, under a new call ID, to resend the exact text of a message 
 
 The official Linux desktop image is used directly; the Host operates it over an authenticated connection, on the same machine or another one. When Agents operate your computer, the client connects out to the Host, so your computer opens no ports.
 
+- **Idle Fork desktop parking**: `host/runtime/idle-desktop-park.mjs` (installed through `recovered-computer.mjs` and `host-extensions.mjs`) brings the official `9d2ac1b` shared-desktop park policy to the Host runtime. Each Bot gets its own `Fork-<N>` virtual display and browser profile on the shared Box; once a Fork desktop has no active turn, pending approval or handoff, in-flight command, or attached VNC viewer for 30 minutes (or 5 minutes when Box `MemAvailable` falls below 15% or memory PSI `avg10 > 10`), the Host runs `/usr/local/bin/stop-window --park <N>` to stop Chrome, `Xvfb`, `x11vnc`, and `exec-daemon` while keeping seat ownership and browser sessions intact for transparent wake-up on the next `ensureReady`.
+
 <a id="mac-client"></a><a id="windows-client"></a><a id="linux-client"></a><a id="windows-client-new-in-this-version"></a>
 ### Desktop clients (Mac, Windows and Linux)
 

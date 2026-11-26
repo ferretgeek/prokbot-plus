@@ -18,6 +18,7 @@ import { startLocalFederation } from './host-federation.mjs';
 import { createLocalServiceRuntime } from './media-runtime.mjs';
 import { modelRouteForAgent } from './model-routing.mjs';
 import { contextCacheFilePath } from './model-context-cache.mjs';
+import { startLocalIdleDesktopPark } from './idle-desktop-park.mjs';
 
 const unsubscribe = () => () => {};
 export function unavailable(capability) {
@@ -116,6 +117,16 @@ export function createExtensionStarter(library, modelConfig) {
       host.log(`starting extension ${extension.id}`);
       if (extension.id === 'memory') return startLocalMemory(context, extension, capabilities);
       const api = await (replacements[extension.id] ? replacements[extension.id](context) : extension.start(context));
+      if (extension.id === 'forever-box') {
+        startLocalIdleDesktopPark({
+          context,
+          host,
+          library,
+          foreverBox: api,
+          autoReview: () => apis.get('auto-review'),
+          session: () => apis.get('session'),
+        });
+      }
       if (extension.id === 'attachments') return services.decorateAttachments(api);
       if (extension.id === 'experiments') {
         context.onStop(() => capabilities.close());

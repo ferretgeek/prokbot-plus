@@ -15,7 +15,7 @@ modifications below. The noncommercial conditions also apply to everything
 ProkBot Plus adds; none of it is offered under terms that allow commercial use.
 CHANGELOG.md lists the changes by release.
 
-Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
+Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
 --------------------------------------------------------------
 
 1. Windows x64 client (new)
@@ -364,6 +364,18 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-25)
       device-tool section and local Obsidian vault entry in Connected Apps,
       regenerating the connectedApps recipe across all five 1.3.0 targets.
     - Contributed by @jun9100 (GitHub pull request #23).
+
+26. Idle Fork desktop parking and memory-pressure eviction on the shared Box (new).
+    - host/runtime/idle-desktop-park.mjs (new), recovered-computer.mjs,
+      host-extensions.mjs, host/release/compose.yaml,
+      host/release/compose.host.yaml, and host/tests/idle-desktop-park.test.mjs:
+      implement the official 9d2ac1b shared-desktop idle park policy on top of
+      the pinned d0a4baa Host runtime, coordinating /tmp/sand-window-locks.d/<N>
+      flock guards across start-window, stop-window, and stop-window --park so
+      idle per-Bot Fork desktops release Chrome/Xvfb/x11vnc/exec-daemon memory
+      after 30 minutes (or 5 minutes under <15% MemAvailable or >10% memory PSI)
+      while retaining seat tokens and Fork-<N> browser profiles for transparent
+      wake-up.
 
 Upstream ProkBot changes incorporated
 -------------------------------------
