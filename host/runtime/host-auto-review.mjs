@@ -9,7 +9,7 @@ const OUTPUT_LIMIT = 16_000;
 // The shipped Host gives each classification 10 s and reports a timeout as an error without an
 // approval card. Answer BLOCK shortly before that instead, so the user can still decide.
 const DECISION_DEADLINE_MS = 9_000;
-const DEADLINE_REASON = '自动审查没有及时得出结论';
+const DEADLINE_REASON = '自动审查没能及时判断这个操作是否安全，需要你看过后批准才能运行';
 // Classification needs little reasoning; use the lowest level the model offers.
 function reviewEffort(config) {
   const efforts = config.policy?.models?.find(entry => entry.id === config.model)?.efforts ?? [];
@@ -118,7 +118,7 @@ export function createLocalClassifier(config, library,
       const enrichment = target.arguments?.target_enrichment ?? target.arguments?.targetEnrichment;
       if (enrichment && (enrichment.kind === 'binary_executable' || enrichment.truncated === true)) {
         log(`Local auto-review BLOCK; model=${config.model}; reason=uninspectable-target-enrichment`);
-        return block('内容无法完整审查');
+        return block('内容无法完整审查，需要你看过后批准才能运行');
       }
       const messages = args.conversationContext ?? [];
       const input = {

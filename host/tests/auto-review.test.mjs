@@ -62,7 +62,7 @@ test('binary_executable and truncated target enrichments block locally without c
     });
     assert.equal(requests.length, 0);
     assert.equal(result.result.value.decision, 2);
-    assert.equal(result.result.value.blockReason, '内容无法完整审查');
+    assert.equal(result.result.value.blockReason, '内容无法完整审查，需要你看过后批准才能运行');
     assert.equal(result.result.value.proposedAllowRule, undefined);
     assert.match(logs.at(-1), /Local auto-review BLOCK/);
   }
@@ -76,7 +76,7 @@ test('a model that does not decide before the deadline blocks for user approval 
   const result = await instance.execute(undefined, args);
   assert.equal(requests.length, 1);
   assert.equal(result.result.value.decision, 2);
-  assert.equal(result.result.value.blockReason, '自动审查没有及时得出结论');
+  assert.equal(result.result.value.blockReason, '自动审查没能及时判断这个操作是否安全，需要你看过后批准才能运行');
   assert.equal(result.result.value.proposedAllowRule, undefined);
   assert.match(logs.at(-1), /Local auto-review BLOCK; model=m; reason=no-decision-within-50ms/);
 });
