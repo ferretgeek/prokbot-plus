@@ -42,8 +42,12 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
     'python3 -c "print(1)"',
     'python3 -c"print(1)"',
     'python3 -uc "print(1)"',
+    'python3 -c "print(1 < 2)"',
     'python3 - <<\'PY\'\nprint(1)\nPY',
+    'bash -s <<EOF\necho hi\nEOF',
+    'bash -e <<-\'EOF\'\necho hi\nEOF',
     'bash -c "ls -la"',
+    'bash -c "echo a > b"',
     'bash -ce "echo hi"',
     'bash -c -e "echo hi"',
     'bash -c -o errexit "echo hi"',
@@ -118,6 +122,22 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
     '/workspace/evil.sh',
   );
   assert.equal(
+    parseInterpreterInvocation('bash -e + evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
+    parseInterpreterInvocation('sh -e + evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
+    parseInterpreterInvocation('bash + evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
+    parseInterpreterInvocation('sh + evil.sh', '/workspace')?.path,
+    '/workspace/evil.sh',
+  );
+  assert.equal(
     parseInterpreterInvocation('node --unhandled-rejections strict evil.js', '/workspace')?.path,
     '/workspace/evil.js',
   );
@@ -189,6 +209,23 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
     'bash --unknown-flag decoy evil.sh',
     'sh -s < ./secret.sh',
     'bash < ./secret.sh',
+    'bash + -e evil.sh',
+    // Redirections anywhere in the first segment (including fd-prefixed, &>, >, << with trailing args, <<<)
+    'bash -e 2>&1 evil.sh',
+    'bash -e 2>/dev/null evil.sh',
+    'python3 -u 2>&1 evil.py',
+    'bash -e 0<evil.sh',
+    'sh -e 0<evil.sh',
+    'python3 -u 0<evil.py',
+    'bash -e >/dev/null evil.sh',
+    'bash -e &>/dev/null evil.sh',
+    'python3 -u >log.txt evil.py',
+    'node --no-warnings >out.txt evil.js',
+    "bash -e <<'X' evil.sh",
+    'bash -e 0 <<EOF\nhi\nEOF',
+    'bash -e /dev/stdin < evil.sh',
+    'python3 -u - <<< "print(1)"',
+    'python3 -c "print(1)" > out.txt',
     // Python -m / -x / dotted -W / missing value / unknown flags / redirect
     'python3 - < ./secret.py',
     'python3 -m json.tool',
@@ -201,7 +238,7 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
     'python3 -uW',
     'python3 -i evil.py',
     'python3 --unknown-flag decoy evil.py',
-    // Shell expansion characters in script argument
+    // Shell expansion characters / raw backslashes / line continuations / non-ASCII whitespace
     'python3 -u ~/evil.py',
     'python3 -u $HOME/evil.py',
     'python3 -u `echo evil`.py',
@@ -210,6 +247,11 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
     'python3 -u evil[0].py',
     'python3 -u {a,b}.py',
     'python3 -u "dir\\\\evil.py"',
+    'python3 -u "\\real.py"',
+    'python3 -u \\\nevil.py',
+    'python3 -u \\\nreal.py',
+    'python3 -u harmless.py\u00a0evil.py',
+    'python3 -u harmless.py\revil.py',
     // Dangerous environment variable prefixes
     'NODE_OPTIONS="--require ./x.js" node -e 1',
     'env NODE_OPTIONS="--import ./x.mjs" node -v',
@@ -471,6 +513,14 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
     ['/workspace/pipefail', 'echo "harmless pipefail"\n'],
     ['/workspace/globstar', 'echo "harmless globstar"\n'],
     ['/workspace/-', 'echo "harmless dash"\n'],
+    ['/workspace/+', 'echo "harmless plus"\n'],
+    ['/workspace/2', 'echo "harmless fd 2"\n'],
+    ['/workspace/0', 'echo "harmless fd 0"\n'],
+    ['/workspace/real.py', 'print("harmless real.py")\n'],
+    ['/workspace/-r', 'console.log("harmless -r");\n'],
+    ['/workspace/-e', 'echo "harmless -e"\n'],
+    ['/workspace/-u', 'print("harmless -u")\n'],
+    ['/workspace/-c', 'echo "harmless -c"\n'],
     ['/workspace/harmless.sh', 'echo "harmless shell"\n'],
     ['/workspace/harmless.py', '"""\nos.system("id")\n""" # """\n'],
     ['/workspace/~/evil.py', 'print("harmless tilde decoy")\n'],
@@ -518,6 +568,10 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
     ['bash - evil.sh', '/workspace/evil.sh'],
     ['bash -e - evil.sh', '/workspace/evil.sh'],
     ['sh - evil.sh', '/workspace/evil.sh'],
+    ['bash -e + evil.sh', '/workspace/evil.sh'],
+    ['sh -e + evil.sh', '/workspace/evil.sh'],
+    ['bash + evil.sh', '/workspace/evil.sh'],
+    ['sh + evil.sh', '/workspace/evil.sh'],
     ['node --unhandled-rejections strict evil.js', '/workspace/evil.js'],
   ]) {
     const res = await wrapped({}, { command, workingDirectory: '/workspace', toolCallId: 'allow-val' });
@@ -528,9 +582,12 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
   }
 
   // Disallowed / unknown flags, unsafe `-o`/`-O` option names, `-l`/`--login`, `-x`,
-  // shell expansion chars, and startup/loader env prefixes must keep stock
-  // approval_binding_unavailable rather than binding a same-named decoy file or clearing enrichment.
+  // redirections, raw backslashes, NBSP/CR, shell expansion chars, option-named decoy files,
+  // and startup/loader env prefixes must fail closed with approval_binding_unavailable
+  // rather than binding any decoy file (including `2`, `0`, `+`, `real.py`, `-r`, `-e`, `-u`, `-c`)
+  // or clearing enrichment.
   for (const command of [
+    'node -r ./evil.js -e 1',
     'node --run build',
     'node --test',
     'node --test --test-reporter spec',
@@ -542,8 +599,28 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
     'node -ep "1"',
     'node -e "1" -r ./preload.js',
     'node --unknown-flag decoy evil.js',
+    'node --no-warnings >out.txt evil.js',
     'bash --unknown-flag decoy evil.sh',
     'python3 --unknown-flag decoy evil.py',
+    'bash -e 2>&1 evil.sh',
+    'bash -e 2>/dev/null evil.sh',
+    'python3 -u 2>&1 evil.py',
+    'bash -e 0<evil.sh',
+    'sh -e 0<evil.sh',
+    'python3 -u 0<evil.py',
+    'bash -e >/dev/null evil.sh',
+    'bash -e &>/dev/null evil.sh',
+    'python3 -u >log.txt evil.py',
+    "bash -e <<'X' evil.sh",
+    'bash -e /dev/stdin < evil.sh',
+    'bash -e < evil.sh',
+    'python3 -u - < evil.py',
+    'bash + -e evil.sh',
+    'python3 -u "\\real.py"',
+    'python3 -u \\\nevil.py',
+    'python3 -u \\\nreal.py',
+    'python3 -u harmless.py\u00a0evil.py',
+    'python3 -u harmless.py\revil.py',
     'sh -o stdin harmless.sh < evil.sh',
     'sh -o interactive harmless.sh',
     'zsh -o shinstdin harmless.sh < evil.sh',
@@ -566,8 +643,8 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
     'LD_PRELOAD=./x.so python3 -c 1',
   ]) {
     const res = await wrapped({}, { command, workingDirectory: '/workspace', toolCallId: 'deny-decoy' });
-    assert.equal(res?.approval_binding_unavailable, true, `Expected stock unavailable for: ${command}`);
-    assert.equal(workspaceFiles.has(res?.path), false, `Must never bind a decoy file for: ${command}`);
+    assert.equal(res?.approval_binding_unavailable, true, `Expected unavailable for: ${command}`);
+    assert.equal(res?.definition, undefined, `Must never return decoy content for: ${command}`);
   }
 });
 
@@ -705,19 +782,30 @@ function extractTarEntry(tarBuf, targetEntry) {
   throw new Error(`Missing tar entry: ${targetEntry}`);
 }
 
-async function loadPinnedStockEnrichment() {
-  const configured = process.env.PROKBOT_TEST_HOST_ARCHIVE;
+async function loadPinnedStockEnrichment(configured = process.env.PROKBOT_TEST_HOST_ARCHIVE) {
   const archivePath = configured
     ? path.resolve(configured)
     : path.resolve(import.meta.dirname, '../../inputs/host/sand-host-bundle-d0a4baa.tgz');
   let archiveBytes;
   try {
     archiveBytes = await readFile(archivePath);
-  } catch {
+  } catch (error) {
+    if (configured) {
+      throw new Error(`PROKBOT_TEST_HOST_ARCHIVE could not be read (${archivePath}): ${error.message}`);
+    }
     return null;
   }
   const digest = createHash('sha256').update(archiveBytes).digest('hex');
-  if (digest !== PINNED_HOST_ARCHIVE_SHA256) return null;
+  if (digest !== PINNED_HOST_ARCHIVE_SHA256) {
+    if (configured) {
+      assert.equal(
+        digest,
+        PINNED_HOST_ARCHIVE_SHA256,
+        `PROKBOT_TEST_HOST_ARCHIVE SHA-256 mismatch for ${archivePath}`,
+      );
+    }
+    return null;
+  }
 
   const hostMain = extractTarEntry(gunzipSync(archiveBytes), 'sand-host/host-main.cjs');
   const startMarker = '// ../packages/grok-bot-harness/src/runner/sand-shell-auto-review-enrichment.ts';
@@ -766,6 +854,14 @@ test('wrapper behavior matches expectations when composed with real pinned stock
     ['/workspace/build', 'console.log("harmless build");\n'],
     ['/workspace/errexit', 'echo "harmless errexit"\n'],
     ['/workspace/-', 'echo "harmless dash"\n'],
+    ['/workspace/+', 'echo "harmless plus"\n'],
+    ['/workspace/2', 'echo "harmless fd 2"\n'],
+    ['/workspace/0', 'echo "harmless fd 0"\n'],
+    ['/workspace/real.py', 'print("harmless real.py")\n'],
+    ['/workspace/-r', 'console.log("harmless -r");\n'],
+    ['/workspace/-e', 'echo "harmless -e"\n'],
+    ['/workspace/-u', 'print("harmless -u")\n'],
+    ['/workspace/-c', 'echo "harmless -c"\n'],
     ['/workspace/harmless.sh', 'echo "harmless shell"\n'],
     ['/workspace/harmless.py', '"""\nos.system("id")\n""" # """\n'],
     ['/workspace/evil.js', 'require("node:child_process").execSync("id");\n'],
@@ -830,6 +926,9 @@ test('wrapper behavior matches expectations when composed with real pinned stock
     ['bash - evil.sh', '/workspace/evil.sh'],
     ['bash -e - evil.sh', '/workspace/evil.sh'],
     ['sh - evil.sh', '/workspace/evil.sh'],
+    ['bash -e + evil.sh', '/workspace/evil.sh'],
+    ['sh -e + evil.sh', '/workspace/evil.sh'],
+    ['bash + evil.sh', '/workspace/evil.sh'],
     ['node --unhandled-rejections strict evil.js', '/workspace/evil.js'],
   ]) {
     const res = await wrapped({}, { resourceAccessor: readAccessor, command, workingDirectory: '/workspace', toolCallId: 'real-script' });
@@ -840,6 +939,26 @@ test('wrapper behavior matches expectations when composed with real pinned stock
   }
 
   for (const unsafeCmd of [
+    'node -r ./evil.js -e 1',
+    'bash -e 2>&1 evil.sh',
+    'bash -e 2>/dev/null evil.sh',
+    'python3 -u 2>&1 evil.py',
+    'bash -e 0<evil.sh',
+    'sh -e 0<evil.sh',
+    'python3 -u 0<evil.py',
+    'bash -e >/dev/null evil.sh',
+    'bash -e &>/dev/null evil.sh',
+    'python3 -u >log.txt evil.py',
+    'node --no-warnings >out.txt evil.js',
+    "bash -e <<'X' evil.sh",
+    'bash -e /dev/stdin < evil.sh',
+    'bash -e < evil.sh',
+    'python3 -u - < evil.py',
+    'bash + -e evil.sh',
+    'python3 -u "\\real.py"',
+    'python3 -u \\\nevil.py',
+    'python3 -u \\\nreal.py',
+    'python3 -u harmless.py\u00a0evil.py',
     'sh -o stdin harmless.sh < evil.sh',
     'zsh -o shinstdin harmless.sh < evil.sh',
     'zsh -o errexit harmless.sh',
@@ -861,7 +980,22 @@ test('wrapper behavior matches expectations when composed with real pinned stock
     'BASH_ENV=./x.sh bash -c true',
   ]) {
     const res = await wrapped({}, { resourceAccessor: readAccessor, command: unsafeCmd, workingDirectory: '/workspace', toolCallId: 'real-unsafe' });
-    assert.equal(res?.approval_binding_unavailable, true, `Expected stock unavailable for: ${unsafeCmd}`);
-    assert.equal(workspaceFiles.has(res?.path), false, `Must never bind harmless decoy for: ${unsafeCmd}`);
+    assert.equal(res?.approval_binding_unavailable, true, `Expected unavailable for: ${unsafeCmd}`);
+    assert.equal(res?.definition, undefined, `Must never return harmless decoy content for: ${unsafeCmd}`);
   }
+});
+
+test('loadPinnedStockEnrichment fails loudly when PROKBOT_TEST_HOST_ARCHIVE is explicitly misconfigured', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'shell-auto-review-bad-archive-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await assert.rejects(
+    () => loadPinnedStockEnrichment(path.join(dir, 'missing.tgz')),
+    /PROKBOT_TEST_HOST_ARCHIVE could not be read/,
+  );
+  const wrongPath = path.join(dir, 'wrong.tgz');
+  await writeFile(wrongPath, 'not the pinned archive');
+  await assert.rejects(
+    () => loadPinnedStockEnrichment(wrongPath),
+    /SHA-256 mismatch/,
+  );
 });

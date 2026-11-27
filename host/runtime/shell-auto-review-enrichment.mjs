@@ -7,7 +7,11 @@ export const SHELL_ENRICHMENT_PREVIEW_MAX_LINES = 200;
 export const SHELL_ENRICHMENT_FULL_HASH_MAX_BYTES = 256 * 1024 * 1024;
 export const DEFAULT_AUTO_REVIEW_CLASSIFIER_MAX_ATTEMPTS = 2;
 
-const INTERPRETER_PATTERN = /^(python(?:3(?:\.\d+)?)?|node|bash|sh|zsh)(?=\s|$)/;
+const INTERPRETER_PATTERN = /^(python(?:3(?:\.\d+)?)?|node|bash|sh|zsh)(?=[ \t\n]|$)/;
+// Only ASCII space, tab, and newline are treated as shell whitespace; any other control
+// character (including \r, \v, \f, NUL) or Unicode whitespace (such as NBSP \u00a0) fails closed.
+const DISALLOWED_WHITESPACE_OR_CONTROL_PATTERN =
+  /[\x00-\x08\x0b-\x1f\x7f\u0080-\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/;
 
 const DANGEROUS_ENV_EXACT = new Set([
   'NODE_OPTIONS',
@@ -23,7 +27,7 @@ const DANGEROUS_ENV_EXACT = new Set([
   'SHELLOPTS',
   'BASHOPTS',
 ]);
-const ENV_ASSIGNMENT_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)=(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s+/;
+const ENV_ASSIGNMENT_PATTERN = /^([A-Za-z_][A-Za-z0-9_]*)=(?:"[^"]*"|'[^']*'|[^ \t\n;&|<>]+)[ \t]+/;
 
 function isDangerousEnvVar(name) {
   return (
@@ -110,14 +114,18 @@ function unquote(token) {
   return token;
 }
 
+function trimAsciiShellSpace(value) {
+  return String(value ?? '').replace(/^[ \t\n]+|[ \t\n]+$/g, '');
+}
+
 /** Strip up to four env / `cd <dir> &&` prefixes matching stock sand-shell-auto-review-enrichment. */
 export function stripShellPrefixes(command, workingDirectory) {
-  let candidateCommand = String(command ?? '').trim();
+  let candidateCommand = trimAsciiShellSpace(command);
   let candidateWorkingDirectory = workingDirectory;
   const envNames = [];
   for (let prefixCount = 0; prefixCount < 4; prefixCount += 1) {
     let rest = candidateCommand;
-    const leadingEnv = rest.match(/^env\s+/);
+    const leadingEnv = rest.match(/^env[ \t]+/);
     if (leadingEnv !== null) {
       rest = rest.slice(leadingEnv[0].length);
     }
@@ -134,7 +142,7 @@ export function stripShellPrefixes(command, workingDirectory) {
       continue;
     }
     const changeDirectoryPrefix = candidateCommand.match(
-      /^cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*&&\s*(.+)$/s,
+      /^cd[ \t]+("[^"]+"|'[^']+'|[^ \t\n;&|]+)[ \t]*&&[ \t]*(.+)$/s,
     );
     if (changeDirectoryPrefix === null) break;
     const target = unquote(changeDirectoryPrefix[1]);
@@ -143,14 +151,77 @@ export function stripShellPrefixes(command, workingDirectory) {
     } else if (path.posix.isAbsolute(target)) {
       candidateWorkingDirectory = path.posix.resolve(target);
     }
-    candidateCommand = changeDirectoryPrefix[2].trim();
+    candidateCommand = trimAsciiShellSpace(changeDirectoryPrefix[2]);
   }
   return { command: candidateCommand, workingDirectory: candidateWorkingDirectory, envNames };
 }
 
 /**
- * Tokenize the first simple command segment (stopping at unquoted separators/redirections)
- * and detect whether stdin is redirected from an external file (`< file`, excluding `<<`/`<<<`).
+ * Validate that the tail after `<<` is a pure heredoc header (`[-]DELIMITER`) with no other
+ * words, operators, or redirections remaining on the same command line.
+ */
+function isPureHeredocTail(tail) {
+  const newlineIndex = tail.indexOf('\n');
+  const firstLine = newlineIndex === -1 ? tail : tail.slice(0, newlineIndex);
+  if (DISALLOWED_WHITESPACE_OR_CONTROL_PATTERN.test(firstLine)) return false;
+
+  let index = 0;
+  if (firstLine[index] === '-') index += 1;
+  while (index < firstLine.length && (firstLine[index] === ' ' || firstLine[index] === '\t')) {
+    index += 1;
+  }
+
+  let quote = null;
+  let escaping = false;
+  let sawDelimiter = false;
+  for (; index < firstLine.length; index += 1) {
+    const ch = firstLine[index];
+    if (escaping) {
+      sawDelimiter = true;
+      escaping = false;
+      continue;
+    }
+    if (quote === "'") {
+      if (ch === "'") quote = null;
+      else sawDelimiter = true;
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === '"') quote = null;
+      else if (ch === '\\' && index + 1 < firstLine.length) escaping = true;
+      else sawDelimiter = true;
+      continue;
+    }
+    if (ch === ' ' || ch === '\t') {
+      break;
+    }
+    if (ch === ';' || ch === '&' || ch === '|' || ch === '<' || ch === '>' || ch === '(' || ch === ')' || ch === '`' || ch === '$') {
+      return false;
+    }
+    if (ch === '\\') {
+      escaping = true;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      continue;
+    }
+    sawDelimiter = true;
+  }
+
+  if (!sawDelimiter || quote !== null || escaping) return false;
+  while (index < firstLine.length) {
+    if (firstLine[index] !== ' ' && firstLine[index] !== '\t') return false;
+    index += 1;
+  }
+  return true;
+}
+
+/**
+ * Tokenize the first simple command segment using ASCII space/tab/newline separators only.
+ * Any unquoted `<` or `>` (including `&>` and fd-prefixed redirections like `2>&1` / `0<file`)
+ * sets `hasRedirection = true`, with the sole exception of a trailing pure heredoc (`<<EOF`
+ * with no words after the delimiter on the same line).
  */
 function tokenizeFirstSegment(command) {
   const tokens = [];
@@ -160,7 +231,9 @@ function tokenizeFirstSegment(command) {
   let quote = null;
   let escaping = false;
   let hasToken = false;
-  let hasFileInputRedirect = false;
+  let hasRedirection = false;
+  let hasPureHeredoc = false;
+  let hasInvalidSyntax = false;
 
   const flushToken = () => {
     if (!hasToken) return;
@@ -173,6 +246,10 @@ function tokenizeFirstSegment(command) {
 
   for (let index = 0; index < command.length; index += 1) {
     const ch = command[index];
+    if (DISALLOWED_WHITESPACE_OR_CONTROL_PATTERN.test(ch)) {
+      hasInvalidSyntax = true;
+      break;
+    }
     if (escaping) {
       current += ch;
       rawCurrent += ch;
@@ -209,15 +286,27 @@ function tokenizeFirstSegment(command) {
       continue;
     }
     if (ch === '<') {
-      if (command[index + 1] !== '<') {
-        hasFileInputRedirect = true;
+      if (!hasToken && command[index + 1] === '<' && command[index + 2] !== '<' && isPureHeredocTail(command.slice(index + 2))) {
+        hasPureHeredoc = true;
+      } else {
+        hasRedirection = true;
       }
       break;
     }
-    if (ch === ';' || ch === '&' || ch === '|' || ch === '\n' || ch === '>') {
+    if (ch === '>') {
+      hasRedirection = true;
       break;
     }
-    if (/\s/.test(ch)) {
+    if (ch === '&') {
+      if (command[index + 1] === '>') {
+        hasRedirection = true;
+      }
+      break;
+    }
+    if (ch === ';' || ch === '|' || ch === '\n') {
+      break;
+    }
+    if (ch === ' ' || ch === '\t') {
       flushToken();
       continue;
     }
@@ -225,8 +314,11 @@ function tokenizeFirstSegment(command) {
     rawCurrent += ch;
     hasToken = true;
   }
+  if (quote !== null || escaping) {
+    hasInvalidSyntax = true;
+  }
   flushToken();
-  return { tokens, rawTokens, hasFileInputRedirect };
+  return { tokens, rawTokens, hasRedirection, hasPureHeredoc, hasInvalidSyntax };
 }
 
 function hasFlagWithEquals(token, flagSet) {
@@ -257,8 +349,8 @@ export function parseInterpreterInvocation(command, workingDirectory) {
   if (!match) return null;
 
   const interpreter = match[1];
-  const { tokens, rawTokens, hasFileInputRedirect } = tokenizeFirstSegment(stripped.command);
-  if (tokens.length < 2) return null;
+  const { tokens, rawTokens, hasRedirection, hasPureHeredoc, hasInvalidSyntax } = tokenizeFirstSegment(stripped.command);
+  if (hasInvalidSyntax || hasRedirection || tokens.length < 2) return null;
 
   const firstArg = tokens[1];
   const rawFirstArg = rawTokens[1];
@@ -290,6 +382,16 @@ export function parseInterpreterInvocation(command, workingDirectory) {
       index += 1;
       break;
     }
+    if (isShell && token === '+') {
+      // dash and zsh treat standalone `+` as end-of-options while bash treats it as an empty
+      // option group. Fail closed when the next token begins with `-` or `+` where shells diverge.
+      const next = tokens[index + 1];
+      if (next !== undefined && (next.startsWith('-') || next.startsWith('+'))) {
+        return null;
+      }
+      index += 1;
+      break;
+    }
     if (token === '-') {
       readsFromStdin = true;
       break;
@@ -297,7 +399,8 @@ export function parseInterpreterInvocation(command, workingDirectory) {
     if (isPython) {
       if (token.startsWith('--')) {
         if (PYTHON_LONG_INLINE_FLAGS.has(token)) {
-          return { kind: 'no-script-file', ...resultMeta };
+          noScriptFile = true;
+          break;
         }
         if (PYTHON_LONG_VALUE_FLAGS.has(token)) {
           if (index + 1 >= tokens.length) return null;
@@ -317,6 +420,7 @@ export function parseInterpreterInvocation(command, workingDirectory) {
         for (let charIdx = 1; charIdx < token.length; charIdx += 1) {
           const ch = token[charIdx];
           if (ch === 'c') {
+            if (charIdx + 1 === token.length && index + 1 >= tokens.length) return null;
             sawInlineCode = true;
             break;
           }
@@ -344,7 +448,8 @@ export function parseInterpreterInvocation(command, workingDirectory) {
           return null;
         }
         if (sawInlineCode || sawVersionOrHelp) {
-          return { kind: 'no-script-file', ...resultMeta };
+          noScriptFile = true;
+          break;
         }
         if (consumedValue) {
           continue;
@@ -455,14 +560,23 @@ export function parseInterpreterInvocation(command, workingDirectory) {
   }
 
   if (noScriptFile) {
+    if (hasPureHeredoc) return null;
     if (needsInlineCommandArg && index >= tokens.length) return null;
     return { kind: 'no-script-file', ...resultMeta };
   }
   if (readsFromStdin || index >= tokens.length || (!isShell && tokens[index] === '-')) {
-    return hasFileInputRedirect ? null : { kind: 'no-script-file', ...resultMeta };
+    return { kind: 'no-script-file', ...resultMeta };
+  }
+  if (hasPureHeredoc) {
+    // Pure heredoc exception applies only when the interpreter reads its program from stdin.
+    return null;
   }
   const scriptToken = tokens[index];
-  if (SHELL_EXPANSION_CHAR_PATTERN.test(scriptToken)) {
+  const rawScriptToken = rawTokens[index];
+  if (
+    SHELL_EXPANSION_CHAR_PATTERN.test(rawScriptToken) ||
+    SHELL_EXPANSION_CHAR_PATTERN.test(scriptToken)
+  ) {
     return null;
   }
   if (path.posix.isAbsolute(scriptToken)) {
@@ -475,6 +589,31 @@ export function parseInterpreterInvocation(command, workingDirectory) {
     kind: 'script-after-flags',
     ...resultMeta,
     path: path.posix.resolve(stripped.workingDirectory, scriptToken),
+  };
+}
+
+function extractInterpreterLeadingFlag(command, workingDirectory) {
+  const stripped = stripShellPrefixes(command, workingDirectory);
+  if (!stripped.command || stripped.workingDirectory === undefined) return null;
+  const match = stripped.command.match(INTERPRETER_PATTERN);
+  if (!match) return null;
+  const interpreter = match[1];
+  const isShell = interpreter === 'bash' || interpreter === 'sh' || interpreter === 'zsh';
+  const rest = stripped.command.slice(match[0].length).replace(/^[ \t]+/, '');
+  if (!rest) return null;
+  const tokenMatch = /^("[^"]*"|'[^']*'|[^ \t\n;&|<>]+)/.exec(rest);
+  if (!tokenMatch) return null;
+  const rawFirstArg = tokenMatch[1];
+  const firstArg = unquote(rawFirstArg);
+  const startsWithFlagPrefix =
+    firstArg.startsWith('-') ||
+    rawFirstArg.startsWith('-') ||
+    (isShell && (firstArg.startsWith('+') || rawFirstArg.startsWith('+')));
+  if (!startsWithFlagPrefix) return null;
+  return {
+    firstArg,
+    rawFirstArg,
+    workingDirectory: stripped.workingDirectory,
   };
 }
 
@@ -702,6 +841,28 @@ export function wrapSandShellAutoReviewTargetEnrichment(originalEnrich, deps = {
           approval_binding_unavailable: true,
           approval_binding_nonce: randomUUID(),
         };
+      }
+    } else if (!interpreterTarget && stock?.kind === 'executable') {
+      const leadingFlag = extractInterpreterLeadingFlag(args?.command, args?.workingDirectory);
+      if (
+        leadingFlag &&
+        isInterpreterFirstFlagPath(
+          stock.path,
+          leadingFlag.workingDirectory,
+          leadingFlag.firstArg,
+          leadingFlag.rawFirstArg,
+        )
+      ) {
+        // Never allow stock enrichment (or our probe fallback) to bind a harmless file in cwd
+        // named after an interpreter option such as `-r`, `-e`, `-u`, `-c`, or `+`.
+        return stock.approval_binding_unavailable === true
+          ? stock
+          : {
+              kind: 'executable',
+              path: stock.path,
+              approval_binding_unavailable: true,
+              approval_binding_nonce: randomUUID(),
+            };
       }
     }
 
