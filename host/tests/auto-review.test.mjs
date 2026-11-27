@@ -49,3 +49,21 @@ test('service errors are not retried', async t => {
   assert.equal(requests.length, 1);
   assert.match(logs.at(-1), /Local auto-review failed/);
 });
+
+test('binary_executable and truncated target enrichments block locally without calling the classifier model', async t => {
+  for (const targetEnrichment of [
+    { kind: 'binary_executable', path: '/workspace/bin/demo', format: 'elf', size_bytes: 1024, definition_hash: 'a'.repeat(64), truncated: true },
+    { kind: 'executable', path: '/workspace/big.py', definition: 'print(1)', definition_hash: 'b'.repeat(64), truncated: true },
+  ]) {
+    const { instance, logs, requests } = await classifier(t, [valid]);
+    const result = await instance.execute(undefined, {
+      target: { action: 'run', arguments: { command: targetEnrichment.path, target_enrichment: targetEnrichment } },
+      conversationContext: [{ role: 'user', content: 'Run it' }],
+    });
+    assert.equal(requests.length, 0);
+    assert.equal(result.result.value.decision, 2);
+    assert.equal(result.result.value.blockReason, '内容无法完整审查');
+    assert.equal(result.result.value.proposedAllowRule, undefined);
+    assert.match(logs.at(-1), /Local auto-review BLOCK/);
+  }
+});

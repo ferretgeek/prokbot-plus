@@ -15,7 +15,7 @@ modifications below. The noncommercial conditions also apply to everything
 ProkBot Plus adds; none of it is offered under terms that allow commercial use.
 CHANGELOG.md lists the changes by release.
 
-Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
+Modifications made in ProkBot Plus (2026-11-07 to 2026-11-27)
 --------------------------------------------------------------
 
 1. Windows x64 client (new)
@@ -449,6 +449,24 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
       and ports), not copied from the official Host.
     - host/tests/idle-desktop-park.test.mjs.
     - Contributed by @jun9100 (GitHub pull request #24).
+
+31. Shell auto-review executable binding fix and classifier retry.
+    - host/runtime/shell-auto-review-enrichment.mjs (new),
+      host/runtime/recovered-prompt-tools.mjs, host/runtime/host-auto-review.mjs,
+      host/release/compose.yaml and compose.host.yaml
+      (GROKBOT_AUTO_REVIEW_MAX_ATTEMPTS): when the stock Shell auto-review
+      enrichment takes an allowlisted interpreter flag for the script path,
+      bind the real script instead; unknown flags, redirections (except a
+      bare heredoc), loader environment prefixes, package managers and any
+      token the shell could expand keep the stock result. Compiled binaries
+      (ELF/Mach-O/PE) and large text scripts (>200 lines or >8 KB) up to
+      256 MiB are bound by a full-file SHA-256 and the local classifier
+      blocks them for explicit user approval. The Shell and MCP classifier
+      makes up to 2 attempts by default (1-5).
+    - host/tests/shell-auto-review-enrichment.test.mjs, auto-review.test.mjs
+      and bytepatch_checks.py; the combined tests slice the stock function
+      from the user's own Host archive at test time and skip without it.
+    - Contributed by @jun9100 (GitHub pull request #25).
 
 Upstream ProkBot changes incorporated
 -------------------------------------
