@@ -158,6 +158,8 @@ When the model asks, under a new call ID, to resend the exact text of a message 
 
 The official Linux desktop image is used directly; the Host operates it over an authenticated connection, on the same machine or another one. When Agents operate your computer, the client connects out to the Host, so your computer opens no ports.
 
+- **Idle Fork desktop parking (opt-in, off by default)**: `host/runtime/idle-desktop-park.mjs` (wired via `recovered-computer.mjs` and `host-extensions.mjs` only when `GROKBOT_DESKTOP_PARK_ENABLED=1` at startup; disabled mode leaves Computer/Box modules untouched) implements an idle-desktop parking scheduler against the `9d2ac1b` execution container's `/usr/local/bin/stop-window --park` and `/tmp/sand-window-used.d` interface. When a `Fork-<N>` desktop has no active turn, pending approval or handoff, running background shell work, in-flight command, or attached VNC viewer for 30 minutes (or 5 minutes when `MemAvailable` falls below 15% or memory PSI `avg10 > 10`, reflecting host-wide memory in single-host deployments), `/usr/local/bin/stop-window --park <N>` stops Chrome, `Xvfb`, `x11vnc`, and `exec-daemon` (GUI apps, active downloads, and session cookies/open tabs may be interrupted while persistent cookies and seat ownership remain; Chrome restarts on wake, so the first browser action may fail as it does in the stock Host after any Chrome restart, and a retry works) for transparent wake-up on the next `ensureReady`.
+
 <a id="mac-client"></a><a id="windows-client"></a><a id="linux-client"></a><a id="windows-client-new-in-this-version"></a>
 ### Desktop clients (Mac, Windows and Linux)
 

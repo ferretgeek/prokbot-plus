@@ -434,6 +434,22 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-26)
       hbc98/audit.py issues across both fallback releases.
     - Contributed by @jun9100 (GitHub pull request #27).
 
+30. Opt-in idle parking of per-Bot Fork desktops on the shared execution computer.
+    - host/runtime/idle-desktop-park.mjs (new), recovered-computer.mjs,
+      host-extensions.mjs, host/release/compose.yaml and compose.host.yaml
+      (GROKBOT_DESKTOP_PARK_* settings): when GROKBOT_DESKTOP_PARK_ENABLED=1,
+      probe the Fork desktops, park idle ones with the image's
+      stop-window --park (30 minutes, or 5 minutes under memory pressure, least
+      recently used first) and wake them in place on next use; turns, pending
+      approvals, handoffs, background shell work and open computer views keep a
+      desktop awake. Start, stop and park share a per-seat lock under
+      /tmp/grokbot-park.d. Nothing is installed when disabled.
+    - The scheduler, probe and park scripts are written against the execution
+      computer image's own interface (stop-window, its marker and token files
+      and ports), not copied from the official Host.
+    - host/tests/idle-desktop-park.test.mjs.
+    - Contributed by @jun9100 (GitHub pull request #24).
+
 Upstream ProkBot changes incorporated
 -------------------------------------
 
