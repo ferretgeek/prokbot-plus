@@ -6,6 +6,10 @@ import { reasons, responsesEndpoint, responsesUsage } from './openai-responses.m
 import { postWithFallback } from './model-common.mjs';
 
 const OUTPUT_LIMIT = 16_000;
+// The shipped Host gives each classification 10 s and reports a timeout as an error without an
+// approval card. Answer BLOCK shortly before that instead, so the user can still decide.
+const DECISION_DEADLINE_MS = 9_000;
+const DEADLINE_REASON = '自动审查没有及时得出结论';
 // Classification needs little reasoning; use the lowest level the model offers.
 function reviewEffort(config) {
   const efforts = config.policy?.models?.find(entry => entry.id === config.model)?.efforts ?? [];
@@ -95,11 +99,16 @@ function validate(decision, schema) {
 }
 
 /** Use the shipped classifier policy/schema and approval state machine with the configured model. */
-export function createLocalClassifier(config, library, { fetchImpl = globalThis.fetch, log = () => {} } = {}) {
+export function createLocalClassifier(config, library,
+  { fetchImpl = globalThis.fetch, log = () => {}, decisionDeadlineMs = DECISION_DEADLINE_MS } = {}) {
   const tool = library.CLASSIFY_SAND_AUTO_REVIEW_ACTION_TOOL;
   const schema = tool.function.parameters;
   // Parameters a compatible service rejected stay dropped for later reviews.
   const state = { dropped: new Set(), autoToolChoice: false };
+  const block = reason => new library.SmartModeClassifierResult({ result: { case: 'success', value: {
+    decision: 2,
+    blockReason: reason,
+  } } });
   return {
     async execute(ctx, args) {
       const target = args.target?.toJson ? args.target.toJson() : args.target;
@@ -108,12 +117,8 @@ export function createLocalClassifier(config, library, { fetchImpl = globalThis.
       // in `host/runtime/shell-auto-review-enrichment.mjs`.
       const enrichment = target.arguments?.target_enrichment ?? target.arguments?.targetEnrichment;
       if (enrichment && (enrichment.kind === 'binary_executable' || enrichment.truncated === true)) {
-        const reason = '内容无法完整审查';
         log(`Local auto-review BLOCK; model=${config.model}; reason=uninspectable-target-enrichment`);
-        return new library.SmartModeClassifierResult({ result: { case: 'success', value: {
-          decision: 2,
-          blockReason: reason,
-        } } });
+        return block('内容无法完整审查');
       }
       const messages = args.conversationContext ?? [];
       const input = {
@@ -125,7 +130,8 @@ export function createLocalClassifier(config, library, { fetchImpl = globalThis.
       };
       const content = JSON.stringify(input);
       if (Buffer.byteLength(content) > 1024 * 1024) throw new Error('Auto-review context exceeds the supported size');
-      const signal = ctx?.signal ? AbortSignal.any([ctx.signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000);
+      const deadline = AbortSignal.timeout(decisionDeadlineMs);
+      const signal = ctx?.signal ? AbortSignal.any([ctx.signal, deadline]) : deadline;
       const classify = CLASSIFIERS[config.apiFormat] ?? classifyWithChat;
       let replyId, decision;
       // A malformed answer is retried once; service errors and cancellation are not.
@@ -135,6 +141,10 @@ export function createLocalClassifier(config, library, { fetchImpl = globalThis.
           validate(decision, schema);
           break;
         } catch (error) {
+          if (deadline.aborted && !ctx?.signal?.aborted) {
+            log(`Local auto-review BLOCK; model=${config.model}; reason=no-decision-within-${decisionDeadlineMs}ms`);
+            return block(DEADLINE_REASON);
+          }
           const retry = error instanceof ReviewOutputError && attempt < 2 && !signal.aborted;
           log(`Local auto-review ${retry ? 'retrying after' : 'failed'}: ${error.message}; model=${config.model}`);
           if (!retry) throw error;

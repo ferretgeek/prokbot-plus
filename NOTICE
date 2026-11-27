@@ -15,7 +15,7 @@ modifications below. The noncommercial conditions also apply to everything
 ProkBot Plus adds; none of it is offered under terms that allow commercial use.
 CHANGELOG.md lists the changes by release.
 
-Modifications made in ProkBot Plus (2026-11-07 to 2026-11-27)
+Modifications made in ProkBot Plus (2026-11-07 to 2026-11-28)
 --------------------------------------------------------------
 
 1. Windows x64 client (new)
@@ -120,6 +120,9 @@ Modifications made in ProkBot Plus (2026-11-07 to 2026-11-27)
 6. Auto review, web and image tools
    - Auto review retries once on a malformed classification and logs failures
      (host/runtime/host-auto-review.mjs).
+   - When the configured model reaches no decision within 9 s, the local
+     classifier answers BLOCK so the user gets an approval card instead of
+     the official Host's 10 s timeout error (host/runtime/host-auto-review.mjs).
    - Native web tools fall back to automatic tool choice when a model rejects a
      forced tool call; parallel searches succeed when one call succeeds
      (host/runtime/web-services.mjs).

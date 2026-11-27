@@ -4,6 +4,11 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
+## 未发布 / Unreleased
+
+- **自动审查超时 / Auto-review timeouts**：原版 Host 给每次分类 10 秒，超时就报「分类出错」，用户收不到批准卡片。演练中 `claude-opus-5-5` 判 BLOCK 要约 10.5 秒，所以有风险的命令总是直接出错。现在模型 9 秒内没有结论时，本地分类器返回 BLOCK（「自动审查没有及时得出结论」），用户可以在卡片上批准或拒绝；不会因此自动放行任何操作。The official Host gives each classification 10 s and reports a timeout as a classification error, with no approval card. In the upgrade rehearsal `claude-opus-5-5` took about 10.5 s to decide BLOCK, so risky commands always failed outright. Now, when the model has no decision within 9 s, the local classifier answers BLOCK ("自动审查没有及时得出结论", no decision in time) and the user can approve or deny on the card; nothing is allowed automatically because of this.
+- **Shell 自动审查的适用范围 / Scope of Shell auto-review binding**：1.19.0 的脚本绑定改进只在 Bot 的 Shell 调用带了 `working_directory` 时生效；Bot 默认不传，这时和原版一样，分类器只看到命令文字。技术文档已写明。The 1.19.0 script binding applies only when the Bot's Shell call carries `working_directory`; Bots do not pass it by default, and then, as in the stock Host, the classifier sees only the command text. The technical documentation now says so.
+
 ## ProkBot Plus 1.19.0 (2026-11-27)
 
 Host 的 Shell 自动审查能认出带常见选项的命令并审查真正的脚本，新增实验性的闲置桌面休眠（默认关闭）；iOS 1.26.0 / 1.27.0 回退版修复一处字节码问题。都由 jun9100 贡献（#25、#24、#27）。Host 需要更新，休眠要在 `.env` 里另外开启；用 iOS 1.26.0 或 1.27.0 的用新的 iOS 包重新生成；其他客户端不变。The Host's Shell auto-review now understands commands with common options and reviews the real script, and the Host gains experimental idle desktop parking (off by default); the iOS 1.26.0 / 1.27.0 fallbacks get a bytecode fix. All contributed by jun9100 (#25, #24, #27). Update the Host, and enable parking separately in `.env`; if you use iOS 1.26.0 or 1.27.0, rebuild with the new iOS package; the other clients are unchanged.

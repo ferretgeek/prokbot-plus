@@ -17,12 +17,12 @@ const textOnly = () => reply([{ type: 'text', text: 'Looks fine to me.' }]);
 const valid = () => reply([{ type: 'tool_use', id: 't1', name: 'classify',
   input: { decision: 'ALLOW', reason: 'Read-only command', blocked_effect: 'none' } }]);
 
-async function classifier(t, replies) {
+async function classifier(t, replies, options = {}) {
   const usageDirectory = await mkdtemp(join(tmpdir(), 'review-test-'));
   t.after(() => rm(usageDirectory, { recursive: true, force: true }));
   const logs = [], requests = [];
   const instance = createLocalClassifier({ apiFormat: 'anthropic', baseUrl: 'https://api.example.com', apiKey: 'k', model: 'm', usageDirectory },
-    library, { log: message => logs.push(message), fetchImpl: async (url, options) => { requests.push(url); return replies.shift()(); } });
+    library, { log: message => logs.push(message), fetchImpl: async (url, init) => { requests.push(url); return replies.shift()(init); }, ...options });
   return { instance, logs, requests };
 }
 const args = { target: { action: 'run', arguments: { command: 'ver' } }, conversationContext: [{ role: 'user', content: 'Check the version' }] };
@@ -66,4 +66,26 @@ test('binary_executable and truncated target enrichments block locally without c
     assert.equal(result.result.value.proposedAllowRule, undefined);
     assert.match(logs.at(-1), /Local auto-review BLOCK/);
   }
+});
+
+// Never answers; rejects only when the request is aborted.
+const silent = init => new Promise((_, reject) => init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true }));
+
+test('a model that does not decide before the deadline blocks for user approval instead of failing', async t => {
+  const { instance, logs, requests } = await classifier(t, [silent], { decisionDeadlineMs: 50 });
+  const result = await instance.execute(undefined, args);
+  assert.equal(requests.length, 1);
+  assert.equal(result.result.value.decision, 2);
+  assert.equal(result.result.value.blockReason, '自动审查没有及时得出结论');
+  assert.equal(result.result.value.proposedAllowRule, undefined);
+  assert.match(logs.at(-1), /Local auto-review BLOCK; model=m; reason=no-decision-within-50ms/);
+});
+
+test('cancellation by the caller still fails rather than blocking', async t => {
+  const { instance, requests } = await classifier(t, [silent], { decisionDeadlineMs: 60_000 });
+  const controller = new AbortController();
+  const pending = instance.execute({ signal: controller.signal }, args);
+  setTimeout(() => controller.abort(new Error('turn cancelled')), 20);
+  await assert.rejects(pending, /turn cancelled/);
+  assert.equal(requests.length, 1);
 });
