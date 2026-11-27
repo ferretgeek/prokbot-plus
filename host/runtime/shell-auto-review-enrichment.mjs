@@ -47,8 +47,11 @@ const PYTHON_LONG_INLINE_FLAGS = new Set(['--version', '--help']);
 const PYTHON_LONG_VALUE_FLAGS = new Set(['--check-hash-based-pycs']);
 
 const NODE_INLINE_INFO_FLAGS = new Set(['-v', '--version', '-h', '--help']);
-const NODE_INLINE_CODE_FLAGS = new Set(['-e', '-p', '-pe', '--eval', '--print']);
-const NODE_INLINE_CODE_EQUALS_FLAGS = new Set(['--eval', '--print']);
+// `-p` / `--print` are left out on purpose: Node treats them as a switch when the next word starts
+// with `-` (or expands to nothing) and still runs the script after it, so they keep the stock result.
+// `-e`, `-pe` and `--eval` always consume the next word as code (or fail without running anything).
+const NODE_INLINE_CODE_FLAGS = new Set(['-e', '-pe', '--eval']);
+const NODE_INLINE_CODE_EQUALS_FLAGS = new Set(['--eval']);
 const NODE_BOOL_FLAGS = new Set([
   '-c', '--check',
   '--no-warnings', '--no-deprecation', '--throw-deprecation',
