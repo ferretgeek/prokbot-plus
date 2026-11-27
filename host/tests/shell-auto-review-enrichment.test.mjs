@@ -31,22 +31,24 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
   for (const command of [
     'node -v',
     'node --version',
-    'node -e "console.log(1)"',
-    'node --eval="console.log(1)"',
+    'node -e "2*3"',
+    'node --eval="2*3"',
     'node -p "1+1"',
     'node -pe "1+1"',
     'node --no-warnings -e "console.log(1)"',
     'python3 -V',
     'python3 -VV',
     'python3 --version',
-    'python3 -c "print(1)"',
-    'python3 -c"print(1)"',
+    'python3 -c "print(2*3)"',
+    'python3 -c"print(2*3)"',
+    'python3 -c "print(\'#x\')"',
     'python3 -uc "print(1)"',
     'python3 -c "print(1 < 2)"',
     'python3 - <<\'PY\'\nprint(1)\nPY',
     'bash -s <<EOF\necho hi\nEOF',
     'bash -e <<-\'EOF\'\necho hi\nEOF',
     'bash -c "ls -la"',
+    'bash -c "echo 2*3"',
     'bash -c "echo a > b"',
     'bash -ce "echo hi"',
     'bash -c -e "echo hi"',
@@ -252,6 +254,26 @@ test('parseInterpreterInvocation uses strict flag allowlists and keeps unknown f
     'python3 -u \\\nreal.py',
     'python3 -u harmless.py\u00a0evil.py',
     'python3 -u harmless.py\revil.py',
+    // Double-quoted backslashes that turn non-flag words into apparent flags
+    'bash -e "\\-e" harmless.sh',
+    'bash -e "\\-" harmless.sh',
+    'bash -e "\\+" harmless.sh',
+    'sh -e "\\-e" harmless.sh',
+    'python3 -u "\\-u" harmless.py',
+    'python3 -u "\\-W" ignore harmless.py',
+    'python3 -u "\\-" harmless.py',
+    'node --no-warnings "\\-c" harmless.js',
+    // Option values with brace expansion, globs, or command substitution
+    'node --title {a,evil.js} harmless.js',
+    'node -C {x,evil.js} harmless.js',
+    'python3 -u -X {dev,evil.py} harmless.py',
+    'python3 -W {ignore,evil} harmless.py',
+    'node --title * harmless.js',
+    'node --title $(echo a evil.js) harmless.js',
+    // Shell comments and expansion chars in `cd` targets
+    'python3 -u #x',
+    'cd ~ && python3 -u x.py',
+    'cd $HOME && python3 -u x.py',
     // Dangerous environment variable prefixes
     'NODE_OPTIONS="--require ./x.js" node -e 1',
     'env NODE_OPTIONS="--import ./x.mjs" node -v',
@@ -521,8 +543,13 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
     ['/workspace/-e', 'echo "harmless -e"\n'],
     ['/workspace/-u', 'print("harmless -u")\n'],
     ['/workspace/-c', 'echo "harmless -c"\n'],
+    ['/workspace/-u<evil.py', 'print("harmless -u<evil.py")\n'],
+    ['/workspace/-e>x', 'echo "harmless -e>x"\n'],
     ['/workspace/harmless.sh', 'echo "harmless shell"\n'],
+    ['/workspace/harmless.js', 'console.log("harmless js");\n'],
     ['/workspace/harmless.py', '"""\nos.system("id")\n""" # """\n'],
+    ['/workspace/a', 'console.log("harmless a");\n'],
+    ['/workspace/b.js', 'require("node:child_process").execSync("id");\n'],
     ['/workspace/~/evil.py', 'print("harmless tilde decoy")\n'],
     ['/workspace/evil.js', 'require("node:child_process").execSync("id");\n'],
     ['/workspace/evil.sh', 'id\n'],
@@ -530,11 +557,17 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
   ]);
 
   const wrapped = wrapSandShellAutoReviewTargetEnrichment(async (_ctx, args) => {
-    const stripped = args.command.replace(/^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s+)+/, '');
+    let cwd = args.workingDirectory ?? '/';
+    let stripped = args.command.replace(/^(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s;&|]+)\s+)+/, '');
+    const cdMatch = /^cd\s+("[^"]+"|'[^']+'|[^\s;&|]+)\s*&&\s*(.+)$/.exec(stripped.trim());
+    if (cdMatch) {
+      cwd = path.posix.resolve(cwd, cdMatch[1].replace(/^['"]|['"]$/g, ''));
+      stripped = cdMatch[2];
+    }
     const parts = stripped.trim().split(/\s+/);
     if (parts.length >= 2 && /^(python3|node|bash|sh|zsh)$/.test(parts[0])) {
       const candidate = parts[1].replace(/^['"]|['"]$/g, '');
-      const resolved = candidate.startsWith('/') ? candidate : path.posix.resolve(args.workingDirectory ?? '/', candidate);
+      const resolved = candidate.startsWith('/') ? candidate : path.posix.resolve(cwd, candidate);
       if (workspaceFiles.has(resolved)) {
         const content = workspaceFiles.get(resolved);
         return {
@@ -637,6 +670,25 @@ test('wrapSandShellAutoReviewTargetEnrichment never binds same-named harmless de
     'python3 -x harmless.py',
     'python3 -W ignore::this.X evil.py',
     'python3 -u ~/evil.py',
+    'bash -e "\\-e" harmless.sh',
+    'bash -e "\\-" harmless.sh',
+    'bash -e "\\+" harmless.sh',
+    'sh -e "\\-e" harmless.sh',
+    'python3 -u "\\-u" harmless.py',
+    'python3 -u "\\-W" ignore harmless.py',
+    'python3 -u "\\-" harmless.py',
+    'node --no-warnings "\\-c" harmless.js',
+    'node --title {a,evil.js} harmless.js',
+    'node -C {x,evil.js} harmless.js',
+    'python3 -u -X {dev,evil.py} harmless.py',
+    'python3 -W {ignore,evil} harmless.py',
+    'node --title * harmless.js',
+    'node --title $(echo a evil.js) harmless.js',
+    'python3 -u<evil.py',
+    'bash -e>x evil.sh',
+    'python3 -u #x',
+    'cd ~ && python3 -u x.py',
+    'cd $HOME && python3 -u x.py',
     "PS4='$(. ./evil.sh)+ ' sh -x harmless.sh",
     'NODE_OPTIONS="--require ./x.js" node -e 1',
     'BASH_ENV=./x.sh bash -c true',
@@ -862,7 +914,10 @@ test('wrapper behavior matches expectations when composed with real pinned stock
     ['/workspace/-e', 'echo "harmless -e"\n'],
     ['/workspace/-u', 'print("harmless -u")\n'],
     ['/workspace/-c', 'echo "harmless -c"\n'],
+    ['/workspace/-u<evil.py', 'print("harmless -u<evil.py")\n'],
+    ['/workspace/-e>x', 'echo "harmless -e>x"\n'],
     ['/workspace/harmless.sh', 'echo "harmless shell"\n'],
+    ['/workspace/harmless.js', 'console.log("harmless js");\n'],
     ['/workspace/harmless.py', '"""\nos.system("id")\n""" # """\n'],
     ['/workspace/evil.js', 'require("node:child_process").execSync("id");\n'],
     ['/workspace/evil.sh', 'id\n'],
@@ -972,6 +1027,25 @@ test('wrapper behavior matches expectations when composed with real pinned stock
     'python3 -x harmless.py',
     'python3 -W ignore::this.X evil.py',
     'python3 -u ~/evil.py',
+    'bash -e "\\-e" harmless.sh',
+    'bash -e "\\-" harmless.sh',
+    'bash -e "\\+" harmless.sh',
+    'sh -e "\\-e" harmless.sh',
+    'python3 -u "\\-u" harmless.py',
+    'python3 -u "\\-W" ignore harmless.py',
+    'python3 -u "\\-" harmless.py',
+    'node --no-warnings "\\-c" harmless.js',
+    'node --title {a,evil.js} harmless.js',
+    'node -C {x,evil.js} harmless.js',
+    'python3 -u -X {dev,evil.py} harmless.py',
+    'python3 -W {ignore,evil} harmless.py',
+    'node --title * harmless.js',
+    'node --title $(echo a evil.js) harmless.js',
+    'python3 -u<evil.py',
+    'bash -e>x evil.sh',
+    'python3 -u #x',
+    'cd ~ && python3 -u x.py',
+    'cd $HOME && python3 -u x.py',
     "PS4='$(. ./evil.sh)+ ' sh -x harmless.sh",
     'node --run build',
     'node --test',

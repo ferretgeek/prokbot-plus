@@ -123,6 +123,7 @@ export function stripShellPrefixes(command, workingDirectory) {
   let candidateCommand = trimAsciiShellSpace(command);
   let candidateWorkingDirectory = workingDirectory;
   const envNames = [];
+  let hasUnsafeCdTarget = false;
   for (let prefixCount = 0; prefixCount < 4; prefixCount += 1) {
     let rest = candidateCommand;
     const leadingEnv = rest.match(/^env[ \t]+/);
@@ -145,7 +146,11 @@ export function stripShellPrefixes(command, workingDirectory) {
       /^cd[ \t]+("[^"]+"|'[^']+'|[^ \t\n;&|]+)[ \t]*&&[ \t]*(.+)$/s,
     );
     if (changeDirectoryPrefix === null) break;
-    const target = unquote(changeDirectoryPrefix[1]);
+    const rawTarget = changeDirectoryPrefix[1];
+    const target = unquote(rawTarget);
+    if (SHELL_EXPANSION_CHAR_PATTERN.test(rawTarget) || SHELL_EXPANSION_CHAR_PATTERN.test(target)) {
+      hasUnsafeCdTarget = true;
+    }
     if (candidateWorkingDirectory !== undefined) {
       candidateWorkingDirectory = path.posix.resolve(candidateWorkingDirectory, target);
     } else if (path.posix.isAbsolute(target)) {
@@ -153,7 +158,7 @@ export function stripShellPrefixes(command, workingDirectory) {
     }
     candidateCommand = trimAsciiShellSpace(changeDirectoryPrefix[2]);
   }
-  return { command: candidateCommand, workingDirectory: candidateWorkingDirectory, envNames };
+  return { command: candidateCommand, workingDirectory: candidateWorkingDirectory, envNames, hasUnsafeCdTarget };
 }
 
 /**
@@ -233,6 +238,7 @@ function tokenizeFirstSegment(command) {
   let hasToken = false;
   let hasRedirection = false;
   let hasPureHeredoc = false;
+  let hasComment = false;
   let hasInvalidSyntax = false;
 
   const flushToken = () => {
@@ -306,6 +312,10 @@ function tokenizeFirstSegment(command) {
     if (ch === ';' || ch === '|' || ch === '\n') {
       break;
     }
+    if (ch === '#' && !hasToken) {
+      hasComment = true;
+      break;
+    }
     if (ch === ' ' || ch === '\t') {
       flushToken();
       continue;
@@ -318,7 +328,7 @@ function tokenizeFirstSegment(command) {
     hasInvalidSyntax = true;
   }
   flushToken();
-  return { tokens, rawTokens, hasRedirection, hasPureHeredoc, hasInvalidSyntax };
+  return { tokens, rawTokens, hasRedirection, hasPureHeredoc, hasComment, hasInvalidSyntax };
 }
 
 function hasFlagWithEquals(token, flagSet) {
@@ -343,14 +353,14 @@ function hasFlagWithEquals(token, flagSet) {
  */
 export function parseInterpreterInvocation(command, workingDirectory) {
   const stripped = stripShellPrefixes(command, workingDirectory);
-  if (!stripped.command) return null;
+  if (!stripped.command || stripped.hasUnsafeCdTarget) return null;
   if (stripped.envNames.some(isDangerousEnvVar)) return null;
   const match = stripped.command.match(INTERPRETER_PATTERN);
   if (!match) return null;
 
   const interpreter = match[1];
-  const { tokens, rawTokens, hasRedirection, hasPureHeredoc, hasInvalidSyntax } = tokenizeFirstSegment(stripped.command);
-  if (hasInvalidSyntax || hasRedirection || tokens.length < 2) return null;
+  const { tokens, rawTokens, hasRedirection, hasPureHeredoc, hasComment, hasInvalidSyntax } = tokenizeFirstSegment(stripped.command);
+  if (hasInvalidSyntax || hasRedirection || hasComment || tokens.length < 2) return null;
 
   const firstArg = tokens[1];
   const rawFirstArg = rawTokens[1];
@@ -378,6 +388,18 @@ export function parseInterpreterInvocation(command, workingDirectory) {
   let readsFromStdin = false;
   while (index < tokens.length) {
     const token = tokens[index];
+    const rawToken = rawTokens[index];
+    if (isShell && needsInlineCommandArg && !token.startsWith('-') && !token.startsWith('+')) {
+      // Inline command code after `-c` (e.g. `bash -c "echo 2*3"`).
+      break;
+    }
+    const isPythonInlineAttachedCode = isPython && /^-[bBdEIOPqSsSuv]*c/.test(rawToken);
+    const eqRawIdx = rawToken.indexOf('=');
+    const isNodeInlineEqualsCode =
+      isNode && eqRawIdx > 0 && NODE_INLINE_CODE_EQUALS_FLAGS.has(rawToken.slice(0, eqRawIdx));
+    if (!isPythonInlineAttachedCode && !isNodeInlineEqualsCode && SHELL_EXPANSION_CHAR_PATTERN.test(rawToken)) {
+      return null;
+    }
     if (token === '--' || (isShell && token === '-')) {
       index += 1;
       break;
@@ -403,7 +425,7 @@ export function parseInterpreterInvocation(command, workingDirectory) {
           break;
         }
         if (PYTHON_LONG_VALUE_FLAGS.has(token)) {
-          if (index + 1 >= tokens.length) return null;
+          if (index + 1 >= tokens.length || SHELL_EXPANSION_CHAR_PATTERN.test(rawTokens[index + 1])) return null;
           index += 2;
           continue;
         }
@@ -437,7 +459,7 @@ export function parseInterpreterInvocation(command, workingDirectory) {
               flagValue = token.slice(charIdx + 1);
               index += 1;
             } else {
-              if (index + 1 >= tokens.length) return null;
+              if (index + 1 >= tokens.length || SHELL_EXPANSION_CHAR_PATTERN.test(rawTokens[index + 1])) return null;
               flagValue = tokens[index + 1];
               index += 2;
             }
@@ -489,7 +511,7 @@ export function parseInterpreterInvocation(command, workingDirectory) {
         continue;
       }
       if (NODE_VALUE_FLAGS.has(token)) {
-        if (index + 1 >= tokens.length) return null;
+        if (index + 1 >= tokens.length || SHELL_EXPANSION_CHAR_PATTERN.test(rawTokens[index + 1])) return null;
         index += 2;
         continue;
       }
@@ -546,7 +568,10 @@ export function parseInterpreterInvocation(command, workingDirectory) {
         if (neededOptionSets.length > 0) {
           if (index + neededOptionSets.length >= tokens.length) return null;
           for (let offset = 0; offset < neededOptionSets.length; offset += 1) {
-            if (!neededOptionSets[offset].has(tokens[index + 1 + offset])) {
+            if (
+              SHELL_EXPANSION_CHAR_PATTERN.test(rawTokens[index + 1 + offset]) ||
+              !neededOptionSets[offset].has(tokens[index + 1 + offset])
+            ) {
               return null;
             }
           }
@@ -601,7 +626,7 @@ function extractInterpreterLeadingFlag(command, workingDirectory) {
   const isShell = interpreter === 'bash' || interpreter === 'sh' || interpreter === 'zsh';
   const rest = stripped.command.slice(match[0].length).replace(/^[ \t]+/, '');
   if (!rest) return null;
-  const tokenMatch = /^("[^"]*"|'[^']*'|[^ \t\n;&|<>]+)/.exec(rest);
+  const tokenMatch = /^("[^"]*"|'[^']*'|[^ \t\n;&|]+)/.exec(rest);
   if (!tokenMatch) return null;
   const rawFirstArg = tokenMatch[1];
   const firstArg = unquote(rawFirstArg);
