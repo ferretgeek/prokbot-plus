@@ -4,7 +4,9 @@
 
 Versions start at ProkBot Plus 1.0.0; upstream ProkBot releases are listed at the end. Full notes for each version are in its [release](https://github.com/ferretgeek/prokbot-plus/releases) and the commit history.
 
-## 未发布 / Unreleased
+## ProkBot Plus 1.19.1 (2026-11-28)
+
+自动审查不再因为模型慢而直接报错，并更正 1.19.0 的说明。只有 Host 需要更新；各客户端与 1.19.0 相同。Auto-review no longer fails outright when the model is slow, and the 1.19.0 notes are corrected. Only the Host needs updating; every client is the same as 1.19.0.
 
 - **自动审查超时 / Auto-review timeouts**：原版 Host 给每次分类 10 秒，超时就报「分类出错」，用户收不到批准卡片。演练中 `claude-opus-5-5` 判 BLOCK 要约 10.5 秒，所以有风险的命令总是直接出错。现在模型 9 秒内没有结论时，本地分类器返回 BLOCK（「自动审查没能及时判断这个操作是否安全，需要你看过后批准才能运行」），Bot 按原版流程申请批准后，用户可以在卡片上批准或拒绝（演练中从发出命令到出现卡片约 40 秒）；不会因此自动放行任何操作。内容看不全时的拦截理由也改成同样的说法（「内容无法完整审查，需要你看过后批准才能运行」），让 Bot 知道该申请批准。The official Host gives each classification 10 s and reports a timeout as a classification error, with no approval card. In the upgrade rehearsal `claude-opus-5-5` took about 10.5 s to decide BLOCK, so risky commands always failed outright. Now, when the model has no decision within 9 s, the local classifier answers BLOCK ("自动审查没能及时判断这个操作是否安全，需要你看过后批准才能运行": no decision in time, needs your approval); once the Bot requests approval as in the stock flow, the user can approve or deny on the card (about 40 s from the command to the card in the rehearsal). Nothing is allowed automatically because of this. The reason for content that cannot be reviewed in full is phrased the same way ("内容无法完整审查，需要你看过后批准才能运行"), so the Bot knows to request approval.
 - **Shell 自动审查的适用范围 / Scope of Shell auto-review binding**：1.19.0 的脚本绑定改进只在 Bot 的 Shell 调用带了 `working_directory` 时生效；Bot 默认不传，这时和原版一样，分类器只看到命令文字。技术文档已写明。The 1.19.0 script binding applies only when the Bot's Shell call carries `working_directory`; Bots do not pass it by default, and then, as in the stock Host, the classifier sees only the command text. The technical documentation now says so.
