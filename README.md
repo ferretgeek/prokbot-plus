@@ -18,7 +18,7 @@
   <a href="https://linux.do"><img alt="LINUX DO" src="https://img.shields.io/badge/Community-LINUX%20DO-F5A623"></a>
 </p>
 
-**简体中文** · [English](README.en.md)
+**简体中文** · [English](README.en.md) · [Türkçe](README.tr.md)
 
 </div>
 
